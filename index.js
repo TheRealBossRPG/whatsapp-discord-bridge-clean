@@ -1,121 +1,30 @@
-// index.js - WhatsApp Discord Bridge
+// index.js - Main entry point
 const express = require('express');
-const { 
-  Client, 
-  GatewayIntentBits, 
-  Partials, 
-  ActionRowBuilder, 
-  ButtonBuilder, 
-  ButtonStyle 
-} = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
 const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
 
-// Import modules
-const bridgeInstanceManager = require('./modules/BridgeInstanceManager');
-const discordCommands = require('./modules/discordCommands');
-const interactionHandler = require('./interactionHandler');
-
 // Load environment variables
 dotenv.config();
 
-// Express app
+// Initialize Express app
 const app = express();
 app.use(express.json());
 
 // Create required directories
-const instancesDir = path.join(__dirname, 'instances');
-if (!fs.existsSync(instancesDir)) {
-  fs.mkdirSync(instancesDir, { recursive: true });
-}
-
-// Create setup storage directory
-const setupStorageDir = path.join(__dirname, 'setup_storage');
-if (!fs.existsSync(setupStorageDir)) {
-  fs.mkdirSync(setupStorageDir, { recursive: true });
-}
-
-// Add setup storage functions to global scope for easy access
-global.setupStorage = {
-  saveSetupParams: function(guildId, params) {
-    try {
-      const filePath = path.join(setupStorageDir, `${guildId}_setup.json`);
-      
-      // Ensure we aren't overwriting existing parameters if only partial update
-      let existingParams = {};
-      if (fs.existsSync(filePath)) {
-        try {
-          existingParams = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        } catch (e) {
-          console.error(`Error reading existing setup parameters for guild ${guildId}:`, e);
-        }
-      }
-      
-      // Merge existing with new parameters
-      const mergedParams = { ...existingParams, ...params };
-      
-      fs.writeFileSync(filePath, JSON.stringify(mergedParams, null, 2), 'utf8');
-      console.log(`Saved setup parameters for guild ${guildId}`);
-      
-      return true;
-    } catch (error) {
-      console.error(`Error saving setup parameters for guild ${guildId}:`, error);
-      return false;
-    }
-  },
-  
-  getSetupParams: function(guildId) {
-    const filePath = path.join(setupStorageDir, `${guildId}_setup.json`);
-    if (fs.existsSync(filePath)) {
-      try {
-        const params = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        console.log(`Retrieved setup parameters for guild ${guildId}`);
-        return params;
-      } catch (error) {
-        console.error(`Error reading setup parameters for guild ${guildId}:`, error);
-        return null;
-      }
-    }
-    return null;
-  },
-  
-  cleanupSetupParams: function(guildId) {
-    const filePath = path.join(setupStorageDir, `${guildId}_setup.json`);
-    if (fs.existsSync(filePath)) {
-      try {
-        fs.unlinkSync(filePath);
-        console.log(`Cleaned up setup parameters for guild ${guildId}`);
-        return true;
-      } catch (error) {
-        console.error(`Error cleaning up setup parameters for guild ${guildId}:`, error);
-        return false;
-      }
-    }
-    return true; // Already clean
-  },
-  
-  updateSetupParams: function(guildId, key, value) {
-    try {
-      const params = this.getSetupParams(guildId) || {};
-      params[key] = value;
-      return this.saveSetupParams(guildId, params);
-    } catch (error) {
-      console.error(`Error updating setup parameter ${key} for guild ${guildId}:`, error);
-      return false;
-    }
+const directories = ['instances', 'setup_storage', 'logs', 'temp'];
+directories.forEach(dir => {
+  const dirPath = path.join(__dirname, dir);
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
   }
-};
-
-const logsDir = path.join(__dirname, 'logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
-}
+});
 
 // Configure logging with timestamps
 const startTime = new Date();
 const logFileName = `log-${startTime.toISOString().replace(/:/g, '-')}.txt`;
-const logFilePath = path.join(logsDir, logFileName);
+const logFilePath = path.join(__dirname, 'logs', logFileName);
 const logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
 
 // Override console methods to log to file
@@ -162,8 +71,155 @@ const discordClient = new Client({
   retryLimit: 3
 });
 
+// Add setup storage functions to global scope for easy access
+global.setupStorage = {
+  saveSetupParams: function(guildId, params) {
+    try {
+      const filePath = path.join(__dirname, 'setup_storage', `${guildId}_setup.json`);
+      
+      // Ensure we aren't overwriting existing parameters if only partial update
+      let existingParams = {};
+      if (fs.existsSync(filePath)) {
+        try {
+          existingParams = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        } catch (e) {
+          console.error(`Error reading existing setup parameters for guild ${guildId}:`, e);
+        }
+      }
+      
+      // Merge existing with new parameters
+      const mergedParams = { ...existingParams, ...params };
+      
+      fs.writeFileSync(filePath, JSON.stringify(mergedParams, null, 2), 'utf8');
+      console.log(`Saved setup parameters for guild ${guildId}`);
+      
+      return true;
+    } catch (error) {
+      console.error(`Error saving setup parameters for guild ${guildId}:`, error);
+      return false;
+    }
+  },
+  
+  getSetupParams: function(guildId) {
+    const filePath = path.join(__dirname, 'setup_storage', `${guildId}_setup.json`);
+    if (fs.existsSync(filePath)) {
+      try {
+        const params = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        console.log(`Retrieved setup parameters for guild ${guildId}`);
+        return params;
+      } catch (error) {
+        console.error(`Error reading setup parameters for guild ${guildId}:`, error);
+        return null;
+      }
+    }
+    return null;
+  },
+  
+  cleanupSetupParams: function(guildId) {
+    const filePath = path.join(__dirname, 'setup_storage', `${guildId}_setup.json`);
+    if (fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+        console.log(`Cleaned up setup parameters for guild ${guildId}`);
+        return true;
+      } catch (error) {
+        console.error(`Error cleaning up setup parameters for guild ${guildId}:`, error);
+        return false;
+      }
+    }
+    return true; // Already clean
+  },
+  
+  updateSetupParams: function(guildId, key, value) {
+    try {
+      const params = this.getSetupParams(guildId) || {};
+      params[key] = value;
+      return this.saveSetupParams(guildId, params);
+    } catch (error) {
+      console.error(`Error updating setup parameter ${key} for guild ${guildId}:`, error);
+      return false;
+    }
+  }
+};
+
 // Initialize global variable for custom settings
 global.lastCustomSettings = null;
+
+// Import core modules
+const bridgeInstanceManager = require('./core/InstanceManager');
+
+// Set up collections for commands, events, etc.
+discordClient.commands = new Collection();
+discordClient.buttons = new Collection();
+discordClient.modals = new Collection();
+
+// Load commands
+const commandsPath = path.join(__dirname, 'commands');
+if (fs.existsSync(commandsPath)) {
+  const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+  
+  for (const file of commandFiles) {
+    const command = require(path.join(commandsPath, file));
+    if (command.name) {
+      discordClient.commands.set(command.name, command);
+    }
+  }
+  
+  console.log(`Loaded ${discordClient.commands.size} commands`);
+}
+
+// Load button handlers
+const buttonsPath = path.join(__dirname, 'buttons');
+if (fs.existsSync(buttonsPath)) {
+  const buttonFiles = fs.readdirSync(buttonsPath).filter(file => file.endsWith('.js'));
+  
+  for (const file of buttonFiles) {
+    const button = require(path.join(buttonsPath, file));
+    if (button.customId) {
+      discordClient.buttons.set(button.customId, button);
+    } else if (button.regex) {
+      discordClient.buttons.set(button.regex.toString(), button);
+    }
+  }
+  
+  console.log(`Loaded ${discordClient.buttons.size} button handlers`);
+}
+
+// Load modal handlers
+const modalsPath = path.join(__dirname, 'modals');
+if (fs.existsSync(modalsPath)) {
+  const modalFiles = fs.readdirSync(modalsPath).filter(file => file.endsWith('.js'));
+  
+  for (const file of modalFiles) {
+    const modal = require(path.join(modalsPath, file));
+    if (modal.customId) {
+      discordClient.modals.set(modal.customId, modal);
+    } else if (modal.regex) {
+      discordClient.modals.set(modal.regex.toString(), modal);
+    }
+  }
+  
+  console.log(`Loaded ${discordClient.modals.size} modal handlers`);
+}
+
+// Load event handlers
+const eventsPath = path.join(__dirname, 'events');
+if (fs.existsSync(eventsPath)) {
+  const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
+  
+  for (const file of eventFiles) {
+    const event = require(path.join(eventsPath, file));
+    if (event.name) {
+      if (event.once) {
+        discordClient.once(event.name, (...args) => event.execute(...args, discordClient));
+      } else {
+        discordClient.on(event.name, (...args) => event.execute(...args, discordClient));
+      }
+    }
+  }
+  
+  console.log(`Loaded ${eventFiles.length} event handlers`);
+}
 
 // Discord Event Listeners
 discordClient.on('ready', async () => {
@@ -171,7 +227,7 @@ discordClient.on('ready', async () => {
   
   // Register slash commands
   try {
-    await discordCommands.registerCommands(discordClient);
+    await registerCommands(discordClient);
   } catch (error) {
     console.error('Error registering slash commands:', error);
   }
@@ -186,176 +242,116 @@ discordClient.on('ready', async () => {
   console.log(`Ready to serve ${bridgeInstanceManager.instances.size} WhatsApp bridges`);
 });
 
-discordClient.on('interactionCreate', async (interaction) => {
-  await interactionHandler.handleInteraction(interaction);
-});
-
-function getInstanceForInteraction(interaction) {
-  if (!interaction.guildId) return null;
-  
-  // Check channel parent ID first for more specific matching
-  if (interaction.channel && interaction.channel.parentId) {
-    const categoryId = interaction.channel.parentId;
-    if (discordClient._instanceRoutes && discordClient._instanceRoutes.has(categoryId)) {
-      return bridgeInstanceManager.getInstanceByGuildId(interaction.guildId);
-    }
-  }
-  
-  // Fall back to guild ID matching
-  return bridgeInstanceManager.getInstanceByGuildId(interaction.guildId);
-}
-
-/**
- * Safely update an interaction response
- * @param {Interaction} interaction - Discord interaction
- * @param {string|Object} content - Update content
- */
-async function safeUpdate(interaction, content) {
+// Register slash commands with Discord
+async function registerCommands(client) {
   try {
-    const options = typeof content === 'string' ? { content } : content;
+    const commands = [];
     
-    if (interaction.replied) {
-      await interaction.editReply(options);
-    } else if (interaction.deferred) {
-      await interaction.editReply(options);
-    } else {
-      await interaction.update(options);
-    }
-  } catch (error) {
-    console.error('Error in safeUpdate:', error);
-    
-    // Fallback to reply if update fails
-    try {
-      if (!interaction.replied) {
-        await interaction.reply({ ...options, ephemeral: true });
+    // Get all command exports
+    discordClient.commands.forEach(command => {
+      if (command.data) {
+        commands.push(command.data.toJSON());
       }
-    } catch (fallbackError) {
-      console.error('Error in safeUpdate fallback:', fallbackError);
-    }
-  }
-}
-
-/**
- * Safely send a followup message
- * @param {Interaction} interaction - Discord interaction
- * @param {string|Object} content - Followup content
- */
-async function safeFollowUp(interaction, content) {
-  try {
-    const options = typeof content === 'string' ? { content } : content;
-    await interaction.followUp(options);
-  } catch (error) {
-    console.error('Error in safeFollowUp:', error);
-  }
-}
-
-// Handler for edit message modal submissions
-async function handleEditMessageModalSubmission(interaction) {
-  try {
-    // Get the type of message from the modal ID
-    const modalId = interaction.customId;
-    let messageType, inputId;
-    
-    if (modalId.startsWith('edit_welcome_modal')) {
-      messageType = 'welcome';
-      inputId = 'welcome_message';
-    } else if (modalId.startsWith('edit_intro_modal')) {
-      messageType = 'intro';
-      inputId = 'intro_message';
-    } else if (modalId.startsWith('edit_new_ticket_modal')) {
-      messageType = 'new_ticket';
-      inputId = 'new_ticket_message';
-    } else if (modalId.startsWith('edit_closing_modal')) {
-      messageType = 'closing';
-      inputId = 'closing_message';
-    } else if (modalId.startsWith('edit_vouch_modal')) {
-      messageType = 'vouch';
-      inputId = 'vouch_message';
-    } else {
-      await interaction.reply({
-        content: "Unknown modal type. Please try again.",
-        ephemeral: true
-      });
-      return;
-    }
-    
-    // Get the new message from the submission
-    const newMessage = interaction.fields.getTextInputValue(inputId);
-    
-    // Get the server instance
-    const instance = bridgeInstanceManager.getInstanceByGuildId(interaction.guildId);
-    if (!instance) {
-      await interaction.reply({
-        content: "❌ Server instance not found. Please set up the WhatsApp bridge first.",
-        ephemeral: true
-      });
-      return;
-    }
-    
-    // Get current settings
-    if (!instance.customSettings) {
-      instance.customSettings = {};
-    }
-    
-    // Update the specific message type
-    switch (messageType) {
-      case 'welcome':
-        instance.customSettings.welcomeMessage = newMessage;
-        if (instance.whatsAppHandler) instance.whatsAppHandler.welcomeMessage = newMessage;
-        break;
-      case 'intro':
-        instance.customSettings.introMessage = newMessage;
-        if (instance.whatsAppHandler) instance.whatsAppHandler.introMessage = newMessage;
-        break;
-      case 'new_ticket':
-        instance.customSettings.newTicketMessage = newMessage;
-        if (instance.ticketManager) instance.ticketManager.setCustomIntroMessage(newMessage);
-        break;
-      case 'closing':
-        instance.customSettings.closingMessage = newMessage;
-        if (instance.ticketManager) instance.ticketManager.setCustomCloseMessage(newMessage);
-        break;
-      case 'vouch':
-        instance.customSettings.vouchMessage = newMessage;
-        if (instance.vouchHandler && typeof instance.vouchHandler.setCustomVouchMessage === 'function') {
-          instance.vouchHandler.setCustomVouchMessage(newMessage);
-        }
-        break;
-    }
-    
-    // Save the settings
-    await bridgeInstanceManager.saveInstanceSettings(instance.instanceId, instance.customSettings);
-    
-    // Show preview with variables replaced
-    let previewMessage = newMessage;
-    if (messageType !== 'welcome') {
-      // Replace variables in preview
-      previewMessage = previewMessage
-        .replace(/{name}/g, 'John Doe')
-        .replace(/{phoneNumber}/g, '+1234567890');
-    }
-    
-    // Confirm successful update
-    await interaction.reply({
-      content: `✅ The ${messageType} message has been updated!\n\n**New Message:**\n${previewMessage}`,
-      ephemeral: true
     });
     
-    console.log(`[DiscordCommands] ${messageType} message updated successfully by ${interaction.user.tag}`);
+    console.log("Started refreshing application (/) commands.");
+    await client.application.commands.set(commands);
+    console.log("Successfully reloaded application (/) commands.");
   } catch (error) {
-    console.error(`Error processing modal submission:`, error);
-    
-    // Handle errors
-    try {
-      await interaction.reply({
-        content: `❌ Error updating message: ${error.message}`,
-        ephemeral: true
-      });
-    } catch (replyError) {
-      console.error(`Error sending error message:`, replyError);
-    }
+    console.error("Error registering slash commands:", error);
   }
 }
+
+// Handle incoming interactions
+discordClient.on('interactionCreate', async (interaction) => {
+  try {
+    if (interaction.isChatInputCommand()) {
+      // Handle commands
+      const command = discordClient.commands.get(interaction.commandName);
+      if (!command) return;
+      
+      // Get the appropriate instance
+      const instance = getInstanceForInteraction(interaction);
+      
+      await command.execute(interaction, instance);
+    } 
+    else if (interaction.isButton()) {
+      // Handle buttons
+      let buttonHandler = null;
+      
+      // First check exact matches
+      if (discordClient.buttons.has(interaction.customId)) {
+        buttonHandler = discordClient.buttons.get(interaction.customId);
+      } else {
+        // Try regex matches for dynamic button IDs
+        for (const [key, handler] of discordClient.buttons.entries()) {
+          if (handler.matches && typeof handler.matches === 'function' && 
+              handler.matches(interaction.customId)) {
+            buttonHandler = handler;
+            break;
+          } else if (handler.regex && handler.regex.test(interaction.customId)) {
+            buttonHandler = handler;
+            break;
+          }
+        }
+      }
+      
+      if (buttonHandler) {
+        const instance = getInstanceForInteraction(interaction);
+        await buttonHandler.execute(interaction, instance);
+      }
+    }
+    else if (interaction.isModalSubmit()) {
+      // Handle modal submissions
+      let modalHandler = null;
+      
+      // First check exact matches
+      if (discordClient.modals.has(interaction.customId)) {
+        modalHandler = discordClient.modals.get(interaction.customId);
+      } else {
+        // Try regex matches for dynamic modal IDs
+        for (const [key, handler] of discordClient.modals.entries()) {
+          if (handler.matches && typeof handler.matches === 'function' && 
+              handler.matches(interaction.customId)) {
+            modalHandler = handler;
+            break;
+          } else if (handler.regex && handler.regex.test(interaction.customId)) {
+            modalHandler = handler;
+            break;
+          }
+        }
+      }
+      
+      if (modalHandler) {
+        const instance = getInstanceForInteraction(interaction);
+        await modalHandler.execute(interaction, instance);
+      }
+    }
+  } catch (error) {
+    console.error(`Error handling interaction:`, error);
+    
+    // Try to respond with an error message
+    try {
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ 
+          content: `There was an error with this interaction: ${error.message}`, 
+          ephemeral: true 
+        });
+      } else if (interaction.deferred && !interaction.replied) {
+        await interaction.editReply({ 
+          content: `There was an error with this interaction: ${error.message}`
+        });
+      } else {
+        await interaction.followUp({ 
+          content: `There was an error with this interaction: ${error.message}`, 
+          ephemeral: true 
+        });
+      }
+    } catch (replyError) {
+      console.error("Error responding to interaction error:", replyError);
+    }
+  }
+});
 
 // Message handler with instance routing
 discordClient.on('messageCreate', async (message) => {
@@ -414,6 +410,37 @@ discordClient.on('messageCreate', async (message) => {
     console.error('Error handling message:', error);
   }
 });
+
+// Helper function to get the instance for an interaction
+function getInstanceForInteraction(interaction) {
+  if (!interaction.guildId) return null;
+  
+  // IMPORTANT: Skip instance check for customize_messages_modal
+  // This needs to be processed even without an instance
+  if (interaction.isModalSubmit() && interaction.customId === "customize_messages_modal") {
+    console.log("Skipping instance check for customize_messages_modal");
+    return { customSettings: {}, isTemporary: true };
+  }
+  
+  try {
+    // Check channel parent ID first for more specific matching
+    if (interaction.channel && interaction.channel.parentId) {
+      const categoryId = interaction.channel.parentId;
+      
+      // Check if Discord client has instance routes
+      if (interaction.client._instanceRoutes && interaction.client._instanceRoutes.has(categoryId)) {
+        const routeInfo = interaction.client._instanceRoutes.get(categoryId);
+        return routeInfo.instance || bridgeInstanceManager.getInstanceByGuildId(interaction.guildId);
+      }
+    }
+    
+    // Fall back to guild ID matching
+    return bridgeInstanceManager.getInstanceByGuildId(interaction.guildId);
+  } catch (error) {
+    console.error("Error getting instance for interaction:", error);
+    return null;
+  }
+}
 
 // Express routes
 app.get('/', (req, res) => {
