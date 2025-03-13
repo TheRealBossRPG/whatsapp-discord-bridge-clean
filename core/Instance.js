@@ -303,31 +303,117 @@ class Instance {
   
   async connect() {
     try {
-      // Connect WhatsApp client
-      const success = await this.clients.whatsAppClient.initialize();
-      this.connected = success;
+      console.log(`[Instance:${this.instanceId}] Connecting WhatsApp...`);
+
+      await this.loadSettings();
+  
+      // Verify Discord client is available
+      if (!this.discordClient) {
+        throw new Error(
+          `[Instance:${this.instanceId}] Discord client is required to connect WhatsApp`
+        );
+      }
+  
+      // Make sure ticket manager is initialized
+      if (!this.ticketManager) {
+        this.initializeTicketManager();
+      }
+  
+      // Create Baileys client with instance-specific auth folder if not already created
+      if (!this.baileysClient) {
+        this.baileysClient = new BaileysClient({
+          authFolder: this.paths.auth,
+          tempDir: this.paths.temp,
+          instanceId: this.instanceId,
+        });
+  
+        // Set up event handlers
+        this.setupBaileysClientEvents();
+      }
+  
+      // Initialize WhatsApp client
+      const success = await this.baileysClient.initialize();
+
+      await this.loadSettings();
+  
+      // If already authenticated, initialize handlers immediately
+      if (success && this.baileysClient.isReady) {
+        console.log(
+          `[Instance:${this.instanceId}] WhatsApp already authenticated`
+        );
+        this.initializeHandlers();
+  
+        // Call the ready callback if set
+        if (typeof this.callbacks.onReady === "function") {
+          this.callbacks.onReady();
+        }
+      }
+  
       return success;
     } catch (error) {
-      console.error(`Error connecting instance ${this.instanceId}: ${error.message}`);
-      this.connected = false;
+      console.error(
+        `[Instance:${this.instanceId}] Error connecting WhatsApp:`,
+        error
+      );
       return false;
     }
   }
   
   async disconnect(logOut = false) {
-    try {
-      // Disconnect WhatsApp client
-      if (this.clients.whatsAppClient) {
-        await this.clients.whatsAppClient.disconnect(logOut);
-      }
+      try {
+        console.log(`[Instance:${this.instanceId}] Disconnecting WhatsApp...${logOut ? ' (with full logout)' : ''}`);
       
-      this.connected = false;
-      return true;
-    } catch (error) {
-      console.error(`Error disconnecting instance ${this.instanceId}: ${error.message}`);
-      return false;
+        if (this.baileysClient) {
+          try {
+            // Properly disconnect the client
+            await this.baileysClient.disconnect(logOut);
+            
+            // If we're doing a full logout, clean up auth files
+            if (logOut) {
+              const authPath = path.join(this.paths.auth, 'creds.json');
+              const baileysAuthDir = path.join(this.paths.auth, 'baileys_auth');
+              
+              // Delete baileys auth files if they exist
+              if (fs.existsSync(baileysAuthDir)) {
+                const files = fs.readdirSync(baileysAuthDir);
+                files.forEach(file => {
+                  try {
+                    fs.unlinkSync(path.join(baileysAuthDir, file));
+                    console.log(`[Instance:${this.instanceId}] Deleted auth file: ${file}`);
+                  } catch (e) {
+                    console.error(`[Instance:${this.instanceId}] Error deleting auth file ${file}:`, e);
+                  }
+                });
+              }
+              
+              // Delete primary creds file if it exists
+              if (fs.existsSync(authPath)) {
+                fs.unlinkSync(authPath);
+                console.log(`[Instance:${this.instanceId}] Deleted creds.json file`);
+              }
+            }
+          } catch (e) {
+            console.error(`[Instance:${this.instanceId}] Error during disconnect:`, e);
+          }
+        }
+      
+        // Clean up Discord routes
+        if (this.discordClient && this.discordClient._instanceRoutes) {
+          this.discordClient._instanceRoutes.delete(this.categoryId);
+        }
+      
+        // Clean temp files
+        this.cleanTempFiles();
+      
+        return true;
+      } catch (error) {
+        console.error(
+          `[Instance:${this.instanceId}] Error disconnecting:`,
+          error
+        );
+        return false;
+      }
     }
-  }
   
   isConnected() {
     return this.connected && this.clients.whatsAppClient && this.clients.whatsAppClient.isReady;
