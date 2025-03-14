@@ -1,19 +1,15 @@
-// commands/setup.js
+const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const Command = require('../templates/Command');
-const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, ActionRowBuilder, 
-  ButtonBuilder, ButtonStyle, ComponentType, StringSelectMenuBuilder } = require('discord.js');
-const path = require('path');
-const fs = require('fs');
 
 class SetupCommand extends Command {
   constructor() {
     super({
       name: 'setup',
       description: 'Set up a WhatsApp connection for this server',
-      permissions: PermissionFlagsBits.Administrator
+      permissions: 'Administrator'
     });
   }
-
+  
   async execute(interaction, instance) {
     await interaction.deferReply({ ephemeral: true });
 
@@ -29,8 +25,10 @@ class SetupCommand extends Command {
 
       const guildId = interaction.guild.id;
 
-      // Check if an instance already exists
+      // Get the bridge instance manager
       const bridgeInstanceManager = require('../core/InstanceManager');
+
+      // Check if an instance already exists
       const existingInstance = bridgeInstanceManager.getInstanceByGuildId(guildId);
 
       if (existingInstance) {
@@ -76,7 +74,9 @@ class SetupCommand extends Command {
               content: "Loading current settings...",
               components: [],
             });
-            return await this.handleSettingsEdit(interaction, existingInstance);
+            // Import and call editSettings
+            const editSettingsCommand = require('./editSettings');
+            return await editSettingsCommand.execute(interaction, existingInstance);
           }
 
           if (confirmation.customId === "reconnect") {
@@ -86,7 +86,6 @@ class SetupCommand extends Command {
             });
 
             // Use existing configuration to generate a new QR code
-            const discordClient = interaction.client;
             const refreshedQR = await bridgeInstanceManager.generateQRCode({
               guildId,
               categoryId: existingInstance.categoryId,
@@ -95,7 +94,7 @@ class SetupCommand extends Command {
                 existingInstance.vouchChannelId ||
                 existingInstance.transcriptChannelId,
               customSettings: existingInstance.customSettings || {},
-              discordClient,
+              discordClient: interaction.client,
             });
 
             if (refreshedQR === null) {
@@ -112,9 +111,9 @@ class SetupCommand extends Command {
               return;
             }
 
-            // Display the QR code
-            const utils = require('../utils/interactionUtils');
-            await utils.displayQRCode(interaction, refreshedQR, guildId);
+            // Import and use the QR code display function
+            const { displayQRCode } = require('../utils/qrCodeUtils');
+            await displayQRCode(interaction, refreshedQR, guildId);
             return;
           }
         } catch (e) {
@@ -160,15 +159,10 @@ class SetupCommand extends Command {
           .addOptions(options)
       );
 
-      const categoryMessage = await interaction.editReply({
+      await interaction.editReply({
         content: "Please select a category for WhatsApp support tickets:",
         components: [categorySelectRow],
       });
-
-      // Rest of the setup process follows...
-      // This is a large function, so I'm truncating it here for brevity
-      // The actual implementation would include all the category selection, 
-      // transcript channel setup, vouch channel setup, etc.
     } catch (error) {
       console.error("Error in setup command:", error);
       await interaction.editReply({
@@ -176,11 +170,6 @@ class SetupCommand extends Command {
         components: [],
       });
     }
-  }
-  
-  async handleSettingsEdit(interaction, instance) {
-    // Implementation of settings edit functionality
-    // This would be extracted from the original code
   }
 }
 
