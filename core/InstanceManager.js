@@ -203,8 +203,10 @@ class InstanceManager {
             this.instances.set(instanceId, instance);
           }
           
-          // Connect WhatsApp for this instance
-          await instance.connect();
+          // Connect WhatsApp for this instance only if previously connected
+          // Pass false to not show QR code during startup
+          const shouldShowQrCode = false; // Don't show QR codes on startup
+          await instance.connect(shouldShowQrCode);
           
           console.log(`Initialized instance ${instanceId}`);
         } catch (error) {
@@ -454,8 +456,8 @@ class InstanceManager {
           resolve(null); // Already authenticated
         });
         
-        // Connect WhatsApp
-        instance.connect()
+        // Connect WhatsApp - EXPLICITLY SET showQrCode to true
+        instance.connect(true)  // Pass true to force QR code generation
           .then(success => {
             if (!success) {
               console.error(`Failed to connect WhatsApp for guild ${guildId}`);

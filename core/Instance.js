@@ -48,6 +48,46 @@ class Instance {
     });
   }
 
+  setupWhatsAppClientEvents() {
+    try {
+      if (!this.clients.whatsAppClient) {
+        console.error(`[Instance:${this.instanceId}] Cannot set up events for null WhatsApp client`);
+        return;
+      }
+      
+      // Handle QR code
+      this.clients.whatsAppClient.on('qr', (qrCode) => {
+        console.log(`[Instance:${this.instanceId}] New QR code generated`);
+        this.events.emit('qr', qrCode);
+      });
+      
+      // Handle ready event
+      this.clients.whatsAppClient.on('ready', () => {
+        console.log(`[Instance:${this.instanceId}] WhatsApp client ready`);
+        this.connected = true;
+        this.events.emit('ready');
+      });
+      
+      // Handle disconnected event
+      this.clients.whatsAppClient.on('disconnected', () => {
+        console.log(`[Instance:${this.instanceId}] WhatsApp client disconnected`);
+        this.connected = false;
+        this.events.emit('disconnect');
+      });
+      
+      // Handle message events
+      this.clients.whatsAppClient.on('message', (message) => {
+        if (this.handlers.whatsAppHandler) {
+          this.handlers.whatsAppHandler.handleMessage(message);
+        }
+      });
+      
+      console.log(`[Instance:${this.instanceId}] WhatsApp client events set up`);
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error setting up WhatsApp client events:`, error);
+    }
+  }
+
   initializeTicketManager() {
     try {
       console.log(`[Instance:${this.instanceId}] Initializing ticket manager`);
@@ -386,60 +426,71 @@ class Instance {
     }
   }
   
-  async connect() {
+  async connect(showQrCode = false) {
     try {
       console.log(`[Instance:${this.instanceId}] Connecting WhatsApp...`);
-
+  
       await this.loadSettings();
   
       // Verify Discord client is available
       if (!this.discordClient) {
-        throw new Error(
-          `[Instance:${this.instanceId}] Discord client is required to connect WhatsApp`
-        );
+        throw new Error(`[Instance:${this.instanceId}] Discord client is required to connect WhatsApp`);
       }
   
       // Make sure ticket manager is initialized
-      if (!this.ticketManager) {
+      if (!this.managers.ticketManager) {
         this.initializeTicketManager();
       }
   
-      // Create Baileys client with instance-specific auth folder if not already created
-      if (!this.baileysClient) {
-        this.baileysClient = new BaileysClient({
+      // Create WhatsApp client if not already initialized
+      if (!this.clients.whatsAppClient) {
+        // Import BaileysClient properly
+        const BaileysClient = require('../modules/clients/BaileysClient');
+        
+        this.clients.whatsAppClient = new BaileysClient({
           authFolder: this.paths.auth,
           tempDir: this.paths.temp,
           instanceId: this.instanceId,
         });
   
         // Set up event handlers
-        this.setupBaileysClientEvents();
+        this.setupWhatsAppClientEvents();
+      }
+  
+      // Set a flag on the WhatsApp client to indicate if QR codes should be shown
+      // This will be used in the client to decide whether to emit QR codes or not
+      if (this.clients.whatsAppClient && typeof this.clients.whatsAppClient.setShowQrCode === 'function') {
+        this.clients.whatsAppClient.setShowQrCode(showQrCode);
+      }
+  
+      // Check if auth exists first
+      const authExists = fs.existsSync(path.join(this.paths.auth, 'creds.json')) || 
+                        fs.existsSync(path.join(this.paths.auth, 'baileys_auth'));
+      
+      if (!authExists && !showQrCode) {
+        console.log(`[Instance:${this.instanceId}] No auth found and QR code display not requested. Skipping connection.`);
+        return false;
       }
   
       // Initialize WhatsApp client
-      const success = await this.baileysClient.initialize();
-
-      await this.loadSettings();
+      const success = await this.clients.whatsAppClient.initialize();
+      
+      // Set connected state
+      this.connected = success && this.clients.whatsAppClient.isReady;
   
-      // If already authenticated, initialize handlers immediately
-      if (success && this.baileysClient.isReady) {
-        console.log(
-          `[Instance:${this.instanceId}] WhatsApp already authenticated`
-        );
-        this.initializeHandlers();
-  
+      // If already authenticated, initialize handlers
+      if (success && this.clients.whatsAppClient.isReady) {
+        console.log(`[Instance:${this.instanceId}] WhatsApp already authenticated`);
+        
         // Call the ready callback if set
-        if (typeof this.callbacks.onReady === "function") {
-          this.callbacks.onReady();
+        if (this.events) {
+          this.events.emit('ready');
         }
       }
   
       return success;
     } catch (error) {
-      console.error(
-        `[Instance:${this.instanceId}] Error connecting WhatsApp:`,
-        error
-      );
+      console.error(`[Instance:${this.instanceId}] Error connecting WhatsApp:`, error);
       return false;
     }
   }

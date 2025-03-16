@@ -156,32 +156,46 @@ class BaileysWhatsAppHandler {
   // Clean temp directory
   cleanTempDirectory() {
     try {
-      console.log(
-        `[BaileysWhatsAppHandler:${this.instanceId}] Cleaning temp directory on startup...`
-      );
-      if (fs.existsSync(this.tempDir)) {
-        const files = fs.readdirSync(this.tempDir);
-        let cleanedCount = 0;
-
-        for (const file of files) {
-          try {
-            fs.unlinkSync(path.join(this.tempDir, file));
-            cleanedCount++;
-          } catch (e) {
-            console.error(
-              `[BaileysWhatsAppHandler:${this.instanceId}] Could not delete temp file ${file}: ${e.message}`
-            );
-          }
-        }
-
-        console.log(
-          `[BaileysWhatsAppHandler:${this.instanceId}] Cleaned up ${cleanedCount} temp files on startup`
-        );
+      console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Cleaning temp directory on startup...`);
+      
+      if (!this.tempDir || !fs.existsSync(this.tempDir)) {
+        console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Temp directory not found: ${this.tempDir}`);
+        return;
       }
-    } catch (e) {
-      console.error(
-        `[BaileysWhatsAppHandler:${this.instanceId}] Error cleaning temp directory: ${e.message}`
-      );
+      
+      // Read all entries in temp directory
+      const entries = fs.readdirSync(this.tempDir);
+      let deletedCount = 0;
+      
+      // Process each entry (file or directory)
+      for (const entry of entries) {
+        const entryPath = path.join(this.tempDir, entry);
+        
+        try {
+          // Check if it's a file or directory
+          const stats = fs.statSync(entryPath);
+          
+          if (stats.isFile()) {
+            // If it's a file, delete it directly
+            fs.unlinkSync(entryPath);
+            deletedCount++;
+          } else if (stats.isDirectory()) {
+            // For directories, only remove certain subdirectories like temp uploads
+            // but keep 'vouch_media' and other special directories
+            if (entry !== 'vouch_media') {
+              // Use recursive option to remove directories with contents
+              fs.rmSync(entryPath, { recursive: true, force: true });
+              deletedCount++;
+            }
+          }
+        } catch (error) {
+          console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Could not delete temp entry ${entry}: ${error.message}`);
+        }
+      }
+      
+      console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Cleaned up ${deletedCount} temp entries on startup`);
+    } catch (error) {
+      console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Error cleaning temp directory: ${error.message}`);
     }
   }
 
