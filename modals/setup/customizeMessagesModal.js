@@ -48,7 +48,7 @@ class CustomizeMessagesModal extends Modal {
       // Try to get an instance - but don't fail if we can't find one (setup flow)
       if (instance && !instance.isTemporary) {
         // Get bridge instance manager
-        const bridgeInstanceManager = require('../core/InstanceManager');
+        const InstanceManager = require('../../core/InstanceManager');
         
         // If we have a real instance, update its settings too
         console.log(`Updating existing instance ${instance.instanceId} settings`);
@@ -61,7 +61,7 @@ class CustomizeMessagesModal extends Modal {
         Object.assign(instance.customSettings, customSettings);
         
         // Save settings
-        await bridgeInstanceManager.saveInstanceSettings(instance.instanceId, customSettings);
+        await InstanceManager.saveInstanceSettings(instance.instanceId, customSettings);
       } else {
         // We're in setup mode, just log that we're storing temporary settings
         console.log("No existing instance found - storing settings for later use in setup");

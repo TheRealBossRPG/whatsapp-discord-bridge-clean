@@ -47,8 +47,8 @@ class EditCloseModal extends Modal {
       }
       
       // Save settings
-      const bridgeInstanceManager = require('../modules/BridgeInstanceManager');
-      await bridgeInstanceManager.saveInstanceSettings(
+      const InstanceManager = require('../../core/InstanceManager');
+      await InstanceManager.saveInstanceSettings(
         instance.instanceId,
         instance.customSettings
       );

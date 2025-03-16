@@ -1,5 +1,4 @@
-// commands/help.js
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 const Command = require('../templates/Command');
 
 class HelpCommand extends Command {

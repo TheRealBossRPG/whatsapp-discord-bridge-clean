@@ -1,6 +1,6 @@
 // buttons/status/refreshQR.js
 const Button = require('../../templates/Button');
-const bridgeInstanceManager = require('../../modules/BridgeInstanceManager');
+const InstanceManager = require('../../core/InstanceManager');
 const { displayQRCode } = require('../../utils/qrCodeUtils');
 
 class RefreshQRButton extends Button {
@@ -20,7 +20,7 @@ class RefreshQRButton extends Button {
     try {
       // Get the instance if not provided
       if (!instance) {
-        instance = bridgeInstanceManager.getInstanceByGuildId(interaction.guild.id);
+        instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
       }
 
       if (!instance) {
@@ -33,7 +33,7 @@ class RefreshQRButton extends Button {
       }
 
       // Generate a fresh QR code
-      const refreshedQR = await bridgeInstanceManager.generateQRCode({
+      const refreshedQR = await InstanceManager.generateQRCode({
         guildId: interaction.guild.id,
         categoryId: instance.categoryId,
         transcriptChannelId: instance.transcriptChannelId,

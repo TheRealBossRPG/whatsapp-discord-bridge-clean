@@ -146,7 +146,7 @@ global.setupStorage = {
 global.lastCustomSettings = null;
 
 // Import core modules
-const bridgeInstanceManager = require('./core/InstanceManager');
+const InstanceManager = require('./core/InstanceManager');
 const interactionHandler = require('./core/interactionHandler');
 
 // Set up collections for commands, events, etc.
@@ -235,12 +235,12 @@ discordClient.on('ready', async () => {
   
   // Initialize all existing instances
   try {
-    await bridgeInstanceManager.initializeInstances(discordClient);
+    await InstanceManager.initializeInstances(discordClient);
   } catch (error) {
     console.error('Error initializing instances:', error);
   }
   
-  console.log(`Ready to serve ${bridgeInstanceManager.instances.size} WhatsApp bridges`);
+  console.log(`Ready to serve ${InstanceManager.instances.size} WhatsApp bridges`);
 });
 
 // Register slash commands with Discord
@@ -335,7 +335,7 @@ discordClient.on('messageCreate', async (message) => {
       
       // Final fallback - check all instances for this guild
       const guildId = message.guild.id;
-      const fallbackInstance = bridgeInstanceManager.getInstanceByGuildId(guildId);
+      const fallbackInstance = InstanceManager.getInstanceByGuildId(guildId);
       if (fallbackInstance?.discordHandler?.handleDiscordMessage) {
         try {
           await fallbackInstance.discordHandler.handleDiscordMessage(message);
@@ -359,7 +359,7 @@ app.get('/', (req, res) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  const instanceStatus = bridgeInstanceManager.getStatus();
+  const instanceStatus = InstanceManager.getStatus();
   
   const health = {
     status: 'UP',
@@ -375,7 +375,7 @@ app.get('/health', (req, res) => {
 // API endpoints for instances
 app.get('/api/instances', (req, res) => {
   try {
-    const instances = bridgeInstanceManager.getStatus();
+    const instances = InstanceManager.getStatus();
     res.status(200).json({ instances });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -394,7 +394,7 @@ async function start() {
 
   try {
     // Start Express server
-    const port = process.env.PORT || 3000;
+    const port = process.env.PORT || 3001;
     app.listen(port, () => {
       console.log(`Express server running on port ${port}`);
     });
@@ -405,10 +405,10 @@ async function start() {
 
     // Add this new code to restore connections:
     console.log('Restoring WhatsApp connections...');
-    const instances = bridgeInstanceManager.getStatus();
+    const instances = InstanceManager.getStatus();
     for (const instance of instances) {
       try {
-        const instanceObj = bridgeInstanceManager.getInstanceByGuildId(instance.guildId);
+        const instanceObj = InstanceManager.getInstanceByGuildId(instance.guildId);
         if (instanceObj) {
           console.log(`Attempting to restore connection for ${instance.instanceId}...`);
           const connected = await instanceObj.ensureConnected();
@@ -460,7 +460,7 @@ async function gracefulShutdown() {
 
   // Disconnect all WhatsApp instances
   try {
-    await bridgeInstanceManager.disconnectAllInstances();
+    await InstanceManager.disconnectAllInstances();
   } catch (error) {
     console.error('Error disconnecting WhatsApp instances:', error);
   }

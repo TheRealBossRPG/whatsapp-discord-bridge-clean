@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const Button = require('../../templates/Button');
-const bridgeInstanceManager = require('../../modules/BridgeInstanceManager');
+const InstanceManager = require('../../core/InstanceManager');
 
 class ConfirmDisconnectButton extends Button {
   constructor() {
@@ -23,7 +23,7 @@ class ConfirmDisconnectButton extends Button {
 
       // Get the instance first if not provided
       if (!instance) {
-        instance = bridgeInstanceManager.getInstanceByGuildId(guildId);
+        instance = InstanceManager.getInstanceByGuildId(guildId);
       }
       
       if (!instance || !instance.instanceId) {
@@ -38,7 +38,7 @@ class ConfirmDisconnectButton extends Button {
       console.log(`Performing full cleanup for instance ${instanceId}`);
 
       // Call disconnect with full cleanup
-      const disconnected = await bridgeInstanceManager.disconnectInstance(guildId, true);
+      const disconnected = await InstanceManager.disconnectInstance(guildId, true);
       
       if (!disconnected) {
         await interaction.editReply({
@@ -83,15 +83,15 @@ class ConfirmDisconnectButton extends Button {
       }
 
       // Clear instance configs to ensure it's fully reset
-      if (bridgeInstanceManager.configs && bridgeInstanceManager.configs[instanceId]) {
-        delete bridgeInstanceManager.configs[instanceId];
-        bridgeInstanceManager.saveConfigurations();
+      if (InstanceManager.configs && InstanceManager.configs[instanceId]) {
+        delete InstanceManager.configs[instanceId];
+        InstanceManager.saveConfigurations();
         console.log(`Removed instance ${instanceId} from configs`);
       }
 
       // Force remove from instances map
-      if (bridgeInstanceManager.instances && bridgeInstanceManager.instances.has(instanceId)) {
-        bridgeInstanceManager.instances.delete(instanceId);
+      if (InstanceManager.instances && InstanceManager.instances.has(instanceId)) {
+        InstanceManager.instances.delete(instanceId);
         console.log(`Removed instance ${instanceId} from instances map`);
       }
 

@@ -159,10 +159,10 @@ async function displayQRCode(interaction, qrCode, guildId) {
  * @param {Object} embed - Original embed
  */
 function startConnectionStatusUpdates(guildId, interaction, embed) {
-  const bridgeInstanceManager = require('../modules/BridgeInstanceManager');
+  const InstanceManager = require('../core/InstanceManager');
   
   // Set up a connection status updater for this instance
-  const instance = bridgeInstanceManager.getInstanceByGuildId(guildId);
+  const instance = InstanceManager.getInstanceByGuildId(guildId);
   if (instance) {
     // Set up onReady handler to update message
     instance.onReady(async () => {

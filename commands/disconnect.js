@@ -1,11 +1,15 @@
-// commands/disconnect.js
-const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
-const bridgeInstanceManager = require("../modules/BridgeInstanceManager");
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require("discord.js");
+const Command = require('../templates/Command');
+const InstanceManager = require("../core/InstanceManager");
 
-module.exports = {
-  data: new SlashCommandBuilder()
-    .setName("disconnect")
-    .setDescription("Disconnect the WhatsApp connection"),
+class DisconnectCommand extends Command {
+  constructor() {
+    super({
+      name: 'disconnect',
+      description: 'Disconnect the WhatsApp connection',
+      permissions: PermissionFlagsBits.Administrator
+    });
+  }
   
   async execute(interaction, instance) {
     await interaction.deferReply();
@@ -15,7 +19,7 @@ module.exports = {
 
       // Check if instance exists
       if (!instance) {
-        instance = bridgeInstanceManager.getInstanceByGuildId(guildId);
+        instance = InstanceManager.getInstanceByGuildId(guildId);
       }
 
       if (!instance) {
@@ -47,4 +51,6 @@ module.exports = {
       await interaction.editReply(`❌ Error disconnecting: ${error.message}`);
     }
   }
-};
+}
+
+module.exports = new DisconnectCommand();

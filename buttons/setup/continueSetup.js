@@ -59,10 +59,10 @@ class ContinueSetupButton extends Button {
       global.lastCustomSettings = null;
   
       // Get bridge instance manager
-      const bridgeInstanceManager = require('../core/InstanceManager');
+      const InstanceManager = require('../../core/InstanceManager');
       
       // Generate QR code with this configuration
-      const qrCode = await bridgeInstanceManager.generateQRCode({
+      const qrCode = await InstanceManager.generateQRCode({
         guildId,
         categoryId: setupParams.categoryId,
         transcriptChannelId: setupParams.transcriptChannelId,

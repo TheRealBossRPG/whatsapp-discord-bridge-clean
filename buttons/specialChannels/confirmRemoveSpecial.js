@@ -19,7 +19,7 @@ class ConfirmRemoveSpecialButton extends Button {
       const channelId = interaction.customId.replace('confirm_remove_special_', '');
       
       // Get the bridge instance manager
-      const bridgeInstanceManager = require('../core/InstanceManager');
+      const InstanceManager = require('../../core/InstanceManager');
       
       // Get the instance
       if (!instance || !instance.customSettings?.specialChannels) {
@@ -34,7 +34,7 @@ class ConfirmRemoveSpecialButton extends Button {
       delete instance.customSettings.specialChannels[channelId];
       
       // Save the settings
-      await bridgeInstanceManager.saveInstanceSettings(
+      await InstanceManager.saveInstanceSettings(
         instance.instanceId,
         instance.customSettings
       );

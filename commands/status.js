@@ -1,19 +1,22 @@
-// commands/status.js
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
-const bridgeInstanceManager = require("../modules/BridgeInstanceManager");
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const Command = require('../templates/Command');
+const InstanceManager = require("../core/InstanceManager");
 
-module.exports = {
-  data: new SlashCommandBuilder()
-    .setName("status")
-    .setDescription("Check the status of the WhatsApp connection"),
-  
+class StatusCommand extends Command {
+  constructor() {
+    super({
+      name: 'status',
+      description: 'Check the status of the WhatsApp connection'
+    });
+  }
+
   async execute(interaction, instance) {
     await interaction.deferReply();
 
     try {
-      // If no instance was provided, get it from the bridge manager
+      // If no instance was provided, get it from the instance manager
       if (!instance) {
-        instance = bridgeInstanceManager.getInstanceByGuildId(interaction.guild.id);
+        instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
       }
 
       if (!instance) {
@@ -89,4 +92,6 @@ module.exports = {
       await interaction.editReply(`❌ Error checking status: ${error.message}`);
     }
   }
-};
+}
+
+module.exports = new StatusCommand();

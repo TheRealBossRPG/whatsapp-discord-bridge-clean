@@ -2,7 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
-const MediaManager = require("./MediaManager");
+const MediaManager = require("../../utils/MediaManager");
 const { formatDisplayName, formatDirectoryName, cleanPhoneNumber } =
   MediaManager.formatFunctions;
 

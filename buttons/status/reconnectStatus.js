@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const Button = require('../../templates/Button');
-const bridgeInstanceManager = require('../../modules/BridgeInstanceManager');
+const InstanceManager = require('../../core/InstanceManager');
 
 class ReconnectStatusButton extends Button {
   constructor() {
@@ -22,7 +22,7 @@ class ReconnectStatusButton extends Button {
     try {
       // Get instance if not provided
       if (!instance) {
-        instance = bridgeInstanceManager.getInstanceByGuildId(interaction.guild.id);
+        instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
       }
       
       if (!instance) {

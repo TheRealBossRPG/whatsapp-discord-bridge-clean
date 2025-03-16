@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
-const MediaManager = require('./MediaManager');
+const MediaManager = require('../../utils/MediaManager');
 const { formatDisplayName, formatDirectoryName, cleanPhoneNumber } = MediaManager.formatFunctions;
 
 class BaileysDiscordHandler {
@@ -164,8 +164,8 @@ class BaileysDiscordHandler {
   // Then modify the formatMentionsForWhatsApp function
   formatMentionsForWhatsApp(content, guild, whatsappNumber) {
     // Get instance settings
-    const bridgeInstanceManager = require("./bridgeInstanceManager");
-    const instance = bridgeInstanceManager.getInstanceByGuildId(guild.id);
+    const InstanceManager = require("../../core/InstanceManager");
+    const instance = InstanceManager.getInstanceByGuildId(guild.id);
     const specialChannels = instance?.customSettings?.specialChannels || {};
     
     // Track mentioned special channels for follow-up messages
@@ -720,7 +720,7 @@ class BaileysDiscordHandler {
       const userCard = this.userCardManager.getUserCard(phoneNumber);
       
       // Use MediaManager for consistent name formatting
-      const MediaManager = require('./MediaManager');
+      const MediaManager = require('../../utils/MediaManager');
       const { formatDisplayName } = MediaManager.formatFunctions;
       
       // FIXED: Simple custom ID format that won't get parsed incorrectly
@@ -845,7 +845,7 @@ class BaileysDiscordHandler {
           const oldName = userCard?.name || '';
           
           // Use MediaManager's format functions for consistent formatting
-          const MediaManager = require('./MediaManager');
+          const MediaManager = require('../../utils/MediaManager');
           const { formatDisplayName } = MediaManager.formatFunctions;
           
           // CRITICAL FIX: Use clean names for everything
@@ -1074,7 +1074,7 @@ class BaileysDiscordHandler {
               try {
                 const userCard = this.userCardManager.getUserCard(sender);
                 if (userCard && userCard.name) {
-                  const MediaManager = require('./MediaManager');
+                  const MediaManager = require('../../utils/MediaManager');
                   username = MediaManager.formatFunctions.formatDisplayName(userCard.name);
                 }
               } catch (err) {
@@ -1236,7 +1236,7 @@ class BaileysDiscordHandler {
               const userCard = this.userCardManager.getUserCard(sender);
               if (userCard && userCard.name) {
                 // CRITICAL FIX: Clean the username
-                const MediaManager = require('./MediaManager');
+                const MediaManager = require('../../utils/MediaManager');
                 username = MediaManager.formatFunctions.formatDisplayName(userCard.name);
               }
             } catch (err) {

@@ -1,12 +1,13 @@
 const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const Command = require('../templates/Command');
+const { PermissionFlagsBits } = require('discord.js');
 
 class SetupCommand extends Command {
   constructor() {
     super({
       name: 'setup',
       description: 'Set up a WhatsApp connection for this server',
-      permissions: 'Administrator'
+      permissions: PermissionFlagsBits.Administrator
     });
   }
   
@@ -26,10 +27,10 @@ class SetupCommand extends Command {
       const guildId = interaction.guild.id;
 
       // Get the bridge instance manager
-      const bridgeInstanceManager = require('../core/InstanceManager');
+      const InstanceManager = require('../core/InstanceManager');
 
       // Check if an instance already exists
-      const existingInstance = bridgeInstanceManager.getInstanceByGuildId(guildId);
+      const existingInstance = InstanceManager.getInstanceByGuildId(guildId);
 
       if (existingInstance) {
         // Option to reconnect
@@ -86,7 +87,7 @@ class SetupCommand extends Command {
             });
 
             // Use existing configuration to generate a new QR code
-            const refreshedQR = await bridgeInstanceManager.generateQRCode({
+            const refreshedQR = await InstanceManager.generateQRCode({
               guildId,
               categoryId: existingInstance.categoryId,
               transcriptChannelId: existingInstance.transcriptChannelId,

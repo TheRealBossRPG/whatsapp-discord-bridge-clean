@@ -19,7 +19,7 @@ class ContinueDefaultButton extends Button {
       const setupParams = global.setupStorage.getSetupParams(guildId);
       
       // Get bridge instance manager
-      const bridgeInstanceManager = require('../core/InstanceManager');
+      const InstanceManager = require('../../core/InstanceManager');
       
       // Prepare default settings
       const customSettings = {
@@ -34,7 +34,7 @@ class ContinueDefaultButton extends Button {
       };
       
       // Generate QR code with this configuration
-      const qrCode = await bridgeInstanceManager.generateQRCode({
+      const qrCode = await InstanceManager.generateQRCode({
         guildId,
         categoryId: setupParams.categoryId,
         transcriptChannelId: setupParams.transcriptChannelId,

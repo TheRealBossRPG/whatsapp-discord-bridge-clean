@@ -34,8 +34,8 @@ class InteractionHandler {
     }
     
     try {
-      // Access bridgeInstanceManager
-      const bridgeInstanceManager = require('../modules/BridgeInstanceManager');
+      // Access InstanceManager
+      const InstanceManager = require('../core/InstanceManager');
       
       // Check channel parent ID first for more specific matching
       if (interaction.channel && interaction.channel.parentId) {
@@ -44,12 +44,12 @@ class InteractionHandler {
         // Check if Discord client has instance routes
         if (interaction.client._instanceRoutes && interaction.client._instanceRoutes.has(categoryId)) {
           const routeInfo = interaction.client._instanceRoutes.get(categoryId);
-          return routeInfo.instance || bridgeInstanceManager.getInstanceByGuildId(interaction.guildId);
+          return routeInfo.instance || InstanceManager.getInstanceByGuildId(interaction.guildId);
         }
       }
       
       // Fall back to guild ID matching
-      return bridgeInstanceManager.getInstanceByGuildId(interaction.guildId);
+      return InstanceManager.getInstanceByGuildId(interaction.guildId);
     } catch (error) {
       console.error("Error getting instance for interaction:", error);
       return null;

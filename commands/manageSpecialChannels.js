@@ -1,5 +1,6 @@
-const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
 const Command = require('../templates/Command');
+const InstanceManager = require('../core/InstanceManager');
 
 class ManageSpecialChannelsCommand extends Command {
   constructor() {
@@ -15,6 +16,10 @@ class ManageSpecialChannelsCommand extends Command {
     
     try {
       // Get instance
+      if (!instance) {
+        instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
+      }
+      
       if (!instance) {
         await interaction.editReply("❌ WhatsApp bridge is not set up for this server. Please use `/setup` first.");
         return;

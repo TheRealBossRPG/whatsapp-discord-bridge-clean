@@ -1,11 +1,7 @@
-// commands/edit-messages.js
-const { SlashCommandBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
 const Command = require('../templates/Command');
+const InstanceManager = require('../core/InstanceManager');
 
-/**
- * Edit Messages Command
- * Allows administrators to edit the messages sent by the WhatsApp bot
- */
 class EditMessagesCommand extends Command {
   constructor() {
     super({
@@ -15,11 +11,6 @@ class EditMessagesCommand extends Command {
     });
   }
 
-  /**
-   * Execute the command
-   * @param {Object} interaction - Discord interaction
-   * @param {Object} instance - Server instance
-   */
   async execute(interaction, instance) {
     await interaction.deferReply({ ephemeral: true });
 
@@ -34,6 +25,10 @@ class EditMessagesCommand extends Command {
       }
 
       // Check if an instance exists
+      if (!instance) {
+        instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
+      }
+      
       if (!instance) {
         await interaction.editReply({
           content: "❌ No WhatsApp bridge is configured for this server. Use `/setup` to set one up.",

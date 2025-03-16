@@ -38,7 +38,7 @@ class SpecialChannelModal extends Modal {
       }
       
       // Get the bridge instance manager
-      const bridgeInstanceManager = require('../core/InstanceManager');
+      const InstanceManager = require('../../core/InstanceManager');
       
       // Initialize customSettings.specialChannels if needed
       if (!instance.customSettings) {
@@ -55,7 +55,7 @@ class SpecialChannelModal extends Modal {
       };
       
       // Save the settings to persist this change
-      await bridgeInstanceManager.saveInstanceSettings(
+      await InstanceManager.saveInstanceSettings(
         instance.instanceId,
         instance.customSettings
       );

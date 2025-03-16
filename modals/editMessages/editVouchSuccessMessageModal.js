@@ -34,8 +34,8 @@ class EditVouchSuccessModal extends Modal {
       // The vouchHandler will read this from customSettings when needed
       
       // Save settings
-      const bridgeInstanceManager = require('../modules/BridgeInstanceManager');
-      await bridgeInstanceManager.saveInstanceSettings(
+      const InstanceManager = require('../../core/InstanceManager');
+      await InstanceManager.saveInstanceSettings(
         instance.instanceId,
         instance.customSettings
       );

@@ -47,6 +47,91 @@ class Instance {
       }
     });
   }
+
+  initializeTicketManager() {
+    try {
+      console.log(`[Instance:${this.instanceId}] Initializing ticket manager`);
+      
+      if (!this.managers.ticketManager) {
+        // Get required managers
+        const channelManager = this.managers.channelManager;
+        
+        // Create the ticket manager
+        const TicketManager = require('../modules/managers/TicketManager');
+        this.managers.ticketManager = new TicketManager(
+          channelManager, 
+          this.discordClient,
+          this.guildId,
+          this.categoryId,
+          {
+            instanceId: this.instanceId,
+            customIntroMessages: this.customSettings?.introMessage,
+            customCloseMessages: this.customSettings?.closingMessage
+          }
+        );
+        
+        // Connect managers to each other
+        if (this.managers.userCardManager) {
+          this.managers.ticketManager.setUserCardManager(this.managers.userCardManager);
+        }
+        
+        if (this.managers.transcriptManager) {
+          this.managers.ticketManager.setTranscriptManager(this.managers.transcriptManager);
+        }
+        
+        console.log(`[Instance:${this.instanceId}] Ticket manager initialized`);
+      }
+      
+      return this.managers.ticketManager;
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error initializing ticket manager: ${error.message}`);
+      return null;
+    }
+  }
+  
+  /**
+   * Clean temporary files for this instance
+   */
+  cleanTempFiles() {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      
+      console.log(`[Instance:${this.instanceId}] Cleaning temporary files`);
+      
+      // Get temp directory
+      const tempDir = this.paths.temp;
+      if (!tempDir || !fs.existsSync(tempDir)) {
+        console.log(`[Instance:${this.instanceId}] No temp directory found at ${tempDir}`);
+        return;
+      }
+      
+      // Read temp directory
+      const files = fs.readdirSync(tempDir);
+      let deletedCount = 0;
+      
+      // Delete each file
+      for (const file of files) {
+        const filePath = path.join(tempDir, file);
+        
+        try {
+          // Get file stats to check if it's a file (not a directory)
+          const stats = fs.statSync(filePath);
+          
+          if (stats.isFile()) {
+            fs.unlinkSync(filePath);
+            deletedCount++;
+          }
+        } catch (fileError) {
+          console.error(`[Instance:${this.instanceId}] Error deleting file ${filePath}: ${fileError.message}`);
+        }
+      }
+      
+      console.log(`[Instance:${this.instanceId}] Deleted ${deletedCount} temporary files`);
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error cleaning temp files: ${error.message}`);
+    }
+  }
   
   async initialize() {
     try {

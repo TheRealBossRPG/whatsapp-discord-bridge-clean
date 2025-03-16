@@ -34,8 +34,8 @@ class ToggleClosingMessagesButton extends Button {
       instance.customSettings.sendClosingMessage = newEnabled;
       
       // Save settings
-      const bridgeInstanceManager = require('../../../modules/BridgeInstanceManager');
-      await bridgeInstanceManager.saveInstanceSettings(
+      const InstanceManager = require('../../../core/InstanceManager');
+      await InstanceManager.saveInstanceSettings(
         instance.instanceId || interaction.guild.id,
         { sendClosingMessage: newEnabled }
       );
