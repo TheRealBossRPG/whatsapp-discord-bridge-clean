@@ -1,4 +1,4 @@
-// index.js - Main entry point
+// index.js - Main entry point (Updated)
 const express = require('express');
 const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
 const dotenv = require('dotenv');
@@ -147,6 +147,7 @@ global.lastCustomSettings = null;
 
 // Import core modules
 const bridgeInstanceManager = require('./core/InstanceManager');
+const interactionHandler = require('./core/interactionHandler');
 
 // Set up collections for commands, events, etc.
 discordClient.commands = new Collection();
@@ -262,71 +263,11 @@ async function registerCommands(client) {
   }
 }
 
-// Handle incoming interactions
+// Handle incoming interactions - UPDATED to use the new centralized interaction handler
 discordClient.on('interactionCreate', async (interaction) => {
   try {
-    if (interaction.isChatInputCommand()) {
-      // Handle commands
-      const command = discordClient.commands.get(interaction.commandName);
-      if (!command) return;
-      
-      // Get the appropriate instance
-      const instance = getInstanceForInteraction(interaction);
-      
-      await command.execute(interaction, instance);
-    } 
-    else if (interaction.isButton()) {
-      // Handle buttons
-      let buttonHandler = null;
-      
-      // First check exact matches
-      if (discordClient.buttons.has(interaction.customId)) {
-        buttonHandler = discordClient.buttons.get(interaction.customId);
-      } else {
-        // Try regex matches for dynamic button IDs
-        for (const [key, handler] of discordClient.buttons.entries()) {
-          if (handler.matches && typeof handler.matches === 'function' && 
-              handler.matches(interaction.customId)) {
-            buttonHandler = handler;
-            break;
-          } else if (handler.regex && handler.regex.test(interaction.customId)) {
-            buttonHandler = handler;
-            break;
-          }
-        }
-      }
-      
-      if (buttonHandler) {
-        const instance = getInstanceForInteraction(interaction);
-        await buttonHandler.execute(interaction, instance);
-      }
-    }
-    else if (interaction.isModalSubmit()) {
-      // Handle modal submissions
-      let modalHandler = null;
-      
-      // First check exact matches
-      if (discordClient.modals.has(interaction.customId)) {
-        modalHandler = discordClient.modals.get(interaction.customId);
-      } else {
-        // Try regex matches for dynamic modal IDs
-        for (const [key, handler] of discordClient.modals.entries()) {
-          if (handler.matches && typeof handler.matches === 'function' && 
-              handler.matches(interaction.customId)) {
-            modalHandler = handler;
-            break;
-          } else if (handler.regex && handler.regex.test(interaction.customId)) {
-            modalHandler = handler;
-            break;
-          }
-        }
-      }
-      
-      if (modalHandler) {
-        const instance = getInstanceForInteraction(interaction);
-        await modalHandler.execute(interaction, instance);
-      }
-    }
+    // Use the centralized interaction handler
+    await interactionHandler.handleInteraction(interaction);
   } catch (error) {
     console.error(`Error handling interaction:`, error);
     
@@ -410,37 +351,6 @@ discordClient.on('messageCreate', async (message) => {
     console.error('Error handling message:', error);
   }
 });
-
-// Helper function to get the instance for an interaction
-function getInstanceForInteraction(interaction) {
-  if (!interaction.guildId) return null;
-  
-  // IMPORTANT: Skip instance check for customize_messages_modal
-  // This needs to be processed even without an instance
-  if (interaction.isModalSubmit() && interaction.customId === "customize_messages_modal") {
-    console.log("Skipping instance check for customize_messages_modal");
-    return { customSettings: {}, isTemporary: true };
-  }
-  
-  try {
-    // Check channel parent ID first for more specific matching
-    if (interaction.channel && interaction.channel.parentId) {
-      const categoryId = interaction.channel.parentId;
-      
-      // Check if Discord client has instance routes
-      if (interaction.client._instanceRoutes && interaction.client._instanceRoutes.has(categoryId)) {
-        const routeInfo = interaction.client._instanceRoutes.get(categoryId);
-        return routeInfo.instance || bridgeInstanceManager.getInstanceByGuildId(interaction.guildId);
-      }
-    }
-    
-    // Fall back to guild ID matching
-    return bridgeInstanceManager.getInstanceByGuildId(interaction.guildId);
-  } catch (error) {
-    console.error("Error getting instance for interaction:", error);
-    return null;
-  }
-}
 
 // Express routes
 app.get('/', (req, res) => {

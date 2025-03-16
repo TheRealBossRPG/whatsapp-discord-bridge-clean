@@ -1,4 +1,4 @@
-// core/interactionHandler.js - Streamlined interaction handler
+// core/interactionHandler.js - Updated for new structure
 
 /**
  * Main Discord interaction handler
@@ -9,14 +9,13 @@ class InteractionHandler {
     // Load handler modules
     this.buttonLoader = require('./ButtonLoader');
     this.modalLoader = require('./ModalLoader');
+    this.selectMenuLoader = require('./SelectMenuLoader');
+    this.moduleLoader = require('./ModuleLoader');
     
-    // We'll add a selectMenuLoader when needed
-    // this.selectMenuLoader = require('./selectMenuLoader');
+    // Make sure the module loader loads all modules
+    this.moduleLoader.loadAll();
     
-    // Legacy command handler for slash commands
-    this.discordCommands = require('../modules/discordCommands');
-    
-    console.log('InteractionHandler initialized');
+    console.log('InteractionHandler initialized with all loaders');
   }
   
   /**
@@ -64,12 +63,24 @@ class InteractionHandler {
   async handleInteraction(interaction) {
     try {
       // Log basic interaction info
-      console.log(`Processing interaction: ${interaction.customId || 'No custom ID'} (Type: ${interaction.type})`);
+      console.log(`Processing interaction: ${interaction.customId || interaction.commandName || 'No ID'} (Type: ${interaction.type})`);
       
       // Get the server instance for this interaction
       const instance = this.getInstanceForInteraction(interaction);
       
-      // Route to the appropriate handler based on interaction type
+      // First try the module loader since it has all the new-style handlers
+      const handler = this.moduleLoader.findHandler(interaction);
+      if (handler) {
+        try {
+          await handler.execute(interaction, instance);
+          return true;
+        } catch (handlerError) {
+          console.error(`Error in module handler for ${interaction.customId || interaction.commandName}:`, handlerError);
+          // Continue to try other loaders as fallback
+        }
+      }
+      
+      // Route to the appropriate loader based on interaction type
       let handled = false;
       
       // Check interaction type
@@ -78,14 +89,11 @@ class InteractionHandler {
       } else if (interaction.isModalSubmit()) {
         handled = await this.modalLoader.handleInteraction(interaction, instance);
       } else if (interaction.isStringSelectMenu()) {
-        // We'll implement this when needed
-        // handled = await this.selectMenuLoader.handleInteraction(interaction, instance);
-        
-        // For now, pass to legacy command handler
-        handled = await this.discordCommands.handleCommand(interaction);
+        handled = await this.selectMenuLoader.handleInteraction(interaction, instance);
       } else if (interaction.isCommand()) {
-        // Slash commands
-        handled = await this.discordCommands.handleCommand(interaction);
+        // Legacy command handler
+        const discordCommands = require('../modules/discordCommands');
+        handled = await discordCommands.handleCommand(interaction);
       }
       
       // Fallback handler if needed
@@ -100,8 +108,10 @@ class InteractionHandler {
       
       // Log if not handled
       if (!handled) {
-        console.log(`Interaction not handled: ${interaction.customId || 'No custom ID'}`);
+        console.log(`Interaction not handled: ${interaction.customId || interaction.commandName || 'No ID'}`);
       }
+      
+      return handled;
     } catch (error) {
       console.error("Error in interaction handler:", error);
       console.error(error.stack);
@@ -126,6 +136,8 @@ class InteractionHandler {
       } catch (responseError) {
         console.error("Error sending error response:", responseError);
       }
+      
+      return false;
     }
   }
   
