@@ -1,12 +1,13 @@
+// utils/qrCodeUtils.js
 const fs = require('fs');
 const path = require('path');
 const qrcode = require('qrcode');
-const { AttachmentBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
 /**
- * Generate and display QR code
+ * Generate and display QR code for WhatsApp connection
  * @param {Object} interaction - Discord interaction
- * @param {string} qrCode - QR code data
+ * @param {string} qrCode - QR code string data
  * @param {string} guildId - Guild ID
  * @returns {Promise<boolean>} - Success status
  */
@@ -36,7 +37,7 @@ async function displayQRCode(interaction, qrCode, guildId) {
     });
 
     // Create directory for QR code if it doesn't exist
-    const instancesDir = path.join(__dirname, '..', 'instances');
+    const instancesDir = path.join(__dirname, "..", "instances");
     const guildDir = path.join(instancesDir, guildId);
 
     if (!fs.existsSync(guildDir)) {
@@ -129,6 +130,9 @@ async function displayQRCode(interaction, qrCode, guildId) {
       embedData: embed.toJSON(),
     });
 
+    // Set up connection status updates
+    startConnectionStatusUpdates(guildId, interaction, embed);
+
     return true;
   } catch (error) {
     console.error("Error displaying QR code in Discord:", error);
@@ -148,4 +152,70 @@ async function displayQRCode(interaction, qrCode, guildId) {
   }
 }
 
-module.exports = { displayQRCode };
+/**
+ * Set up connection status updates for the QR code message
+ * @param {string} guildId - Guild ID
+ * @param {Object} interaction - Discord interaction
+ * @param {Object} embed - Original embed
+ */
+function startConnectionStatusUpdates(guildId, interaction, embed) {
+  const bridgeInstanceManager = require('../modules/BridgeInstanceManager');
+  
+  // Set up a connection status updater for this instance
+  const instance = bridgeInstanceManager.getInstanceByGuildId(guildId);
+  if (instance) {
+    // Set up onReady handler to update message
+    instance.onReady(async () => {
+      try {
+        console.log(
+          `WhatsApp connected for guild ${guildId}, updating QR code message`
+        );
+
+        // Get stored data
+        const storedData = global.qrCodeMessages.get(guildId);
+        if (!storedData) {
+          console.log(
+            `No stored QR code message data found for guild ${guildId}`
+          );
+          return;
+        }
+
+        // Create a success embed based on the original
+        const successEmbed = new EmbedBuilder(storedData.embedData)
+          .setColor(0x57f287) // Discord green for success
+          .setTitle("📱 WhatsApp Connected Successfully!")
+          .setDescription(
+            "**Your WhatsApp account is now connected to this Discord server!**"
+          )
+          .spliceFields(1, 1, {
+            name: "🔄 Connection Status",
+            value:
+              "`✅ Connected and ready!`\nYour WhatsApp messages will now appear in channels within the configured category.",
+          });
+
+        // Update the interaction reply
+        await interaction.editReply({
+          content: "",
+          embeds: [successEmbed],
+          files: [], // Remove QR code
+          components: [], // Remove buttons
+        });
+
+        // Clean up the stored data
+        global.qrCodeMessages.delete(guildId);
+
+        console.log(
+          `QR code message updated to show successful connection for guild ${guildId}`
+        );
+      } catch (updateError) {
+        console.error(
+          `Error updating QR code message on connection: ${updateError.message}`
+        );
+      }
+    });
+  }
+}
+
+module.exports = {
+  displayQRCode
+};
