@@ -1,5 +1,5 @@
 // modals/editWelcomeModal.js
-const Modal = require('../templates/Modal');
+const Modal = require('../../templates/Modal');
 
 class EditWelcomeModal extends Modal {
   constructor() {

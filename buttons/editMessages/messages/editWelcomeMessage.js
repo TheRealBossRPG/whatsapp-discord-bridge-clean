@@ -1,5 +1,5 @@
 const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
-const Button = require('../templates/Button');
+const Button = require('.../../../templates/Button');
 
 class EditWelcomeMessageButton extends Button {
   constructor() {

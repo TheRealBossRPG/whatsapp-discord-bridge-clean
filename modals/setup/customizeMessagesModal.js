@@ -1,5 +1,5 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const Modal = require('../templates/Modal');
+const Modal = require('../../templates/Modal');
 
 class CustomizeMessagesModal extends Modal {
   constructor() {

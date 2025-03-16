@@ -1,5 +1,5 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const Button = require('../templates/Button');
+const Button = require('../../../templates/Button');
 
 class EditWelcomeCategoryButton extends Button {
   constructor() {

@@ -1,5 +1,5 @@
 // modals/editReopenModal.js
-const Modal = require('../templates/Modal');
+const Modal = require('../../templates/Modal');
 
 class EditReopenModal extends Modal {
   constructor() {

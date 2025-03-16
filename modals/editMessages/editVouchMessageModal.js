@@ -1,5 +1,5 @@
 // modals/editVouchModal.js
-const Modal = require('../templates/Modal');
+const Modal = require('../../templates/Modal');
 
 class EditVouchModal extends Modal {
   constructor() {

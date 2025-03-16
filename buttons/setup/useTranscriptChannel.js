@@ -1,5 +1,5 @@
 const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
-const Button = require('../templates/Button');
+const Button = require('../../templates/Button');
 
 class UseTranscriptChannelButton extends Button {
   constructor() {

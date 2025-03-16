@@ -1,4 +1,4 @@
-const Modal = require('../templates/Modal');
+const Modal = require('../../templates/Modal');
 
 class SpecialChannelModal extends Modal {
   constructor() {

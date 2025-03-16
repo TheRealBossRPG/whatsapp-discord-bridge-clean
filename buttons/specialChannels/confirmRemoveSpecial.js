@@ -1,4 +1,4 @@
-const Button = require('../templates/Button');
+const Button = require('../../templates/Button');
 
 class ConfirmRemoveSpecialButton extends Button {
   constructor() {
