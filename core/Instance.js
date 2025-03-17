@@ -1,3 +1,4 @@
+// core/Instance.js (Fixed QR Code Handling)
 const fs = require('fs');
 const path = require('path');
 const EventBus = require('./EventBus');
@@ -23,6 +24,11 @@ class Instance {
     this.managers = {};
     this.handlers = {};
     this.clients = {};
+    
+    // QR code handling
+    this.qrCodeListeners = new Set();
+    this.lastQrCode = null;
+    this.qrCodeTimer = null;
     
     // Initialize directories
     this.initializeDirectories();
@@ -55,23 +61,47 @@ class Instance {
         return;
       }
       
-      // Handle QR code - use off() first to prevent duplicate handlers
-      this.clients.whatsAppClient.off('qr');
+      // Remove any existing handlers to prevent duplication
+      this.clients.whatsAppClient.removeAllListeners('qr');
+      this.clients.whatsAppClient.removeAllListeners('ready');
+      this.clients.whatsAppClient.removeAllListeners('disconnected');
+      this.clients.whatsAppClient.removeAllListeners('message');
+      
+      // Handle QR code - FIXED
       this.clients.whatsAppClient.on('qr', (qrCode) => {
-        console.log(`[Instance:${this.instanceId}] New QR code generated`);
+        // Store the last QR code
+        this.lastQrCode = qrCode;
+        
+        // Clear previous timer if any
+        if (this.qrCodeTimer) {
+          clearTimeout(this.qrCodeTimer);
+        }
+        
+        // Set a timer to clear QR code after 45 seconds
+        this.qrCodeTimer = setTimeout(() => {
+          this.lastQrCode = null;
+        }, 45000);
+        
+        console.log(`[Instance:${this.instanceId}] New QR code generated (${qrCode.length} chars)`);
         this.events.emit('qr', qrCode);
       });
       
       // Handle ready event
-      this.clients.whatsAppClient.off('ready');
       this.clients.whatsAppClient.on('ready', () => {
         console.log(`[Instance:${this.instanceId}] WhatsApp client ready`);
+        
+        // Clear QR code and timer
+        this.lastQrCode = null;
+        if (this.qrCodeTimer) {
+          clearTimeout(this.qrCodeTimer);
+          this.qrCodeTimer = null;
+        }
+        
         this.connected = true;
         this.events.emit('ready');
       });
       
       // Handle disconnected event
-      this.clients.whatsAppClient.off('disconnected');
       this.clients.whatsAppClient.on('disconnected', () => {
         console.log(`[Instance:${this.instanceId}] WhatsApp client disconnected`);
         this.connected = false;
@@ -79,10 +109,13 @@ class Instance {
       });
       
       // Handle message events
-      this.clients.whatsAppClient.off('message');
       this.clients.whatsAppClient.on('message', (message) => {
-        if (this.handlers.whatsAppHandler) {
-          this.handlers.whatsAppHandler.handleMessage(message);
+        try {
+          if (this.handlers.whatsAppHandler) {
+            this.handlers.whatsAppHandler.handleMessage(message);
+          }
+        } catch (error) {
+          console.error(`[Instance:${this.instanceId}] Error in message handler:`, error);
         }
       });
       
@@ -159,6 +192,11 @@ class Instance {
         const filePath = path.join(tempDir, file);
         
         try {
+          // Skip qrcode.png file
+          if (file === 'qrcode.png') {
+            continue;
+          }
+          
           // Get file stats to check if it's a file (not a directory)
           const stats = fs.statSync(filePath);
           
@@ -270,6 +308,9 @@ class Instance {
         if (this.customSettings.introMessage) {
           this.handlers.whatsAppHandler.introMessage = this.customSettings.introMessage;
         }
+        if (this.customSettings.reopenTicketMessage) {
+          this.handlers.whatsAppHandler.reopenTicketMessage = this.customSettings.reopenTicketMessage;
+        }
       }
       
       // Initialize Discord handler
@@ -292,6 +333,10 @@ class Instance {
       if (this.handlers.vouchHandler) {
         this.handlers.discordHandler.vouchHandler = this.handlers.vouchHandler;
       }
+      
+      // Set WhatsApp client in managers
+      this.managers.channelManager.setWhatsAppClient(this.clients.whatsAppClient);
+      this.managers.userCardManager.setWhatsAppClient(this.clients.whatsAppClient);
       
       // 4. Load instance settings
       await this.loadSettings();
@@ -423,6 +468,11 @@ class Instance {
         }
       }
       
+      // Apply special channels to ChannelManager if present
+      if (settings.specialChannels && this.managers.channelManager) {
+        this.managers.channelManager.setSpecialChannels(settings.specialChannels);
+      }
+      
       return true;
     } catch (error) {
       console.error(`Error applying settings for instance ${this.instanceId}: ${error.message}`);
@@ -430,6 +480,7 @@ class Instance {
     }
   }
   
+  // FIXED: QR Code handling
   async connect(showQrCode = false) {
     try {
       console.log(`[Instance:${this.instanceId}] Connecting WhatsApp...`);
@@ -455,27 +506,48 @@ class Instance {
           authFolder: this.paths.auth,
           tempDir: this.paths.temp,
           instanceId: this.instanceId,
-          maxRetries: 10  // Increased retries for better stability
+          maxRetries: 5
         });
-  
-        // Set up event handlers
-        this.setupWhatsAppClientEvents();
+      }
+      
+      // Update component relationships
+      this.managers.channelManager.setWhatsAppClient(this.clients.whatsAppClient);
+      this.managers.userCardManager.setWhatsAppClient(this.clients.whatsAppClient);
+      
+      if (this.handlers.vouchHandler) {
+        this.handlers.vouchHandler.whatsAppClient = this.clients.whatsAppClient;
+      }
+      
+      if (this.handlers.discordHandler) {
+        this.handlers.discordHandler.whatsAppClient = this.clients.whatsAppClient;
       }
   
-      // Set a flag on the WhatsApp client to indicate if QR codes should be shown
-      if (this.clients.whatsAppClient && typeof this.clients.whatsAppClient.setShowQrCode === 'function') {
+      // Set up event handlers - BEFORE initialization
+      this.setupWhatsAppClientEvents();
+      
+      // Set showQrCode flag on client if method available
+      if (typeof this.clients.whatsAppClient.setShowQrCode === 'function') {
         this.clients.whatsAppClient.setShowQrCode(showQrCode);
       }
   
-      // IMPROVED: Better auth detection
-      const authExists = [
-        path.join(this.paths.auth, 'creds.json'),
-        path.join(this.paths.auth, 'baileys_auth', 'creds.json')
-      ].some(file => fs.existsSync(file));
-      
-      if (!authExists && !showQrCode) {
-        console.log(`[Instance:${this.instanceId}] No auth found and QR code display not requested. Skipping connection.`);
-        return false;
+      // Check if we need to force new QR code generation
+      if (showQrCode) {
+        // Clean existing auth files if we want a QR code
+        const authFiles = [
+          path.join(this.paths.auth, 'creds.json'),
+          path.join(this.paths.auth, 'baileys_auth', 'creds.json')
+        ];
+        
+        authFiles.forEach(file => {
+          if (fs.existsSync(file)) {
+            try {
+              fs.unlinkSync(file);
+              console.log(`[Instance:${this.instanceId}] Deleted auth file to force QR generation: ${file}`);
+            } catch (e) {
+              console.error(`[Instance:${this.instanceId}] Error deleting auth file: ${e.message}`);
+            }
+          }
+        });
       }
   
       // Initialize WhatsApp client
@@ -484,7 +556,7 @@ class Instance {
       // Set connected state
       this.connected = success && this.clients.whatsAppClient.isReady;
   
-      // IMPROVED: Properly handle already authenticated case
+      // Handle already authenticated case
       if (this.clients.whatsAppClient.isReady) {
         console.log(`[Instance:${this.instanceId}] WhatsApp already authenticated`);
         
@@ -503,81 +575,111 @@ class Instance {
   
   
   async disconnect(logOut = false) {
-      try {
-        console.log(`[Instance:${this.instanceId}] Disconnecting WhatsApp...${logOut ? ' (with full logout)' : ''}`);
+    try {
+      console.log(`[Instance:${this.instanceId}] Disconnecting WhatsApp...${logOut ? ' (with full logout)' : ''}`);
       
-        if (this.baileysClient) {
-          try {
-            // Properly disconnect the client
-            await this.baileysClient.disconnect(logOut);
-            
-            // If we're doing a full logout, clean up auth files
-            if (logOut) {
-              const authPath = path.join(this.paths.auth, 'creds.json');
-              const baileysAuthDir = path.join(this.paths.auth, 'baileys_auth');
-              
-              // Delete baileys auth files if they exist
-              if (fs.existsSync(baileysAuthDir)) {
-                const files = fs.readdirSync(baileysAuthDir);
-                files.forEach(file => {
-                  try {
-                    fs.unlinkSync(path.join(baileysAuthDir, file));
-                    console.log(`[Instance:${this.instanceId}] Deleted auth file: ${file}`);
-                  } catch (e) {
-                    console.error(`[Instance:${this.instanceId}] Error deleting auth file ${file}:`, e);
-                  }
-                });
-              }
-              
-              // Delete primary creds file if it exists
-              if (fs.existsSync(authPath)) {
-                fs.unlinkSync(authPath);
-                console.log(`[Instance:${this.instanceId}] Deleted creds.json file`);
-              }
-            }
-          } catch (e) {
-            console.error(`[Instance:${this.instanceId}] Error during disconnect:`, e);
-          }
-        }
-      
-        // Clean up Discord routes
-        if (this.discordClient && this.discordClient._instanceRoutes) {
-          this.discordClient._instanceRoutes.delete(this.categoryId);
-        }
-      
-        // Clean temp files
-        this.cleanTempFiles();
-      
+      if (!this.clients.whatsAppClient) {
+        console.log(`[Instance:${this.instanceId}] No WhatsApp client to disconnect`);
         return true;
-      } catch (error) {
-        console.error(
-          `[Instance:${this.instanceId}] Error disconnecting:`,
-          error
-        );
-        return false;
       }
+      
+      // Clear QR code
+      this.lastQrCode = null;
+      if (this.qrCodeTimer) {
+        clearTimeout(this.qrCodeTimer);
+        this.qrCodeTimer = null;
+      }
+      
+      // Properly disconnect the client
+      await this.clients.whatsAppClient.disconnect(logOut);
+      
+      // If we're doing a full logout, clean up auth files
+      if (logOut) {
+        const authPath = path.join(this.paths.auth, 'creds.json');
+        const baileysAuthDir = path.join(this.paths.auth, 'baileys_auth');
+        
+        // Delete baileys auth files if they exist
+        if (fs.existsSync(baileysAuthDir)) {
+          const files = fs.readdirSync(baileysAuthDir);
+          files.forEach(file => {
+            try {
+              fs.unlinkSync(path.join(baileysAuthDir, file));
+              console.log(`[Instance:${this.instanceId}] Deleted auth file: ${file}`);
+            } catch (e) {
+              console.error(`[Instance:${this.instanceId}] Error deleting auth file ${file}:`, e);
+            }
+          });
+        }
+        
+        // Delete primary creds file if it exists
+        if (fs.existsSync(authPath)) {
+          fs.unlinkSync(authPath);
+          console.log(`[Instance:${this.instanceId}] Deleted creds.json file`);
+        }
+      }
+      
+      // Clean up Discord routes
+      if (this.discordClient && this.discordClient._instanceRoutes) {
+        this.discordClient._instanceRoutes.delete(this.categoryId);
+      }
+      
+      // Clean temp files
+      this.cleanTempFiles();
+      
+      // Update state
+      this.connected = false;
+      
+      return true;
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error disconnecting:`, error);
+      
+      // Force update state on error
+      this.connected = false;
+      
+      return false;
     }
+  }
   
   isConnected() {
     return this.connected && this.clients.whatsAppClient && this.clients.whatsAppClient.isReady;
   }
   
   onQRCode(callback) {
-    if (this.clients.whatsAppClient) {
-      this.clients.whatsAppClient.on('qr', callback);
+    if (!this.events) {
+      this.events = new EventBus();
+    }
+    
+    // Register the callback
+    this.events.on('qr', callback);
+    
+    // If we already have a QR code, call it immediately
+    if (this.lastQrCode) {
+      callback(this.lastQrCode);
+    }
+    
+    // Save the callback to be able to remove it later
+    this.qrCodeListeners.add(callback);
+  }
+  
+  offQRCode(callback) {
+    if (this.events && callback) {
+      this.events.off('qr', callback);
+      this.qrCodeListeners.delete(callback);
     }
   }
   
   onReady(callback) {
-    if (this.clients.whatsAppClient) {
-      this.clients.whatsAppClient.on('ready', callback);
+    if (!this.events) {
+      this.events = new EventBus();
     }
+    this.events.on('ready', callback);
   }
   
   onDisconnect(callback) {
-    if (this.clients.whatsAppClient) {
-      this.clients.whatsAppClient.on('disconnected', callback);
+    if (!this.events) {
+      this.events = new EventBus();
     }
+    this.events.on('disconnect', callback);
   }
   
   getStatus() {
@@ -589,7 +691,9 @@ class Instance {
       registeredUsers: this.managers.userCardManager ? this.managers.userCardManager.getUserCardCount() : 0,
       transcriptChannel: this.transcriptChannelId,
       vouchChannel: this.vouchChannelId,
-      paths: this.paths
+      categoryId: this.categoryId,
+      paths: this.paths,
+      hasQrCode: !!this.lastQrCode
     };
   }
 }

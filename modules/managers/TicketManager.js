@@ -1,1399 +1,705 @@
-// modules/ticketManager.js - FIXED FOR USERNAME HANDLING
-const fs = require("fs");
-const path = require("path");
-const MediaManager = require("../../utils/MediaManager");
-const { formatDisplayName, formatDirectoryName, cleanPhoneNumber } =
-  MediaManager.formatFunctions;
-const {
-  ChannelType,
-  EmbedBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ActionRowBuilder,
-  PermissionFlagsBits,
-} = require("discord.js");
+// modules/managers/TicketManager.js
+const fs = require('fs');
+const path = require('path');
+const { EmbedBuilder, AttachmentBuilder, PermissionsBitField } = require('discord.js');
 
+/**
+ * Manages WhatsApp support tickets in Discord
+ */
 class TicketManager {
-  constructor(
-    channelManager,
-    discordClient,
-    guildId,
-    categoryId,
-    options = {}
-  ) {
-    // Store instance ID
-    this.instanceId =
-      options.instanceId || channelManager?.instanceId || "default";
-
-    // Log critical initialization info
-    console.log(`[TicketManager:${
-      this.instanceId
-    }] Initializing TicketManager with:
-      - channelManager: ${channelManager ? "Available" : "Missing"}
-      - discordClient: ${discordClient ? "Available" : "Missing"}
-      - guildId: ${guildId}
-      - categoryId: ${categoryId}`);
-
-    // Check for Discord client very early
-    if (!discordClient) {
-      console.error(
-        `[TicketManager:${this.instanceId}] CRITICAL ERROR: Discord client is null in constructor!`
-      );
-      throw new Error("Discord client is required for TicketManager");
-    }
-
+  /**
+   * Create a new ticket manager
+   * @param {Object} channelManager - Channel manager instance
+   * @param {Object} discordClient - Discord client
+   * @param {string} guildId - Guild ID
+   * @param {string} categoryId - Category ID for ticket channels
+   * @param {Object} options - Additional options
+   */
+  constructor(channelManager, discordClient, guildId, categoryId, options = {}) {
     this.channelManager = channelManager;
     this.discordClient = discordClient;
     this.guildId = guildId;
     this.categoryId = categoryId;
-
-    // Create MediaManager instance for proper name formatting
-    try {
-      this.mediaManager = new MediaManager({
-        instanceId: this.instanceId,
-        baseDir: path.join(
-          __dirname,
-          "..",
-          "instances",
-          this.instanceId,
-          "transcripts"
-        ),
-      });
-    } catch (e) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error creating MediaManager: ${e.message}`
-      );
-      // Fallback - use the static format functions
-    }
-
-    // Add a property to track which tickets are currently being closed
-    this.closingTickets = new Set();
-
-    // Add a property to track transcript generation to prevent duplicates
-    this.generatingTranscripts = new Set();
-
-    // Ticket status tracking (for keeping track of closed tickets)
-    this.ticketStatus = new Map();
-
-    // Message queue system for transcript restoration
-    this.messageQueue = new Map(); // Maps channelId to array of queued messages
-    this.restoringChannels = new Set(); // Tracks which channels are currently restoring messages
-    this.queueOrder = new Map(); // Maps channelId to message sequence number
-
-    // ADDED: Custom intro message options
-    this.customIntroMessages = options.customIntroMessages;
-    this.customCloseMessages = options.customCloseMessages;
-
-    // Create temp directory if it doesn't exist
-    this.tempDir =
-      options.tempDir ||
-      path.join(__dirname, "..", "instances", this.instanceId, "temp");
-    if (!fs.existsSync(this.tempDir)) {
-      fs.mkdirSync(this.tempDir, { recursive: true });
-    }
-
-    // Configure storage file
-    this.statusFilePath =
-      options.statusFilePath ||
-      path.join(
-        __dirname,
-        "..",
-        "instances",
-        this.instanceId,
-        "ticket_status.json"
-      );
-
-    // VALIDATE: Verify client immediately
-    this.verifyDiscordClient();
-
-    // Load saved ticket status
-    this.loadTicketStatus();
+    
+    // Optional components
+    this.userCardManager = null;
+    this.transcriptManager = null;
+    
+    // Instance ID
+    this.instanceId = options.instanceId || 'default';
+    
+    // Custom messages
+    this.customIntroMessage = options.customIntroMessages || null;
+    this.customCloseMessage = options.customCloseMessages || null;
+    
+    // Default messages
+    this.defaultIntroMessage = "# 📋 New Support Ticket\n**A new ticket has been created for {name}**\nWhatsApp: `{phoneNumber}`\n\nSupport agents will respond as soon as possible.";
+    this.defaultCloseMessage = "Thank you for contacting support. Your ticket is now being closed and a transcript will be saved.";
+    
+    // Active tickets count
+    this.activeTickets = 0;
+    
+    console.log(`[TicketManager:${this.instanceId}] Initialized with category ID: ${categoryId}`);
   }
-
+  
   /**
-   * Get formatted intro message with variables replaced
-   * @param {string} username - Username to insert
-   * @param {string} phoneNumber - Phone number to insert
-   * @returns {string} - Formatted message
+   * Set user card manager
+   * @param {Object} userCardManager - User card manager
    */
-  getFormattedIntroMessage(username, phoneNumber) {
-    // Use custom message if available, otherwise use default
-    let message =
-      this.customIntroMessages ||
-      "# 📋 New Support Ticket\n**A new ticket has been created for {name}**\nWhatsApp: `{phoneNumber}`\n\nSupport agents will respond as soon as possible.";
-
-    // Replace template variables
-    return message
-      .replace(/{name}/g, username)
-      .replace(/{username}/g, username)
-      .replace(/{phoneNumber}/g, phoneNumber);
+  setUserCardManager(userCardManager) {
+    this.userCardManager = userCardManager;
   }
-
+  
   /**
-   * Get formatted closing message with variables replaced
-   * @param {string} username - Username to insert
-   * @param {string} phoneNumber - Phone number to insert
-   * @returns {string} - Formatted message
+   * Set transcript manager
+   * @param {Object} transcriptManager - Transcript manager
    */
-  getFormattedCloseMessage(username, phoneNumber) {
-    // Use custom message if available, otherwise use default
-    let message =
-      this.customCloseMessages ||
-      "Thank you for contacting support. Your ticket is now being closed and a transcript will be saved.";
-
-    // Replace template variables
-    return message
-      .replace(/{name}/g, username)
-      .replace(/{username}/g, username)
-      .replace(/{phoneNumber}/g, phoneNumber);
+  setTranscriptManager(transcriptManager) {
+    this.transcriptManager = transcriptManager;
   }
-
-  // Set custom introduction message template
-  setCustomIntroMessage(template) {
-    this.customIntroMessages = template;
-    console.log(
-      `[TicketManager:${this.instanceId}] Set custom intro message template`
-    );
-  }
-
+  
   /**
-   * Set custom closing message for tickets
-   * @param {string} template - Template message
+   * Format channel name from user name
+   * @param {string} name - User name
+   * @returns {string} - Formatted channel name
    */
-  setCustomCloseMessage(template) {
-    this.customCloseMessages = template;
-    console.log(
-      `[TicketManager:${this.instanceId}] Set custom close message template`
-    );
-  }
-
-  verifyDiscordClient() {
-    try {
-      if (!this.discordClient) {
-        console.error(
-          `[TicketManager:${this.instanceId}] CRITICAL ERROR: Discord client is null or undefined`
-        );
-        return false;
-      }
-
-      // Check if the discord client is an object and has the expected properties
-      if (typeof this.discordClient !== "object") {
-        console.error(
-          `[TicketManager:${this.instanceId}] CRITICAL ERROR: Discord client is not an object`
-        );
-        return false;
-      }
-
-      if (!this.discordClient.guilds) {
-        console.error(
-          `[TicketManager:${this.instanceId}] CRITICAL ERROR: Discord client guilds collection is null or undefined`
-        );
-        return false;
-      }
-
-      // Check if we can access the guilds cache
-      if (!this.discordClient.guilds.cache) {
-        console.error(
-          `[TicketManager:${this.instanceId}] CRITICAL ERROR: Discord client guilds cache is missing`
-        );
-        return false;
-      }
-
-      // Try to get the guild
-      try {
-        const guild = this.discordClient.guilds.cache.get(this.guildId);
-        if (!guild) {
-          // Try to fetch it directly as a fallback
-          console.warn(
-            `[TicketManager:${this.instanceId}] Guild with ID ${this.guildId} not found in cache, attempting to fetch`
-          );
-          this.discordClient.guilds
-            .fetch(this.guildId)
-            .then((g) => {
-              if (g) {
-                console.log(
-                  `[TicketManager:${this.instanceId}] Successfully fetched guild: ${g.name}`
-                );
-              } else {
-                console.error(
-                  `[TicketManager:${this.instanceId}] Guild with ID ${this.guildId} could not be fetched`
-                );
-              }
-            })
-            .catch((e) => {
-              console.error(
-                `[TicketManager:${this.instanceId}] Error fetching guild: ${e.message}`
-              );
-            });
-          return false;
-        }
-
-        // Check category
-        const category = guild.channels.cache.get(this.categoryId);
-        if (!category) {
-          console.error(
-            `[TicketManager:${this.instanceId}] Could not find category with ID ${this.categoryId}`
-          );
-          return false;
-        }
-
-        console.log(
-          `[TicketManager:${this.instanceId}] Verified Discord client connection to guild ${guild.name}, category: ${category.name}`
-        );
-        return true;
-      } catch (error) {
-        console.error(
-          `[TicketManager:${this.instanceId}] Error getting guild from Discord client:`,
-          error
-        );
-        return false;
-      }
-    } catch (error) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error verifying Discord client:`,
-        error
-      );
-      return false;
+  formatChannelName(name) {
+    // Remove non-alphanumeric characters, replace spaces with hyphens, lowercase
+    let channelName = name.toLowerCase()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .substring(0, 20);  // Discord channel name max length
+    
+    // Ensure it starts with a letter or number
+    if (!/^[a-z0-9]/.test(channelName)) {
+      channelName = `t-${channelName}`;
     }
-  }
-
-  // Helper function to force cleanup a file
-  forceCleanupFile(filePath) {
-    if (!filePath) return false;
-
-    try {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log(
-          `[TicketManager:${this.instanceId}] 🗑️ DELETED: ${filePath}`
-        );
-
-        // Double-check it's really gone
-        if (fs.existsSync(filePath)) {
-          console.error(
-            `[TicketManager:${this.instanceId}] ⚠️ File still exists after deletion attempt: ${filePath}`
-          );
-          // Try one more time
-          fs.unlinkSync(filePath);
-          console.log(
-            `[TicketManager:${this.instanceId}] 🗑️ Second deletion attempt for: ${filePath}`
-          );
-          return !fs.existsSync(filePath);
-        }
-        return true;
-      } else {
-        return true; // Consider it a success if the file doesn't exist
-      }
-    } catch (e) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error deleting ${filePath}: ${e.message}`
-      );
-      return false;
+    
+    // Remove leading/trailing hyphens
+    channelName = channelName.replace(/^-+|-+$/g, '');
+    
+    // If empty after formatting, use a default
+    if (!channelName) {
+      channelName = 'support-ticket';
     }
-  }
-
-  // Ticket status management
-  loadTicketStatus() {
-    try {
-      if (fs.existsSync(this.statusFilePath)) {
-        const data = JSON.parse(fs.readFileSync(this.statusFilePath, "utf8"));
-        this.ticketStatus = new Map(Object.entries(data));
-        console.log(
-          `[TicketManager:${this.instanceId}] Loaded ${this.ticketStatus.size} ticket statuses from file`
-        );
-      } else {
-        console.log(
-          `[TicketManager:${this.instanceId}] No ticket status file found, starting with empty map`
-        );
-        this.ticketStatus = new Map();
-        // Create empty file
-        fs.writeFileSync(this.statusFilePath, "{}", "utf8");
-        console.log(
-          `[TicketManager:${this.instanceId}] Created empty ticket status file`
-        );
-      }
-    } catch (error) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error loading ticket status:`,
-        error
-      );
-      this.ticketStatus = new Map();
-
-      // Create empty file if it doesn't exist
-      if (!fs.existsSync(this.statusFilePath)) {
-        fs.writeFileSync(this.statusFilePath, "{}", "utf8");
-        console.log(
-          `[TicketManager:${this.instanceId}] Created empty ticket status file`
-        );
-      }
-    }
-  }
-
-  saveTicketStatus() {
-    try {
-      const statusObj = Object.fromEntries(this.ticketStatus);
-      fs.writeFileSync(
-        this.statusFilePath,
-        JSON.stringify(statusObj, null, 2),
-        "utf8"
-      );
-      console.log(
-        `[TicketManager:${this.instanceId}] Saved ${this.ticketStatus.size} ticket statuses to file`
-      );
-    } catch (error) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error saving ticket status:`,
-        error
-      );
-    }
-  }
-
-  // CRITICAL FIX: Format username for channel name with proper phone number handling
-  // This should use the clean name without phone numbers
-  formatUsernameForChannel(username) {
-    if (!username) {
-      return "unknown-user";
-    }
-
-    // CRITICAL: Use MediaManager's clean format functions
-    const cleanName = formatDisplayName(username);
-
-    // Create sanitized username for channel
-    let channelName = cleanName.replace(/\s+/g, "-").toLowerCase();
-
-    // Remove any non-alphanumeric characters except hyphens
-    channelName = channelName.replace(/[^a-z0-9-]/g, "");
-
-    // Ensure it's not too long
-    if (channelName.length > 25) {
-      channelName = channelName.substring(0, 25);
-    }
-
+    
     return channelName;
   }
-
-  // Set a reference to the userCardManager if not set in constructor
-  setUserCardManager(manager) {
-    this.userCardManager = manager;
-    console.log(
-      `[TicketManager:${this.instanceId}] Set userCardManager: ${
-        manager ? "Successful" : "Failed (null)"
-      }`
-    );
+  
+  /**
+   * Set custom intro message for new tickets
+   * @param {string} message - Custom message
+   */
+  setCustomIntroMessage(message) {
+    this.customIntroMessage = message;
   }
-
-  // Set a reference to the transcriptManager if not set in constructor
-  setTranscriptManager(manager) {
-    this.transcriptManager = manager;
-    console.log(
-      `[TicketManager:${this.instanceId}] Set transcriptManager: ${
-        manager ? "Successful" : "Failed (null)"
-      }`
-    );
+  
+  /**
+   * Set custom close message for tickets
+   * @param {string} message - Custom message
+   */
+  setCustomCloseMessage(message) {
+    this.customCloseMessage = message;
   }
-
-  // Check for existing ticket
-  async getExistingTicket(phoneNumber) {
+  
+  /**
+   * Get guild by ID
+   * @returns {Object} - Discord guild
+   */
+  async getGuild() {
     try {
-      if (
-        !this.channelManager ||
-        typeof this.channelManager.getChannelIdByPhoneNumber !== "function"
-      ) {
-        console.error(
-          `[TicketManager:${this.instanceId}] channelManager is not available or method is missing`
-        );
-        return null;
-      }
-
-      const channelId =
-        this.channelManager.getChannelIdByPhoneNumber(phoneNumber);
-      if (!channelId) {
-        console.log(
-          `[TicketManager:${this.instanceId}] No channel ID found for ${phoneNumber}`
-        );
-        return null;
-      }
-
-      // Check if ticket is marked as closed
-      if (this.isTicketClosed(channelId)) {
-        console.log(
-          `[TicketManager:${this.instanceId}] Ticket for ${phoneNumber} is closed`
-        );
-        return null;
-      }
-
-      // Get Discord guild
-      if (!this.discordClient) {
-        console.error(
-          `[TicketManager:${this.instanceId}] Discord client is not available`
-        );
-        return null;
-      }
-
-      const guild = this.discordClient.guilds.cache.get(this.guildId);
-      if (!guild) {
-        console.error(
-          `[TicketManager:${this.instanceId}] Guild ${this.guildId} not found`
-        );
-        return null;
-      }
-
-      // Try to fetch the channel
-      try {
-        const channel = await guild.channels.fetch(channelId);
-        if (channel) {
-          console.log(
-            `[TicketManager:${this.instanceId}] Found existing ticket channel: ${channel.name} (${channelId})`
-          );
-          return channel;
-        }
-      } catch (fetchError) {
-        console.error(
-          `[TicketManager:${this.instanceId}] Error fetching channel ${channelId}:`,
-          fetchError
-        );
-        // Remove from channel map if channel doesn't exist anymore
-        if (fetchError.code === 10003) {
-          // Unknown Channel error
-          this.channelManager.removeChannelMapping(phoneNumber);
-        }
-      }
-
-      return null;
+      const guild = await this.discordClient.guilds.fetch(this.guildId);
+      return guild;
     } catch (error) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error in getExistingTicket:`,
-        error
-      );
+      console.error(`[TicketManager:${this.instanceId}] Error fetching guild:`, error);
       return null;
     }
   }
-
-  async addPreviousTranscript(channel, phoneNumber, username) {
+  
+  /**
+   * Get category channel
+   * @returns {Object} - Category channel
+   */
+  async getCategory() {
     try {
-      // Skip if transcript manager is not available
-      if (
-        !this.transcriptManager ||
-        typeof this.transcriptManager.findUserTranscript !== "function"
-      ) {
-        console.log(
-          `[TicketManager:${this.instanceId}] Cannot load previous transcript: transcriptManager not available`
-        );
-        return false;
-      }
-
-      // Try to find previous transcript
-      const transcript = await this.transcriptManager.findUserTranscript(
-        username,
-        phoneNumber
-      );
-      if (!transcript) {
-        console.log(
-          `[TicketManager:${this.instanceId}] No previous transcript found for ${username} (${phoneNumber})`
-        );
-        return false;
-      }
-
-      console.log(
-        `[TicketManager:${this.instanceId}] Found previous transcript at ${transcript.path}`
-      );
-
-      // Get HTML transcript file path if available
-      const htmlTranscriptPath = transcript.path.replace(".md", ".html");
-      const htmlExists = fs.existsSync(htmlTranscriptPath);
-
-      // Send previous conversation message with HTML file if available
-      if (htmlExists) {
-        await channel.send({
-          content: `📄 **Previous Conversation**\nThis transcript contains the previous conversation history:`,
-          files: [
-            {
-              attachment: htmlTranscriptPath,
-              name: `previous-transcript-${Date.now()}.html`,
-            },
-          ],
-        });
-        console.log(
-          `[TicketManager:${this.instanceId}] Sent HTML transcript file from ${htmlTranscriptPath}`
-        );
-      } else {
-        // Just send a simple message if no HTML file
-        await channel.send(
-          `📄 **Previous Conversation**\nThis user has previous conversation history.`
-        );
-      }
-
-      return true;
+      const guild = await this.getGuild();
+      if (!guild) return null;
+      
+      const category = await guild.channels.fetch(this.categoryId);
+      return category;
     } catch (error) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error adding previous transcript: ${error.message}`
-      );
-      return false;
+      console.error(`[TicketManager:${this.instanceId}] Error fetching category:`, error);
+      return null;
     }
   }
-
-  async createTicket(phoneNumber, username) {
-    // Declare channel variable outside try/catch for cleanup in finally block
-    let channel;
-
+  
+  /**
+   * Create a new ticket for a WhatsApp user
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} name - User's name
+   * @param {string} initialMessage - Initial message
+   * @param {string} mediaPath - Path to media file (if any)
+   * @param {string} mediaType - Type of media
+   * @returns {Promise<Object>} - Ticket info
+   */
+  async createTicket(phoneNumber, name, initialMessage = null, mediaPath = null, mediaType = 'image') {
     try {
-      // CRITICAL FIX: Clean the username to not include phone
-      const cleanUsername = formatDisplayName(username);
-
-      console.log(
-        `[TicketManager:${this.instanceId}] Creating new ticket for ${cleanUsername} (${phoneNumber})`
-      );
-
-      // Validate required parameters
-      if (!phoneNumber) {
-        console.error(
-          `[TicketManager:${this.instanceId}] Error: phoneNumber is required to create a ticket`
-        );
-        throw new Error("Phone number is required");
+      console.log(`[TicketManager:${this.instanceId}] Creating ticket for ${phoneNumber} (${name})`);
+      
+      // Get guild and category
+      const guild = await this.getGuild();
+      const category = await this.getCategory();
+      
+      if (!guild || !category) {
+        throw new Error('Guild or category not found');
       }
-
-      if (!cleanUsername) {
-        console.error(
-          `[TicketManager:${this.instanceId}] Error: username is required to create a ticket`
-        );
-        throw new Error("Username is required");
-      }
-
-      // Validate Discord client is available
-      if (!this.discordClient) {
-        console.error(
-          `[TicketManager:${this.instanceId}] ERROR: discordClient is null in TicketManager for instance`
-        );
-        throw new Error(
-          "Discord client is not available. Ticket creation failed."
-        );
-      }
-
-      // Store the phone-username mapping for consistency - using CLEAN username
-      if (
-        this.mediaManager &&
-        typeof this.mediaManager.setPhoneToUsername === "function"
-      ) {
-        this.mediaManager.setPhoneToUsername(phoneNumber, cleanUsername);
-      } else {
-        console.warn(
-          `[TicketManager:${this.instanceId}] No mediaManager set, unable to store phone-username mapping`
-        );
-      }
-
-      // Get guild reference
-      let guild;
-      try {
-        guild = this.discordClient.guilds.cache.get(this.guildId);
-        if (!guild) {
-          console.log(
-            `[TicketManager:${this.instanceId}] Guild ${this.guildId} not in cache, trying to fetch...`
-          );
-          guild = await this.discordClient.guilds.fetch(this.guildId);
-        }
-      } catch (fetchError) {
-        console.error(
-          `[TicketManager:${this.instanceId}] ERROR: Could not fetch guild with ID ${this.guildId}: ${fetchError.message}`
-        );
-        throw new Error(`Discord guild not found: ${this.guildId}`);
-      }
-
-      if (!guild) {
-        console.error(
-          `[TicketManager:${this.instanceId}] ERROR: Could not find guild with ID ${this.guildId}`
-        );
-        console.error(
-          `[TicketManager:${
-            this.instanceId
-          }] Available guilds in cache: ${Array.from(
-            this.discordClient.guilds.cache.keys()
-          ).join(", ")}`
-        );
-        throw new Error(
-          `Discord guild ${this.guildId} not found in available guilds`
-        );
-      }
-
-      console.log(
-        `[TicketManager:${this.instanceId}] Found guild: ${guild.name} (${guild.id})`
-      );
-
-      // Verify we can access the category
-      let category;
-      try {
-        category = guild.channels.cache.get(this.categoryId);
-        if (!category) {
-          console.log(
-            `[TicketManager:${this.instanceId}] Category ${this.categoryId} not in cache, trying to fetch...`
-          );
-          category = await guild.channels.fetch(this.categoryId);
-        }
-      } catch (categoryError) {
-        console.error(
-          `[TicketManager:${this.instanceId}] ERROR: Could not fetch category with ID ${this.categoryId}: ${categoryError.message}`
-        );
-        throw new Error(`Category not found: ${this.categoryId}`);
-      }
-
-      if (!category) {
-        console.error(
-          `[TicketManager:${this.instanceId}] ERROR: Could not find category with ID ${this.categoryId}`
-        );
-        console.error(
-          `[TicketManager:${
-            this.instanceId
-          }] Available categories: ${Array.from(
-            guild.channels.cache
-              .filter((c) => c.type === ChannelType.GuildCategory)
-              .map((c) => `${c.name} (${c.id})`)
-          ).join(", ")}`
-        );
-        throw new Error(
-          `Category ${this.categoryId} not found in available categories`
-        );
-      }
-
-      console.log(
-        `[TicketManager:${this.instanceId}] Found category: ${category.name} (${category.id})`
-      );
-
-      // CRITICAL FIX: Format channel name properly with CLEAN username
-      let channelName = `📋-${this.formatUsernameForChannel(cleanUsername)}`;
-
-      console.log(
-        `[TicketManager:${this.instanceId}] Creating channel "${channelName}" in category "${category.name}" with custom permissions`
-      );
-
-      // Create the channel with better error handling and fallbacks
-      try {
-        // Try method 1: Full permissions
-        channel = await guild.channels.create({
-          name: channelName,
-          type: ChannelType.GuildText,
-          parent: this.categoryId,
-          reason: `Support ticket for ${cleanUsername} (${phoneNumber})`,
-          permissionOverwrites: [
-            {
-              id: guild.roles.everyone.id,
-              deny: [PermissionFlagsBits.ViewChannel],
-            },
-            {
-              id: this.discordClient.user.id,
-              allow: [
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.SendMessages,
-                PermissionFlagsBits.ManageMessages,
-                PermissionFlagsBits.EmbedLinks,
-                PermissionFlagsBits.AttachFiles,
-                PermissionFlagsBits.ManageRoles,
-                PermissionFlagsBits.ManageChannels, // Explicitly add manage channels permission
-              ],
-            },
-          ],
-        });
-      } catch (createError) {
-        console.error(
-          `[TicketManager:${this.instanceId}] ERROR creating channel: ${createError.message}`
-        );
-
-        // Try method 2: Simplified approach with basic parameters
-        try {
-          console.log(
-            `[TicketManager:${this.instanceId}] Trying simplified channel creation without permission overwrites`
-          );
-          channel = await guild.channels.create({
-            name: channelName,
-            type: ChannelType.GuildText,
-            parent: this.categoryId,
-            reason: `Support ticket for ${cleanUsername} (${phoneNumber})`,
-          });
-
-          console.log(
-            `[TicketManager:${this.instanceId}] Simplified channel creation succeeded`
-          );
-
-          // Try to update channel permissions after creation
+      
+      // Format channel name
+      const channelName = this.formatChannelName(name);
+      
+      // Check if channel already exists for this phone number
+      if (this.channelManager.channelExists(phoneNumber)) {
+        // Channel exists - get ID
+        const existingChannelId = this.channelManager.getChannelId(phoneNumber);
+        
+        if (existingChannelId) {
+          console.log(`[TicketManager:${this.instanceId}] Channel already exists for ${phoneNumber}: ${existingChannelId}`);
+          
           try {
-            await channel.permissionOverwrites.set(
-              [
-                {
-                  id: guild.roles.everyone.id,
-                  deny: [PermissionFlagsBits.ViewChannel],
-                },
-                {
-                  id: this.discordClient.user.id,
-                  allow: [
-                    PermissionFlagsBits.ViewChannel,
-                    PermissionFlagsBits.SendMessages,
-                    PermissionFlagsBits.ManageMessages,
-                    PermissionFlagsBits.EmbedLinks,
-                    PermissionFlagsBits.AttachFiles,
-                    PermissionFlagsBits.ManageRoles,
-                  ],
-                },
-              ],
-              `Setting up permissions for ticket channel - ${cleanUsername}`
-            );
-
-            console.log(
-              `[TicketManager:${this.instanceId}] Updated channel permissions after creation`
-            );
-          } catch (permError) {
-            console.warn(
-              `[TicketManager:${this.instanceId}] Could not update channel permissions: ${permError.message}`
-            );
-            // Continue anyway since we at least have the channel
-          }
-        } catch (retryError) {
-          console.error(
-            `[TicketManager:${this.instanceId}] Simplified channel creation also failed: ${retryError.message}`
-          );
-
-          // Try method 3: Most basic approach possible
-          try {
-            console.log(
-              `[TicketManager:${this.instanceId}] Trying most basic channel creation`
-            );
-            channel = await guild.channels.create({ name: channelName });
-            console.log(
-              `[TicketManager:${this.instanceId}] Basic channel creation succeeded`
-            );
-
-            // Try to move channel to category after creation
-            try {
-              await channel.setParent(this.categoryId);
-              console.log(
-                `[TicketManager:${this.instanceId}] Moved channel to category after creation`
-              );
-            } catch (moveError) {
-              console.warn(
-                `[TicketManager:${this.instanceId}] Could not move channel to category: ${moveError.message}`
-              );
-              // Continue anyway
+            // Try to fetch the channel
+            const channel = await guild.channels.fetch(existingChannelId);
+            
+            // Send reopen message
+            const embed = new EmbedBuilder()
+              .setColor(0x3498DB)
+              .setTitle('🔄 Ticket Reopened')
+              .setDescription(`**${name}** has sent a new message.`)
+              .setTimestamp();
+            
+            await channel.send({ embeds: [embed] });
+            
+            // Send the actual message
+            if (mediaPath && fs.existsSync(mediaPath)) {
+              await this.sendMediaToTicket(phoneNumber, mediaPath, initialMessage, mediaType);
+            } else if (initialMessage) {
+              await this.sendMessageToTicket(phoneNumber, initialMessage);
             }
-          } catch (basicError) {
-            console.error(
-              `[TicketManager:${this.instanceId}] All channel creation methods failed`
-            );
-            throw new Error(
-              `Could not create channel using any method. Please check bot permissions. Last error: ${basicError.message}`
-            );
+            
+            // Return existing ticket info
+            return {
+              channelId: existingChannelId,
+              isNew: false,
+              phoneNumber,
+              name
+            };
+          } catch (error) {
+            console.error(`[TicketManager:${this.instanceId}] Error fetching existing channel: ${error.message}`);
+            console.log(`[TicketManager:${this.instanceId}] Channel ${existingChannelId} might have been deleted, creating new one`);
+            // Continue with creating a new channel
           }
         }
       }
-
-      console.log(
-        `[TicketManager:${this.instanceId}] Created new ticket channel: ${channel.name} (${channel.id})`
-      );
-
-      // Save to channel map
-      if (
-        this.channelManager &&
-        typeof this.channelManager.setChannelMapping === "function"
-      ) {
-        this.channelManager.setChannelMapping(phoneNumber, channel.id);
-      } else {
-        console.error(
-          `[TicketManager:${this.instanceId}] Cannot save channel mapping: channelManager is missing or invalid`
-        );
-      }
-
-      // CHANGED ORDER: First send the NewTicket marker and the transcript header
-      await channel.send(`[---NewTicket---]`);
-
-      await this.addPreviousTranscript(channel, phoneNumber, cleanUsername);
-
-      // Send a transcript header message
-      await channel.send(
-        `# 📄 Transcript\nAll messages in this channel will be included in the ticket transcript.`
-      );
-
-      // IMPROVED: Use custom welcome message if available
-      let welcomeMessage;
-      if (this.customIntroMessages) {
-        welcomeMessage = this.customIntroMessages
-          .replace("{username}", cleanUsername)
-          .replace("{name}", cleanUsername)
-          .replace("{phoneNumber}", phoneNumber);
-      } else {
-        welcomeMessage = `# 📋 New Support Ticket\n**A new ticket has been created for ${cleanUsername}**\nWhatsApp: \`${phoneNumber}\`\n\nSupport agents will respond as soon as possible.`;
-      }
-
-      // Send the welcome message
-      await channel.send(welcomeMessage);
-
-      // LAST: Create and pin the user info embed with buttons
-      // Cache this phone-channel-username relationship for transcript generation
-      if (
-        this.transcriptManager &&
-        typeof this.transcriptManager.ensurePhoneForTranscript === "function"
-      ) {
-        this.transcriptManager.ensurePhoneForTranscript(
-          channel.id,
-          phoneNumber,
-          cleanUsername
-        );
-      } else {
-        console.warn(
-          `[TicketManager:${this.instanceId}] transcriptManager is missing ensurePhoneForTranscript method`
-        );
-      }
-
-      // Create embed with simplified structure - CLEAN username
-      const embed = new EmbedBuilder()
-        .setColor(0x00ae86)
-        .setTitle(`Ticket Information`)
-        .setDescription(
-          `\`\`\`${cleanUsername}\`\`\` \`\`\`${phoneNumber}\`\`\``
-        );
-
-      // Add fields
-      embed.addFields(
-        {
-          name: "Opened Ticket",
-          value: `${new Date().toLocaleString()}`,
-          inline: false,
-        },
-        // Add Notes field
-        {
-          name: "Notes",
-          value:
-            "```No notes provided yet. Use the Edit button to add details.```",
-          inline: false,
-        }
-      );
-
-      embed.setTimestamp();
-
-      // Create button row with edit and close buttons - FIXED: custom ID
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`edit-user-${phoneNumber}`)
-          .setLabel("Edit")
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId(`close-ticket-${channel.id}`)
-          .setLabel("Close")
-          .setStyle(ButtonStyle.Danger)
-      );
-
-      // Send and pin the embed
-      const embedMsg = await channel.send({
-        embeds: [embed],
-        components: [row],
+      
+      // Create a new channel
+      const createdChannel = await guild.channels.create({
+        name: channelName,
+        type: 0, // Text channel
+        parent: category,
+        topic: `WhatsApp Support Ticket for ${name} | ${phoneNumber}`,
+        reason: `WhatsApp support ticket for ${phoneNumber}`
       });
-
-      // Try to pin the message, but handle permission errors gracefully
-      try {
-        await embedMsg.pin();
-      } catch (pinError) {
-        if (pinError.code === 50013) {
-          // Missing Permissions error code
-          console.warn(
-            `[TicketManager:${this.instanceId}] Warning: Bot doesn't have permission to pin messages in channel ${channel.id}. The embed message will not be pinned.`
-          );
-          await channel.send({
-            content:
-              "⚠️ **Warning:** I don't have permission to pin messages in this channel. Please give me the 'Manage Messages' permission for full functionality.",
-            allowedMentions: { parse: [] }, // Don't ping anyone
-          });
-        } else {
-          console.error(
-            `[TicketManager:${this.instanceId}] Error pinning embed message: ${pinError.message}`
-          );
+      
+      console.log(`[TicketManager:${this.instanceId}] Created channel ${createdChannel.id} for ${phoneNumber}`);
+      
+      // Store channel in manager
+      this.channelManager.setChannel(phoneNumber, createdChannel.id);
+      
+      // Increment active tickets
+      this.activeTickets++;
+      
+      // Send intro message
+      let introMessage = this.customIntroMessage || this.defaultIntroMessage;
+      introMessage = introMessage
+        .replace(/{name}/g, name)
+        .replace(/{phoneNumber}/g, phoneNumber.replace('@s.whatsapp.net', ''));
+      
+      await createdChannel.send(introMessage);
+      
+      // If we have user info, post it
+      if (this.userCardManager) {
+        const userCard = await this.userCardManager.getUserCard(phoneNumber);
+        
+        if (userCard) {
+          // Create user info embed
+          const userEmbed = new EmbedBuilder()
+            .setColor(0x00AE86)
+            .setTitle('User Information')
+            .addFields(
+              { name: 'Name', value: userCard.name, inline: true },
+              { name: 'Phone', value: phoneNumber.replace('@s.whatsapp.net', ''), inline: true },
+              { name: 'First Contact', value: new Date(userCard.firstContact).toLocaleString(), inline: true }
+            )
+            .setFooter({ text: `User ID: ${userCard.id || phoneNumber}` });
+          
+          // If user has a profile pic, add it
+          if (userCard.profilePicUrl) {
+            userEmbed.setThumbnail(userCard.profilePicUrl);
+          }
+          
+          await createdChannel.send({ embeds: [userEmbed] });
         }
       }
-
-      return channel;
+      
+      // Send initial message if provided
+      if (mediaPath && fs.existsSync(mediaPath)) {
+        await this.sendMediaToTicket(phoneNumber, mediaPath, initialMessage, mediaType);
+      } else if (initialMessage) {
+        await this.sendMessageToTicket(phoneNumber, initialMessage);
+      }
+      
+      // Return new ticket info
+      return {
+        channelId: createdChannel.id,
+        isNew: true,
+        phoneNumber,
+        name
+      };
     } catch (error) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error creating ticket: ${error.message}`
-      );
-      console.error(error.stack);
+      console.error(`[TicketManager:${this.instanceId}] Error creating ticket:`, error);
       throw error;
     }
   }
-
-  // Set ticket status
-  setTicketStatus(channelId, status) {
-    this.ticketStatus.set(channelId, status);
-    this.saveTicketStatus();
-  }
-
-  // Get ticket status
-  getTicketStatus(channelId) {
-    return this.ticketStatus.get(channelId);
-  }
-
-  // Check if a ticket is closed
-  isTicketClosed(channelId) {
-    const status = this.ticketStatus.get(channelId);
-    return status === "closed" || status === "closing";
-  }
-
-  // Check if a ticket is currently being closed
-  isTicketClosing(channelId) {
-    return this.closingTickets.has(channelId);
-  }
-
-  // Get ticket status count
-  getTicketStatusCount() {
-    return this.ticketStatus.size;
-  }
-
-  // Delete a Discord channel
-  async deleteChannel(
-    channelId,
-    reason = "Ticket closed and transcript saved"
-  ) {
+  
+  /**
+   * Close a ticket
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} closedBy - Who closed the ticket
+   * @param {boolean} sendMessage - Whether to send a closing message
+   * @returns {Promise<boolean>} - Success status
+   */
+  async closeTicket(phoneNumber, closedBy = 'Discord', sendMessage = true) {
     try {
-      // Get the Discord guild
-      const guild = this.discordClient.guilds.cache.get(this.guildId);
+      console.log(`[TicketManager:${this.instanceId}] Closing ticket for ${phoneNumber}`);
+      
+      // Check if channel exists
+      if (!this.channelManager.channelExists(phoneNumber)) {
+        console.log(`[TicketManager:${this.instanceId}] No channel found for ${phoneNumber}`);
+        return false;
+      }
+      
+      // Get channel ID
+      const channelId = this.channelManager.getChannelId(phoneNumber);
+      
+      // Get guild
+      const guild = await this.getGuild();
       if (!guild) {
-        console.error(
-          `[TicketManager:${this.instanceId}] Guild with ID ${this.guildId} not found when deleting channel`
-        );
+        console.error(`[TicketManager:${this.instanceId}] Guild not found`);
         return false;
       }
-
-      // Get the channel
-      const channel = await guild.channels
-        .fetch(channelId)
-        .catch((err) => null);
-      if (!channel) {
-        console.error(
-          `[TicketManager:${this.instanceId}] Channel ${channelId} not found when trying to delete it`
-        );
-        // Clean up our tracking anyway
-        this.closingTickets.delete(channelId);
-        this.generatingTranscripts.delete(channelId);
+      
+      try {
+        // Fetch channel
+        const channel = await guild.channels.fetch(channelId);
+        
+        // Send closing message to WhatsApp if requested
+        if (sendMessage) {
+          // Get user name
+          let userName = "Customer";
+          
+          if (this.userCardManager) {
+            const userCard = await this.userCardManager.getUserCard(phoneNumber);
+            if (userCard) {
+              userName = userCard.name;
+            }
+          }
+          
+          // Get closing message
+          let closeMessage = this.customCloseMessage || this.defaultCloseMessage;
+          closeMessage = closeMessage
+            .replace(/{name}/g, userName)
+            .replace(/{phoneNumber}/g, phoneNumber.replace('@s.whatsapp.net', ''));
+          
+          // Send to WhatsApp
+          const whatsappClient = this.channelManager.getWhatsAppClient();
+          if (whatsappClient) {
+            await whatsappClient.sendTextMessage(phoneNumber, closeMessage);
+          }
+        }
+        
+        // Create transcript if manager available
+        if (this.transcriptManager) {
+          await this.transcriptManager.createTranscript(channel, phoneNumber);
+        }
+        
+        // Send closing message to Discord
+        const closingEmbed = new EmbedBuilder()
+          .setColor(0xFF0000)
+          .setTitle('🔒 Ticket Closed')
+          .setDescription(`This ticket has been closed by ${closedBy}.`)
+          .setTimestamp();
+        
+        await channel.send({ embeds: [closingEmbed] });
+        
+        // Delete channel
+        await channel.delete(`Ticket closed by ${closedBy}`);
+        
+        // Remove from channel manager
+        this.channelManager.removeChannel(phoneNumber);
+        
+        // Decrement active tickets
+        if (this.activeTickets > 0) {
+          this.activeTickets--;
+        }
+        
+        return true;
+      } catch (error) {
+        console.error(`[TicketManager:${this.instanceId}] Error closing ticket:`, error);
+        
+        // If channel not found (already deleted), still remove from manager
+        if (error.code === 10003) {
+          this.channelManager.removeChannel(phoneNumber);
+          return true;
+        }
+        
         return false;
       }
-
-      // Delete the channel
-      console.log(
-        `[TicketManager:${this.instanceId}] Deleting channel ${channel.name} (${channelId})`
-      );
-      await channel.delete(reason);
-      console.log(
-        `[TicketManager:${this.instanceId}] Channel ${channelId} deleted successfully`
-      );
-
-      // Clean up tracking
-      this.closingTickets.delete(channelId);
-      this.generatingTranscripts.delete(channelId);
-
-      return true;
     } catch (error) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error deleting channel ${channelId}:`,
-        error
-      );
-      // Clean up tracking even on error
-      this.closingTickets.delete(channelId);
-      this.generatingTranscripts.delete(channelId);
+      console.error(`[TicketManager:${this.instanceId}] Error closing ticket:`, error);
       return false;
     }
   }
-
-  async handleCloseButton(interaction) {
+  
+  /**
+   * Send a message to a ticket channel
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} message - Message content
+   * @returns {Promise<boolean>} - Success status
+   */
+  async sendMessageToTicket(phoneNumber, message) {
     try {
-      const channelId = interaction.channel.id;
-
-      // Check if already being closed
-      if (
-        this.isTicketClosed(channelId) ||
-        this.closingTickets.has(channelId)
-      ) {
-        await interaction.reply({
-          content: "This ticket is already being closed.",
-          ephemeral: true,
-        });
-        return;
+      if (!message || message.trim() === '') {
+        console.log(`[TicketManager:${this.instanceId}] Empty message for ${phoneNumber}, skipping`);
+        return false;
       }
-
-      // Mark as being closed immediately
-      this.closingTickets.add(channelId);
-      this.setTicketStatus(channelId, "closing");
-
-      // Get the associated WhatsApp number
-      let sender = null;
-      if (
-        this.channelManager &&
-        typeof this.channelManager.getWhatsAppNumberByChannelId === "function"
-      ) {
-        sender = this.channelManager.getWhatsAppNumberByChannelId(channelId);
+      
+      console.log(`[TicketManager:${this.instanceId}] Sending message to ticket for ${phoneNumber}`);
+      
+      // Check if channel exists
+      if (!this.channelManager.channelExists(phoneNumber)) {
+        console.log(`[TicketManager:${this.instanceId}] No channel found for ${phoneNumber}`);
+        return false;
       }
-
-      await interaction.deferReply({ ephemeral: true });
-
-      // Generate and save transcript
-      let transcriptSuccess = false;
-
+      
+      // Get channel ID
+      const channelId = this.channelManager.getChannelId(phoneNumber);
+      
+      // Get guild
+      const guild = await this.getGuild();
+      if (!guild) {
+        console.error(`[TicketManager:${this.instanceId}] Guild not found`);
+        return false;
+      }
+      
       try {
-        await interaction.editReply(
-          "Closing ticket and generating transcript..."
-        );
-
-        // Force get the username from userCardManager for the transcript
-        let username = interaction.channel.name.replace(/^(✓|📋\s*-\s*)/, "");
-        if (this.userCardManager && sender) {
-          try {
-            const userCard = this.userCardManager.getUserCard(sender);
-            if (userCard && userCard.name) {
-              // CRITICAL FIX: Clean the username
-              username = formatDisplayName(userCard.name);
-            }
-          } catch (err) {
-            console.error(
-              `[TicketManager:${this.instanceId}] Error getting username from userCard:`,
-              err
-            );
+        // Fetch channel
+        const channel = await guild.channels.fetch(channelId);
+        
+        // Get username from user card manager if available
+        let userName = "Customer";
+        
+        if (this.userCardManager) {
+          const userCard = await this.userCardManager.getUserCard(phoneNumber);
+          if (userCard) {
+            userName = userCard.name;
           }
         }
-
-        // Generate transcript if manager is available
-        if (
-          this.transcriptManager &&
-          typeof this.transcriptManager.generateHTMLTranscript === "function"
-        ) {
-          // IMPORTANT: Make sure sender info is available
-          if (
-            typeof this.transcriptManager.ensurePhoneForTranscript ===
-            "function"
-          ) {
-            this.transcriptManager.ensurePhoneForTranscript(
-              channelId,
-              sender,
-              username
-            );
-          }
-
-          // Generate transcript
-          const transcriptPath =
-            await this.transcriptManager.generateHTMLTranscript(
-              interaction.channel,
-              interaction.user
-            );
-
-          transcriptSuccess = !!transcriptPath;
-
-          // Add extra information if transcript channel exists
-          if (transcriptSuccess && this.transcriptManager.transcriptChannelId) {
-            try {
-              const guild = this.discordClient.guilds.cache.get(this.guildId);
-              const transcriptChannel = guild?.channels.cache.get(
-                this.transcriptManager.transcriptChannelId
-              );
-              if (transcriptChannel) {
-                await interaction.channel.send(
-                  `📝 Transcript has been saved to <#${transcriptChannel.id}> and will be available for future reference.`
-                );
+        
+        // Format message with special channel mentions
+        let formattedMessage = message;
+        
+        // Check for special channel mentions in the message
+        const specialChannels = this.channelManager.getSpecialChannels();
+        if (specialChannels && Object.keys(specialChannels).length > 0) {
+          // Get all text channels in the guild
+          const textChannels = await guild.channels.fetch();
+          
+          // Iterate through special channels
+          for (const [channelId, channelInfo] of Object.entries(specialChannels)) {
+            // Find the channel in the guild
+            const specialChannel = textChannels.get(channelId);
+            
+            if (specialChannel) {
+              // Check if the channel name is mentioned in the message
+              const channelNamePattern = new RegExp(`#${specialChannel.name}`, 'gi');
+              
+              if (channelNamePattern.test(formattedMessage)) {
+                // Replace with the special message
+                const specialMessage = channelInfo.message || `Click here to view <#${channelId}>`;
+                formattedMessage = formattedMessage.replace(channelNamePattern, `<#${channelId}> (${specialMessage})`);
               }
-            } catch (error) {
-              console.error(
-                `[TicketManager:${this.instanceId}] Error sending transcript channel info: ${error.message}`
-              );
             }
           }
         }
+        
+        // Create user message embed
+        const userEmbed = new EmbedBuilder()
+          .setColor(0x00AE86)
+          .setAuthor({ name: `${userName} (WhatsApp)` })
+          .setDescription(formattedMessage)
+          .setTimestamp();
+        
+        // Send message
+        await channel.send({ embeds: [userEmbed] });
+        
+        return true;
       } catch (error) {
-        console.error(
-          `[TicketManager:${this.instanceId}] Error generating transcript:`,
-          error
-        );
-        await interaction.editReply(
-          `Error generating transcript: ${error.message}. Channel will be deleted in 5 seconds.`
-        );
+        console.error(`[TicketManager:${this.instanceId}] Error sending message to ticket:`, error);
+        return false;
       }
-
-      // Always delete the channel after transcript attempt
-      if (transcriptSuccess) {
-        await interaction.editReply(
-          "Transcript saved successfully. This channel will be deleted in 5 seconds."
-        );
-      } else {
-        await interaction.editReply(
-          "Failed to generate transcript. Channel will be deleted in 5 seconds."
-        );
-      }
-
-      // Clean up channel mapping
-      if (
-        sender &&
-        this.channelManager &&
-        typeof this.channelManager.removeChannelMapping === "function"
-      ) {
-        this.channelManager.removeChannelMapping(sender);
-      }
-
-      // Wait 5 seconds before deleting
-      setTimeout(async () => {
-        try {
-          await this.deleteChannel(channelId);
-        } catch (deleteError) {
-          console.error(
-            `[TicketManager:${this.instanceId}] Error deleting channel: ${deleteError.message}`
-          );
-          this.closingTickets.delete(channelId);
-        }
-      }, 5000);
     } catch (error) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error handling close button:`,
-        error
-      );
-
-      // Clean up tracking on error
-      this.closingTickets.delete(interaction.channel.id);
-      this.setTicketStatus(interaction.channel.id, "open");
-
-      // Inform the user
+      console.error(`[TicketManager:${this.instanceId}] Error sending message to ticket:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Send media to a ticket channel
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} mediaPath - Path to media file
+   * @param {string} caption - Caption for media
+   * @param {string} mediaType - Type of media
+   * @returns {Promise<boolean>} - Success status
+   */
+  async sendMediaToTicket(phoneNumber, mediaPath, caption = '', mediaType = 'image') {
+    try {
+      console.log(`[TicketManager:${this.instanceId}] Sending media to ticket for ${phoneNumber}: ${mediaPath}`);
+      
+      // Check if file exists
+      if (!mediaPath || !fs.existsSync(mediaPath)) {
+        console.error(`[TicketManager:${this.instanceId}] Media file not found: ${mediaPath}`);
+        
+        // Still send caption as a regular message if provided
+        if (caption && caption.trim() !== '') {
+          return this.sendMessageToTicket(phoneNumber, caption);
+        }
+        
+        return false;
+      }
+      
+      // Check if channel exists
+      if (!this.channelManager.channelExists(phoneNumber)) {
+        console.log(`[TicketManager:${this.instanceId}] No channel found for ${phoneNumber}`);
+        return false;
+      }
+      
+      // Get channel ID
+      const channelId = this.channelManager.getChannelId(phoneNumber);
+      
+      // Get guild
+      const guild = await this.getGuild();
+      if (!guild) {
+        console.error(`[TicketManager:${this.instanceId}] Guild not found`);
+        return false;
+      }
+      
       try {
-        if (interaction.deferred && !interaction.replied) {
-          await interaction.editReply(`Error closing ticket: ${error.message}`);
-        } else if (!interaction.replied) {
-          await interaction.reply({
-            content: `Error closing ticket: ${error.message}`,
-            ephemeral: true,
-          });
-        }
-      } catch (replyError) {
-        console.error(
-          `[TicketManager:${this.instanceId}] Error replying to interaction:`,
-          replyError
-        );
-      }
-    }
-  }
-
-  loadSettingsDirectly(guildId) {
-    try {
-      const settingsPath = path.join(
-        __dirname,
-        "..",
-        "instances",
-        guildId,
-        "settings.json"
-      );
-
-      if (fs.existsSync(settingsPath)) {
-        const settingsData = fs.readFileSync(settingsPath, "utf8");
-        return JSON.parse(settingsData);
-      } else {
-        console.log(
-          `[TicketManager:${this.instanceId}] No settings file found at ${settingsPath}`
-        );
-        return null;
-      }
-    } catch (error) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error loading settings file:`,
-        error
-      );
-      return null;
-    }
-  }
-
-  // FIXED: Handle closing and deleting a ticket with improved protection against double processing
-  async handleCloseTicket(interaction) {
-    try {
-      // Extract channel ID from button ID or use current channel
-      const channelId = interaction.customId.startsWith("close-ticket-")
-        ? interaction.customId.substring("close-ticket-".length)
-        : interaction.channel.id;
-
-      console.log(`Closing ticket with channel ID: ${channelId}`);
-
-      // Get user info for sending closing message via WhatsApp
-      let sender = null;
-      if (
-        this.channelManager &&
-        typeof this.channelManager.getWhatsAppNumberByChannelId === "function"
-      ) {
-        sender = this.channelManager.getWhatsAppNumberByChannelId(
-          interaction.channel.id
-        );
-      }
-
-      // First, acknowledge the interaction
-      await interaction.reply({
-        content: "Closing ticket and generating transcript...",
-        ephemeral: true,
-      });
-
-      // Get username for transcript
-      let username = interaction.channel.name.replace(/^(✓|📋\s*-\s*)/, "");
-      if (this.userCardManager && sender) {
-        try {
-          const userCard = this.userCardManager.getUserCard(sender);
-          if (userCard && userCard.name) {
-            const MediaManager = require("../../utils/MediaManager");
-            username = MediaManager.formatFunctions.formatDisplayName(
-              userCard.name
-            );
+        // Fetch channel
+        const channel = await guild.channels.fetch(channelId);
+        
+        // Get username from user card manager if available
+        let userName = "Customer";
+        
+        if (this.userCardManager) {
+          const userCard = await this.userCardManager.getUserCard(phoneNumber);
+          if (userCard) {
+            userName = userCard.name;
           }
-        } catch (err) {
-          console.error(`Error getting username:`, err);
         }
-      }
-
-      // Send closing message to WhatsApp user if setting allows
-      const settingsPath = path.join(
-        __dirname,
-        "..",
-        "instances",
-        interaction.guildId,
-        "settings.json"
-      );
-
-      // Assume disabled by default
-      let shouldSendMessage = false;
-
-      if (fs.existsSync(settingsPath)) {
-        try {
-          const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-
-          // ONLY send if explicitly true
-          if (settings.sendClosingMessage === true) {
-            shouldSendMessage = true;
-          }
-
-          console.log(
-            `[BaileysDiscordHandler:${this.instanceId}] Closing message setting: ${settings.sendClosingMessage}`
-          );
-          console.log(
-            `[BaileysDiscordHandler:${this.instanceId}] Should send message: ${shouldSendMessage}`
-          );
-        } catch (readError) {
-          console.error(
-            `[BaileysDiscordHandler:${this.instanceId}] Error reading settings:`,
-            readError
-          );
+        
+        // Create attachment
+        const attachment = new AttachmentBuilder(mediaPath);
+        
+        // Get filename
+        const filename = path.basename(mediaPath);
+        
+        // Create embed with media
+        const mediaEmbed = new EmbedBuilder()
+          .setColor(0x00AE86)
+          .setAuthor({ name: `${userName} (WhatsApp)` })
+          .setTimestamp();
+        
+        // Add caption if provided
+        if (caption && caption.trim() !== '') {
+          mediaEmbed.setDescription(caption);
         }
-      } else {
-        console.log(
-          `[BaileysDiscordHandler:${this.instanceId}] No settings file found at ${settingsPath}`
-        );
-      }
-
-      if (shouldSendMessage) {
-        if (sender && this.baileysClient) {
+        
+        // Add media based on type
+        if (mediaType === 'image') {
+          mediaEmbed.setImage(`attachment://${filename}`);
+        } else if (mediaType === 'video') {
+          // Can't embed videos, so just mention it
+          mediaEmbed.setDescription(`${caption ? caption + '\n\n' : ''}*Sent a video*`);
+        } else if (mediaType === 'document') {
+          // Can't embed documents, so just mention it
+          mediaEmbed.setDescription(`${caption ? caption + '\n\n' : ''}*Sent a document*`);
+        } else if (mediaType === 'audio') {
+          // Can't embed audio, so just mention it
+          mediaEmbed.setDescription(`${caption ? caption + '\n\n' : ''}*Sent an audio message*`);
+        }
+        
+        // Send message with attachment
+        await channel.send({
+          embeds: [mediaEmbed],
+          files: [attachment]
+        });
+        
+        return true;
+      } catch (error) {
+        console.error(`[TicketManager:${this.instanceId}] Error sending media to ticket:`, error);
+        
+        // If the error is about file size, try sending without embed
+        if (error.message.includes('file exceeds maximum size') || error.code === 40005) {
           try {
-            // Use custom message if configured
-            let closeMessage =
-              "Thank you for contacting support. Your ticket is now being closed and a transcript will be saved.";
-
-            if (this.ticketManager?.getFormattedCloseMessage) {
-              closeMessage = this.ticketManager.getFormattedCloseMessage(
-                username,
-                sender
-              );
-            }
-
-            await this.baileysClient.sendMessage(sender, closeMessage);
-            console.log(
-              `[BaileysDiscordHandler:${this.instanceId}] Sent closing message to ${sender}`
-            );
-          } catch (sendError) {
-            console.error(
-              `[BaileysDiscordHandler:${this.instanceId}] Error sending closing message:`,
-              sendError
-            );
+            // Get channel
+            const channel = await guild.channels.fetch(channelId);
+            
+            // Send message about the media
+            const mediaTypeMessage = mediaType === 'image' ? 'an image' :
+                                   mediaType === 'video' ? 'a video' :
+                                   mediaType === 'document' ? 'a document' :
+                                   mediaType === 'audio' ? 'an audio message' : 'a file';
+            
+            // Create user message embed
+            const userEmbed = new EmbedBuilder()
+              .setColor(0x00AE86)
+              .setAuthor({ name: `${userName} (WhatsApp)` })
+              .setDescription(`${caption ? caption + '\n\n' : ''}*Sent ${mediaTypeMessage} (too large to upload)*`)
+              .setTimestamp();
+            
+            // Send message
+            await channel.send({ embeds: [userEmbed] });
+            
+            return true;
+          } catch (secondError) {
+            console.error(`[TicketManager:${this.instanceId}] Error sending fallback message:`, secondError);
           }
-        } else {
-          console.log(
-            `[BaileysDiscordHandler:${this.instanceId}] Closing messages disabled - not sending`
-          );
-          return;
         }
+        
+        return false;
       }
-
-      // Make sure transcript manager has the phone number
-      if (
-        this.transcriptManager &&
-        typeof this.transcriptManager.ensurePhoneForTranscript === "function" &&
-        sender
-      ) {
-        this.transcriptManager.ensurePhoneForTranscript(
-          interaction.channel.id,
-          sender,
-          username
-        );
-      }
-
-      // Generate transcript
-      let transcriptPath = null;
-      try {
-        if (
-          this.transcriptManager &&
-          typeof this.transcriptManager.generateHTMLTranscript === "function"
-        ) {
-          transcriptPath = await this.transcriptManager.generateHTMLTranscript(
-            interaction.channel,
-            interaction.user
-          );
-
-          // Update the interaction with success message
-          await interaction.editReply(
-            "Transcript saved successfully. This channel will be deleted in 5 seconds."
-          );
-        } else {
-          await interaction.editReply(
-            "Error: Transcript manager not available. Channel will be deleted in 5 seconds."
-          );
-        }
-      } catch (transcriptError) {
-        console.error(`Error generating transcript:`, transcriptError);
-        await interaction.editReply(
-          `Error generating transcript: ${transcriptError.message}. Channel will be deleted in 5 seconds.`
-        );
-      }
-
-      // Remove from channel map
-      if (
-        sender &&
-        this.channelManager &&
-        typeof this.channelManager.removeChannelMapping === "function"
-      ) {
-        this.channelManager.removeChannelMapping(sender);
-      }
-
-      // Mark as closed
-      this.setTicketStatus(interaction.channel.id, "closed");
-
-      // Wait 5 seconds before deleting
-      setTimeout(async () => {
-        try {
-          await this.deleteChannel(interaction.channel.id);
-        } catch (deleteError) {
-          console.error(`Error deleting channel:`, deleteError);
-        }
-      }, 5000);
     } catch (error) {
-      console.error(`Error handling close button:`, error);
-      if (!interaction.replied) {
-        await interaction.reply({
-          content: `Failed to close ticket: ${error.message}`,
-          ephemeral: true,
-        });
-      } else {
-        await interaction.followUp({
-          content: `Error occurred while closing ticket: ${error.message}`,
-          ephemeral: true,
-        });
-      }
+      console.error(`[TicketManager:${this.instanceId}] Error sending media to ticket:`, error);
+      return false;
     }
   }
-
-  // Set reference to mediaManager
-  setMediaManager(manager) {
-    this.mediaManager = manager;
-    console.log(
-      `[TicketManager:${this.instanceId}] Set mediaManager: ${
-        manager ? "Successful" : "Failed (null)"
-      }`
-    );
+  
+  /**
+   * Send a reply from Discord to WhatsApp
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} message - Message content
+   * @param {string} senderName - Discord sender's name
+   * @returns {Promise<boolean>} - Success status
+   */
+  async sendReplyToWhatsApp(phoneNumber, message, senderName) {
+    try {
+      console.log(`[TicketManager:${this.instanceId}] Sending reply to WhatsApp for ${phoneNumber} from ${senderName}`);
+      
+      // Get WhatsApp client
+      const whatsappClient = this.channelManager.getWhatsAppClient();
+      
+      if (!whatsappClient) {
+        console.error(`[TicketManager:${this.instanceId}] WhatsApp client not found`);
+        return false;
+      }
+      
+      // Format message
+      let formattedMessage = `*${senderName}:* ${message}`;
+      
+      // Send message
+      await whatsappClient.sendTextMessage(phoneNumber, formattedMessage);
+      
+      return true;
+    } catch (error) {
+      console.error(`[TicketManager:${this.instanceId}] Error sending reply to WhatsApp:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Send media from Discord to WhatsApp
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} mediaUrl - Media URL
+   * @param {string} caption - Caption for media
+   * @param {string} senderName - Discord sender's name
+   * @returns {Promise<boolean>} - Success status
+   */
+  async sendMediaToWhatsApp(phoneNumber, mediaUrl, caption, senderName) {
+    try {
+      console.log(`[TicketManager:${this.instanceId}] Sending media to WhatsApp for ${phoneNumber} from ${senderName}`);
+      
+      // Get WhatsApp client
+      const whatsappClient = this.channelManager.getWhatsAppClient();
+      
+      if (!whatsappClient) {
+        console.error(`[TicketManager:${this.instanceId}] WhatsApp client not found`);
+        return false;
+      }
+      
+      // Format caption
+      let formattedCaption = `*${senderName}:* ${caption || ''}`;
+      
+      // Download media to temp file
+      const { default: fetch } = await import('node-fetch');
+      const response = await fetch(mediaUrl);
+      const buffer = await response.buffer();
+      
+      // Create temp file
+      const tempDir = path.join(__dirname, '..', '..', 'temp');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      
+      const filename = `discord_media_${Date.now()}${path.extname(mediaUrl) || '.jpg'}`;
+      const mediaPath = path.join(tempDir, filename);
+      
+      // Save file
+      fs.writeFileSync(mediaPath, buffer);
+      
+      // Determine media type
+      const extension = path.extname(mediaUrl).toLowerCase();
+      let mediaType = 'image';
+      
+      if (['.mp4', '.mov', '.avi', '.webm'].includes(extension)) {
+        mediaType = 'video';
+      } else if (['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip'].includes(extension)) {
+        mediaType = 'document';
+      } else if (['.mp3', '.ogg', '.wav', '.m4a'].includes(extension)) {
+        mediaType = 'audio';
+      }
+      
+      // Send media
+      await whatsappClient.sendMediaMessage(phoneNumber, mediaPath, formattedCaption, mediaType);
+      
+      // Clean up temp file
+      try {
+        fs.unlinkSync(mediaPath);
+      } catch (cleanupError) {
+        console.error(`[TicketManager:${this.instanceId}] Error cleaning up temp file:`, cleanupError);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error(`[TicketManager:${this.instanceId}] Error sending media to WhatsApp:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Get active tickets count
+   * @returns {number} - Number of active tickets
+   */
+  getActiveTicketsCount() {
+    return this.activeTickets;
   }
 }
 

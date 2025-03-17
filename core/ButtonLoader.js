@@ -1,3 +1,4 @@
+// core/ButtonLoader.js - Fixed for enhanced reliability
 const fs = require('fs');
 const path = require('path');
 
@@ -22,32 +23,58 @@ class ButtonLoader {
       return;
     }
     
-    // Read all files in the directory
-    const buttonFiles = fs.readdirSync(buttonsDir)
-      .filter(file => file.endsWith('.js'));
-    
-    // Import and register each button handler
-    for (const file of buttonFiles) {
-      try {
-        const buttonHandler = require(path.join(buttonsDir, file));
-        
-        // Verify it's a valid button handler
-        if (buttonHandler && buttonHandler.customId) {
-          this.buttons.set(buttonHandler.customId, buttonHandler);
-          console.log(`Registered button handler: ${buttonHandler.customId}`);
-        } else if (buttonHandler && typeof buttonHandler.matches === 'function') {
-          // For regex-based handlers, use special "regex" key
-          this.buttons.set(`regex:${file}`, buttonHandler);
-          console.log(`Registered regex button handler from: ${file}`);
-        } else {
-          console.warn(`Invalid button handler in file: ${file}`);
-        }
-      } catch (error) {
-        console.error(`Error loading button handler ${file}:`, error);
-      }
-    }
+    // Load button handlers recursively with filesystem traversal
+    this.loadButtonsRecursively(buttonsDir);
     
     console.log(`Loaded ${this.buttons.size} button handlers`);
+  }
+  
+  /**
+   * Recursively load button handlers from a directory and its subdirectories
+   * @param {string} directory - Directory to load from
+   * @param {string} prefix - Prefix for the button ID (based on subdirectory)
+   */
+  loadButtonsRecursively(directory, prefix = '') {
+    try {
+      // Get all items in the directory
+      const items = fs.readdirSync(directory, { withFileTypes: true });
+      
+      // Process each item
+      for (const item of items) {
+        const itemPath = path.join(directory, item.name);
+        
+        if (item.isDirectory()) {
+          // Recursively load from subdirectory with updated prefix
+          const newPrefix = prefix ? `${prefix}/${item.name}` : item.name;
+          this.loadButtonsRecursively(itemPath, newPrefix);
+        } else if (item.isFile() && item.name.endsWith('.js')) {
+          // Load button handler from file
+          try {
+            const buttonHandler = require(itemPath);
+            
+            // Verify it's a valid button handler
+            if (buttonHandler && buttonHandler.customId) {
+              this.buttons.set(buttonHandler.customId, buttonHandler);
+              console.log(`Registered button handler: ${buttonHandler.customId}`);
+            } else if (buttonHandler && typeof buttonHandler.matches === 'function') {
+              // For regex-based handlers, use special "regex" key
+              const regexKey = prefix 
+                ? `regex:${prefix}/${item.name}` 
+                : `regex:${item.name}`;
+              
+              this.buttons.set(regexKey, buttonHandler);
+              console.log(`Registered regex button handler from: ${regexKey}`);
+            } else {
+              console.warn(`Invalid button handler in file: ${itemPath}`);
+            }
+          } catch (error) {
+            console.error(`Error loading button handler ${itemPath}:`, error);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error loading button handlers from ${directory}:`, error);
+    }
   }
   
   /**
@@ -90,6 +117,12 @@ class ButtonLoader {
     }
     
     try {
+      // IMPROVED: Better error handling for interactions
+      if (typeof handler.execute !== 'function') {
+        console.error(`Button handler for ${interaction.customId} has no execute method`);
+        return false;
+      }
+      
       await handler.execute(interaction, instance);
       return true;
     } catch (error) {

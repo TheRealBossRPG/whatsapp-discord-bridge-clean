@@ -1,4 +1,4 @@
-// core/interactionHandler.js - Updated for new structure
+// core/interactionHandler.js - Updated with better error handling and message processing
 
 /**
  * Main Discord interaction handler
@@ -35,7 +35,7 @@ class InteractionHandler {
     
     try {
       // Access InstanceManager
-      const InstanceManager = require('../core/InstanceManager');
+      const InstanceManager = require('./InstanceManager');
       
       // Check channel parent ID first for more specific matching
       if (interaction.channel && interaction.channel.parentId) {
@@ -91,9 +91,36 @@ class InteractionHandler {
       } else if (interaction.isStringSelectMenu()) {
         handled = await this.selectMenuLoader.handleInteraction(interaction, instance);
       } else if (interaction.isCommand()) {
-        // Legacy command handler
-        const discordCommands = require('../modules/discordCommands');
-        handled = await discordCommands.handleCommand(interaction);
+        // Try to find command in module loader
+        const command = this.moduleLoader.commands.get(interaction.commandName);
+        if (command && typeof command.execute === 'function') {
+          try {
+            await command.execute(interaction, instance);
+            handled = true;
+          } catch (commandError) {
+            console.error(`Error executing command ${interaction.commandName}:`, commandError);
+            
+            // Try to reply with error if not already handled
+            try {
+              const errorMessage = `Error executing command: ${commandError.message}`;
+              if (interaction.deferred && !interaction.replied) {
+                await interaction.editReply({ content: errorMessage });
+              } else if (!interaction.replied) {
+                await interaction.reply({ content: errorMessage, ephemeral: true });
+              }
+            } catch (replyError) {
+              console.error('Error sending command error reply:', replyError);
+            }
+          }
+        } else {
+          // Legacy command handler
+          try {
+            const discordCommands = require('../modules/discordCommands');
+            handled = await discordCommands.handleCommand(interaction);
+          } catch (legacyError) {
+            console.error('Error in legacy command handler:', legacyError);
+          }
+        }
       }
       
       // Fallback handler if needed
@@ -137,6 +164,72 @@ class InteractionHandler {
         console.error("Error sending error response:", responseError);
       }
       
+      return false;
+    }
+  }
+  
+  /**
+   * Handle Discord message
+   * @param {Message} message - Discord message
+   */
+  async handleMessage(message) {
+    try {
+      // Skip bot messages and DMs
+      if (message.author.bot || !message.guild) return false;
+      
+      // Get category ID for this channel
+      const categoryId = message.channel.parentId;
+      if (!categoryId) return false;
+      
+      // Check if this category belongs to an instance
+      if (message.client._instanceRoutes && message.client._instanceRoutes.has(categoryId)) {
+        const routeInfo = message.client._instanceRoutes.get(categoryId);
+        
+        // Log details for debugging
+        console.log(`Message in channel ${message.channel.name} (${message.channel.id}) belongs to instance ${routeInfo.instanceId || 'unknown'}`);
+        
+        const { handler, instance: routeInstance } = routeInfo;
+        
+        // First try using the handler directly
+        if (handler && typeof handler.handleDiscordMessage === 'function') {
+          try {
+            await handler.handleDiscordMessage(message);
+            return true;
+          } catch (handlerError) {
+            console.error(`Error in direct handler for ${routeInfo.instanceId}: ${handlerError.message}`);
+          }
+        }
+        
+        // If direct handler failed, try the instance's handler
+        if (routeInstance?.discordHandler?.handleDiscordMessage) {
+          try {
+            await routeInstance.discordHandler.handleDiscordMessage(message);
+            return true;
+          } catch (instanceError) {
+            console.error(`Error in instance handler for ${routeInfo.instanceId}: ${instanceError.message}`);
+          }
+        }
+        
+        // Final fallback - check all instances for this guild
+        const guildId = message.guild.id;
+        const InstanceManager = require('./InstanceManager');
+        const fallbackInstance = InstanceManager.getInstanceByGuildId(guildId);
+        
+        if (fallbackInstance?.discordHandler?.handleDiscordMessage) {
+          try {
+            await fallbackInstance.discordHandler.handleDiscordMessage(message);
+            return true;
+          } catch (fallbackError) {
+            console.error(`Error in fallback handler for ${guildId}: ${fallbackError.message}`);
+          }
+        }
+        
+        console.error(`No working handler found for message in channel ${message.channel.name}`);
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('Error handling Discord message:', error);
       return false;
     }
   }

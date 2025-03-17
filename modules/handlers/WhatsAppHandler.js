@@ -1,16 +1,21 @@
-// modules/handlers/WhatsAppHandler.js - FIXED VERSION
-
+// modules/handlers/WhatsAppHandler.js (Fixed for New Message Format)
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
-const { MessageMedia } = require('whatsapp-web.js');
-const MediaManager = require('../../utils/MediaManager');
 
 /**
- * WhatsApp message handler with improved message format compatibility
- * CRITICAL FIX: Proper message format handling for Baileys
+ * Handler for WhatsApp messages
  */
 class WhatsAppHandler {
+  /**
+   * Create a new WhatsApp handler
+   * @param {Object} whatsAppClient - The WhatsApp client
+   * @param {Object} userCardManager - User card manager
+   * @param {Object} channelManager - Channel manager
+   * @param {Object} ticketManager - Ticket manager
+   * @param {Object} transcriptManager - Transcript manager
+   * @param {Object} vouchHandler - Vouch handler
+   * @param {Object} options - Handler options
+   */
   constructor(whatsAppClient, userCardManager, channelManager, ticketManager, transcriptManager, vouchHandler, options = {}) {
     this.whatsAppClient = whatsAppClient;
     this.userCardManager = userCardManager;
@@ -19,521 +24,429 @@ class WhatsAppHandler {
     this.transcriptManager = transcriptManager;
     this.vouchHandler = vouchHandler;
     
-    // Set instance ID for isolation
+    // Options
     this.instanceId = options.instanceId || 'default';
-    this.tempDir = options.tempDir || os.tmpdir();
+    this.tempDir = options.tempDir || path.join(__dirname, '..', '..', 'temp');
     
-    // Make sure temp directory exists
-    if (!fs.existsSync(this.tempDir)) {
-      fs.mkdirSync(this.tempDir, { recursive: true });
-    }
-    
-    // Create media manager
-    this.mediaManager = new MediaManager({ 
-      instanceId: this.instanceId
-    });
-    
-    // Clean temp directory on startup
-    console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Cleaning temp directory on startup...`);
-    this.cleanTempDir();
-    console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Cleaned up ${this.deletedTempFiles || 0} temp entries on startup`);
-    
-    // Flag to track if permanent media saving is enabled
-    this.permanentMediaEnabled = options.permanentMediaEnabled || false;
-    console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Permanent media saving is ${this.permanentMediaEnabled ? 'enabled' : 'disabled'}`);
-    
-    // Validate all required managers are present
-    console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Validated managers:
-      - userCardManager: ${this.userCardManager ? 'Available' : 'Missing'} 
-      - channelManager: ${this.channelManager ? 'Available' : 'Missing'}
-      - ticketManager: ${this.ticketManager ? 'Available' : 'Missing'}
-      - mediaManager: ${this.mediaManager ? 'Available' : 'Missing'}`);
-    
-    // Set up message event listeners
-    if (this.whatsAppClient) {
-      this.whatsAppClient.on('message', this.handleMessage.bind(this));
-      console.log(`[BaileysWhatsAppHandler:${this.instanceId}] WhatsApp message event listeners configured`);
-    }
-    
-    // Default messages
+    // Custom messages - with defaults
     this.welcomeMessage = "Welcome to Support! 😊 We're here to help. What's your name so we can get you connected?";
     this.introMessage = "Nice to meet you, {name}! 😊 I'm setting up your support ticket right now. Our team will be with you soon to help with your request!";
     this.reopenTicketMessage = "Welcome back, {name}! 👋 Our team will continue assisting you with your request.";
     
-    console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Initialized with all managers`);
+    // User state tracking
+    this.userStates = new Map();
+    
+    // Bind methods to preserve 'this' context
+    this.handleMessage = this.handleMessage.bind(this);
+    this.processTextMessage = this.processTextMessage.bind(this);
+    this.processMediaMessage = this.processMediaMessage.bind(this);
+    this.createOrReopenTicket = this.createOrReopenTicket.bind(this);
+    
+    // Configure handler
+    this.configureHandler();
+    
+    console.log(`[WhatsAppHandler:${this.instanceId}] Initialized`);
   }
   
   /**
-   * Clean temp directory
-   * @returns {number} - Number of files deleted
+   * Configure the handler
    */
-  cleanTempDir() {
-    try {
-      let deleted = 0;
+  configureHandler() {
+    // Create temp directory if it doesn't exist
+    if (!fs.existsSync(this.tempDir)) {
+      fs.mkdirSync(this.tempDir, { recursive: true });
+    }
+    
+    // Subscribe to WhatsApp client events
+    if (this.whatsAppClient) {
+      // Remove any existing listeners
+      this.whatsAppClient.removeAllListeners('message');
       
-      // Get all files in temp directory
-      const files = fs.readdirSync(this.tempDir);
+      // Add our message handler
+      this.whatsAppClient.on('message', this.handleMessage);
       
-      // Delete each file
-      for (const file of files) {
-        // Only delete files with our prefix
-        if (file.startsWith(`whatsapp-temp-${this.instanceId}`)) {
-          const filePath = path.join(this.tempDir, file);
-          fs.unlinkSync(filePath);
-          deleted++;
-        }
-      }
-      
-      this.deletedTempFiles = deleted;
-      return deleted;
-    } catch (error) {
-      console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Error cleaning temp directory:`, error);
-      this.deletedTempFiles = 0;
-      return 0;
+      console.log(`[WhatsAppHandler:${this.instanceId}] Subscribed to WhatsApp client message events`);
+    } else {
+      console.warn(`[WhatsAppHandler:${this.instanceId}] WhatsApp client not available, cannot subscribe to events`);
     }
   }
   
   /**
-   * CRITICAL FIX: Handle WhatsApp message with proper format detection
-   * @param {Object} rawMessage - Message from WhatsApp
+   * Get vouch handler
+   * @returns {Object} - Vouch handler
    */
-  async handleMessage(rawMessage) {
-    try {
-      console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Message received: ${rawMessage?.key?.remoteJid}`);
-      
-      // CRITICAL FIX: Extract sender from correct location in Baileys message format
-      let from;
-      
-      // Try multiple possible locations for the sender ID
-      if (rawMessage?.key?.remoteJid) {
-        from = rawMessage.key.remoteJid;
-      } else if (rawMessage?.from) {
-        from = rawMessage.from;
-      } else if (rawMessage?.participant) {
-        from = rawMessage.participant;
-      } else if (typeof rawMessage === 'string' && rawMessage.includes('@')) {
-        // Last resort: try to extract from string if it looks like a JID
-        from = rawMessage;
-      }
-      
-      if (!from) {
-        console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Invalid message received: missing 'from' property`);
-        console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Message structure: ${JSON.stringify(rawMessage, null, 2)}`);
-        return;
-      }
-      
-      // Extract the message content (text)
-      let messageText = '';
-      
-      // CRITICAL FIX: Handle different message formats for content extraction
-      if (rawMessage.message?.conversation) {
-        messageText = rawMessage.message.conversation;
-      } else if (rawMessage.message?.extendedTextMessage?.text) {
-        messageText = rawMessage.message.extendedTextMessage.text;
-      } else if (rawMessage.body) {
-        messageText = rawMessage.body;
-      } else if (typeof rawMessage.text === 'function') {
-        messageText = rawMessage.text();
-      } else if (rawMessage.message) {
-        // Attempt to extract text from various message types as fallback
-        const msgTypes = [
-          'conversation', 
-          'imageMessage.caption', 
-          'videoMessage.caption',
-          'documentMessage.caption'
-        ];
-        
-        for (const type of msgTypes) {
-          const props = type.split('.');
-          let value = rawMessage.message;
-          
-          for (const prop of props) {
-            value = value?.[prop];
-            if (!value) break;
-          }
-          
-          if (value) {
-            messageText = value;
-            break;
-          }
-        }
-      }
-      
-      // Check for media content
-      let hasMedia = false;
-      let mediaType = null;
-      let mediaData = null;
-      
-      // CRITICAL FIX: Handle different media formats
-      if (
-        rawMessage.message?.imageMessage || 
-        rawMessage.message?.videoMessage || 
-        rawMessage.message?.documentMessage || 
-        rawMessage.message?.audioMessage ||
-        rawMessage.hasMedia
-      ) {
-        hasMedia = true;
-        
-        // Determine media type
-        if (rawMessage.message?.imageMessage) {
-          mediaType = 'image';
-        } else if (rawMessage.message?.videoMessage) {
-          mediaType = 'video';
-        } else if (rawMessage.message?.documentMessage) {
-          mediaType = 'document';
-        } else if (rawMessage.message?.audioMessage) {
-          mediaType = 'audio';
-        } else if (rawMessage.hasMedia) {
-          // Use WhatsApp Web.js media handling if available
-          try {
-            const media = await rawMessage.downloadMedia();
-            if (media) {
-              mediaType = media.mimetype.split('/')[0];
-              mediaData = media;
-            }
-          } catch (mediaError) {
-            console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Error downloading media:`, mediaError);
-          }
-        }
-      }
-      
-      // Clean phone number for consistent lookup
-      const phoneNumber = this.mediaManager.cleanPhoneNumber(from);
-      
-      // Format message for processing
-      const message = {
-        from,
-        phoneNumber,
-        body: messageText,
-        hasMedia,
-        mediaType,
-        mediaData,
-        timestamp: new Date(),
-        raw: rawMessage
-      };
-      
-      // Process the message
-      await this.processMessage(message);
-    } catch (error) {
-      console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Error handling message:`, error);
-    }
+  getVouchHandler() {
+    return this.vouchHandler;
   }
   
   /**
-   * Process the message
-   * @param {Object} message - Formatted message
+   * Set vouch handler
+   * @param {Object} vouchHandler - Vouch handler
    */
-  async processMessage(message) {
-    try {
-      // Check if message is from a group
-      if (message.from.endsWith('@g.us')) {
-        console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Skipping group message: ${message.from}`);
-        return;
-      }
-      
-      // Get user card if exists
-      let userCard = this.userCardManager.getUserCardByPhone(message.phoneNumber);
-      
-      // Check if message is a vouch
-      const isVouchRequest = message.body?.toLowerCase().startsWith('vouch') || message.body?.toLowerCase().includes('!vouch');
-      
-      // Handle vouch request
-      if (
-        isVouchRequest && 
-        this.vouchHandler && 
-        userCard && 
-        !this.vouchHandler.isDisabled
-      ) {
-        await this.vouchHandler.handleVouchMessage(message, userCard);
-        return;
-      }
-      
-      // Check if a conversation already exists for this user
-      const existingChannel = this.channelManager.getChannelByPhone(message.phoneNumber);
-      
-      if (existingChannel) {
-        // Existing conversation
-        console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Found existing channel for ${message.phoneNumber}: ${existingChannel.id}`);
-        
-        // Get user card - it should exist
-        if (!userCard) {
-          // If somehow we have a channel but no user card, create one
-          userCard = this.userCardManager.createUserCard(message.phoneNumber, `Unknown (${message.phoneNumber})`);
-          console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Created user card for existing channel: ${userCard.name}`);
-        }
-        
-        // Forward message to Discord
-        await this.forwardMessageToDiscord(message, existingChannel.id, userCard);
-        
-        return;
-      }
-      
-      // New conversation or username collection
-      if (!userCard) {
-        // First contact - send welcome message
-        console.log(`[BaileysWhatsAppHandler:${this.instanceId}] New user ${message.phoneNumber} - sending welcome message`);
-        await this.sendWelcomeMessage(message.from);
-        
-        // Create user card with phone number as temporary name
-        userCard = this.userCardManager.createUserCard(
-          message.phoneNumber,
-          `Unknown (${message.phoneNumber})`
-        );
-        
-        // Store the first message as potential name
-        userCard.pendingName = message.body.trim();
-        this.userCardManager.saveUserCard(userCard);
-        
-        console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Created temporary user card: ${userCard.name}`);
-      } else if (userCard.name.startsWith('Unknown') && userCard.pendingName) {
-        // Need to confirm name and create channel
-        const name = userCard.pendingName;
-        userCard.name = name;
-        userCard.pendingName = null;
-        this.userCardManager.saveUserCard(userCard);
-        
-        console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Updated user name to: ${name}`);
-        
-        // Set phone-to-username mapping
-        this.mediaManager.setPhoneToUsername(message.phoneNumber, name);
-        
-        // Send intro message
-        const introMessage = this.introMessage.replace('{name}', name);
-        await this.sendTextMessage(message.from, introMessage);
-        
-        // Create Discord ticket
-        const channelId = await this.ticketManager.createTicket(
-          userCard, 
-          message.phoneNumber
-        );
-        
-        // Store channel mapping
-        if (channelId) {
-          this.channelManager.setChannelForPhone(message.phoneNumber, channelId);
-          console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Created new ticket channel ${channelId} for ${name} (${message.phoneNumber})`);
-          
-          // Forward original message to new channel
-          await this.forwardMessageToDiscord(message, channelId, userCard);
-        } else {
-          console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Failed to create ticket for ${name}`);
-          await this.sendTextMessage(message.from, "I'm sorry, there was an error creating your support ticket. Please try again later.");
-        }
-      } else if (userCard.name.startsWith('Unknown')) {
-        // We have a user card but no name set and no pending name
-        // This might be after a restart - treat next message as name
-        userCard.pendingName = message.body.trim();
-        this.userCardManager.saveUserCard(userCard);
-        
-        // Send welcome message again
-        await this.sendWelcomeMessage(message.from);
-        
-        console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Set pending name for existing user card: ${message.body.trim()}`);
-      } else {
-        // User exists but no active channel - reopen ticket
-        console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Reopening ticket for ${userCard.name} (${message.phoneNumber})`);
-        
-        // Send reopen message
-        const reopenMessage = this.reopenTicketMessage.replace('{name}', userCard.name);
-        await this.sendTextMessage(message.from, reopenMessage);
-        
-        // Create or reopen Discord ticket
-        const channelId = await this.ticketManager.createTicket(
-          userCard, 
-          message.phoneNumber, 
-          true // isReopen
-        );
-        
-        // Store channel mapping
-        if (channelId) {
-          this.channelManager.setChannelForPhone(message.phoneNumber, channelId);
-          console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Reopened ticket channel ${channelId} for ${userCard.name}`);
-          
-          // Forward message to reopened channel
-          await this.forwardMessageToDiscord(message, channelId, userCard);
-        } else {
-          console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Failed to reopen ticket for ${userCard.name}`);
-          await this.sendTextMessage(message.from, "I'm sorry, there was an error reopening your support ticket. Please try again later.");
-        }
-      }
-    } catch (error) {
-      console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Error processing message:`, error);
-    }
+  setVouchHandler(vouchHandler) {
+    this.vouchHandler = vouchHandler;
   }
   
   /**
-   * Forward WhatsApp message to Discord
-   * @param {Object} message - Message object
-   * @param {string} channelId - Discord channel ID
-   * @param {Object} userCard - User card
-   * @returns {Promise<void>}
+   * Handle incoming WhatsApp message - COMPLETELY REWRITTEN to handle simplified message format
+   * @param {Object} message - Simplified WhatsApp message from BaileysClient
    */
-  async forwardMessageToDiscord(message, channelId, userCard) {
+  async handleMessage(message) {
     try {
-      // Get Discord channel
-      const channel = await this.ticketManager.getDiscordChannel(channelId);
+      console.log(`[WhatsAppHandler:${this.instanceId}] Handling message from ${message.jid}`);
       
-      if (!channel) {
-        console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Channel not found: ${channelId}`);
+      // Extract sender's phone number
+      const phoneNumber = message.jid;
+      
+      if (!phoneNumber) {
+        console.error(`[WhatsAppHandler:${this.instanceId}] Invalid JID in message`);
         return;
       }
       
-      // Handle media messages
-      if (message.hasMedia) {
-        await this.handleMediaMessage(message, channel, userCard);
+      // Skip group messages
+      if (phoneNumber.includes('@g.us') || phoneNumber.includes('@broadcast')) {
+        console.log(`[WhatsAppHandler:${this.instanceId}] Skipping group/broadcast message from ${phoneNumber}`);
         return;
       }
       
-      // Handle text message
-      if (message.body && message.body.trim() !== '') {
-        // Format username for display
-        const displayName = userCard.name || `Unknown (${message.phoneNumber})`;
-        
-        // Send message to Discord
-        await channel.send(`**${displayName}:** ${message.body}`);
-        
-        console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Forwarded text message to channel ${channelId}`);
-      }
-    } catch (error) {
-      console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Error forwarding message to Discord:`, error);
-    }
-  }
-  
-  /**
-   * Handle media message (image, video, document, etc.)
-   * @param {Object} message - Message object with media
-   * @param {Object} channel - Discord channel
-   * @param {Object} userCard - User card
-   * @returns {Promise<void>}
-   */
-  async handleMediaMessage(message, channel, userCard) {
-    try {
-      // Get media data
-      let media = message.mediaData;
-      
-      // If media not already downloaded, try to download it
-      if (!media && message.raw) {
+      // Check for vouch message first
+      if (this.vouchHandler && message.type === 'text' && message.content.startsWith('Vouch!')) {
         try {
-          // For Baileys message format
-          if (message.raw.downloadMedia) {
-            media = await message.raw.downloadMedia();
-          } else if (this.whatsAppClient.downloadMedia) {
-            media = await this.whatsAppClient.downloadMedia(message.raw);
-          }
-        } catch (downloadError) {
-          console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Error downloading media:`, downloadError);
-        }
-      }
-      
-      if (!media || !media.data) {
-        console.error(`[BaileysWhatsAppHandler:${this.instanceId}] No media data available`);
-        
-        // Send text message instead
-        if (message.body && message.body.trim() !== '') {
-          const displayName = userCard.name || `Unknown (${message.phoneNumber})`;
-          await channel.send(`**${displayName} sent media** (unavailable): ${message.body}`);
-        } else {
-          const displayName = userCard.name || `Unknown (${message.phoneNumber})`;
-          await channel.send(`**${displayName} sent media** (unavailable)`);
+          await this.vouchHandler.handleVouch(message);
+        } catch (vouchError) {
+          console.error(`[WhatsAppHandler:${this.instanceId}] Error handling vouch message:`, vouchError);
         }
         return;
       }
       
-      // Create temp file for Discord upload
-      const extension = this.getFileExtension(media.mimetype);
-      const tempFilePath = path.join(
-        this.tempDir,
-        `whatsapp-temp-${this.instanceId}-${Date.now()}.${extension}`
-      );
-      
-      // Save media to temp file
-      const buffer = Buffer.from(media.data, 'base64');
-      fs.writeFileSync(tempFilePath, buffer);
-      
-      // Get display name
-      const displayName = userCard.name || `Unknown (${message.phoneNumber})`;
-      
-      // Send to Discord with caption
-      const caption = message.body ? `**${displayName}:** ${message.body}` : `**${displayName}:**`;
-      await channel.send({
-        content: caption,
-        files: [tempFilePath]
-      });
-      
-      console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Forwarded media message to channel ${channel.id}`);
-      
-      // Clean up temp file - not required for permanent storage
-      if (!this.permanentMediaEnabled) {
-        fs.unlinkSync(tempFilePath);
+      // Process based on message type
+      if (message.type === 'text') {
+        // Text message
+        await this.processTextMessage(message, phoneNumber);
+      } else if (['image', 'video', 'document', 'audio', 'sticker'].includes(message.type)) {
+        // Media message
+        await this.processMediaMessage(message, phoneNumber);
+      } else {
+        // Unknown message type - try to handle it anyway
+        console.log(`[WhatsAppHandler:${this.instanceId}] Unknown message type from ${phoneNumber}: ${message.type}`);
+        
+        // Try to extract content from raw message
+        let fallbackContent = "Unknown message type";
+        
+        try {
+          if (message.rawMessage && message.rawMessage.message) {
+            // Log message keys for debugging
+            console.log(`[WhatsAppHandler:${this.instanceId}] Message keys:`, Object.keys(message.rawMessage.message));
+            
+            // Try to find any text content
+            const msgTypes = Object.keys(message.rawMessage.message);
+            for (const type of msgTypes) {
+              const typeObj = message.rawMessage.message[type];
+              
+              if (typeObj && typeof typeObj === 'object') {
+                if (typeObj.caption) {
+                  fallbackContent = typeObj.caption;
+                  break;
+                } else if (typeObj.text) {
+                  fallbackContent = typeObj.text;
+                  break;
+                } else if (typeObj.content) {
+                  fallbackContent = "Media content";
+                  break;
+                }
+              } else if (typeof typeObj === 'string') {
+                fallbackContent = typeObj;
+                break;
+              }
+            }
+          }
+        } catch (extractError) {
+          console.error(`[WhatsAppHandler:${this.instanceId}] Error extracting content from unknown message:`, extractError);
+        }
+        
+        await this.createOrReopenTicket(phoneNumber, null, null, fallbackContent || "Unknown message type");
       }
     } catch (error) {
-      console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Error handling media message:`, error);
-      
-      // Try to send a text message
-      try {
-        const displayName = userCard.name || `Unknown (${message.phoneNumber})`;
-        await channel.send(`**${displayName} sent media** (failed to process): ${message.body || ''}`);
-      } catch (sendError) {
-        console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Error sending fallback message:`, sendError);
-      }
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error handling message:`, error);
     }
   }
   
   /**
-   * Get file extension from MIME type
-   * @param {string} mimetype - MIME type
-   * @returns {string} - File extension
+   * Process text message
+   * @param {Object} message - WhatsApp message
+   * @param {string} phoneNumber - Sender's phone number
    */
-  getFileExtension(mimetype) {
-    if (!mimetype) return 'bin';
-    
-    const mapping = {
-      'image/jpeg': 'jpg',
-      'image/png': 'png',
-      'image/gif': 'gif',
-      'image/webp': 'webp',
-      'video/mp4': 'mp4',
-      'audio/mpeg': 'mp3',
-      'audio/ogg': 'ogg',
-      'application/pdf': 'pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
-      'text/plain': 'txt'
-    };
-    
-    return mapping[mimetype] || mimetype.split('/')[1] || 'bin';
-  }
-  
-  /**
-   * Send welcome message to user
-   * @param {string} to - Recipient
-   */
-  async sendWelcomeMessage(to) {
-    return this.sendTextMessage(to, this.welcomeMessage);
-  }
-  
-  /**
-   * Send text message
-   * @param {string} to - Recipient
-   * @param {string} text - Message text
-   */
-  async sendTextMessage(to, text) {
+  async processTextMessage(message, phoneNumber) {
     try {
-      if (!this.whatsAppClient) {
-        console.error(`[BaileysWhatsAppHandler:${this.instanceId}] WhatsApp client not available`);
+      // Extract message text
+      const text = message.content || '';
+      console.log(`[WhatsAppHandler:${this.instanceId}] Processing text message from ${phoneNumber}: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
+      
+      // Get user state
+      const userState = this.userStates.get(phoneNumber) || 'new';
+      
+      // Check if user exists in userCardManager
+      const userExists = await this.userCardManager.userExists(phoneNumber);
+      
+      if (!userExists && userState === 'new') {
+        // First message from new user - ask for their name
+        await this.whatsAppClient.sendTextMessage(phoneNumber, this.welcomeMessage);
+        this.userStates.set(phoneNumber, 'awaiting_name');
+        return;
+      } else if (!userExists && userState === 'awaiting_name') {
+        // User is providing their name
+        const name = text.trim();
+        
+        // Basic validation
+        if (!name || name.length < 2) {
+          await this.whatsAppClient.sendTextMessage(phoneNumber, "Please provide a valid name so I can connect you with our support team.");
+          return;
+        }
+        
+        // Create user card
+        await this.userCardManager.createUserCard(phoneNumber, name);
+        
+        // Send intro message with name
+        const personalizedIntro = this.introMessage.replace(/{name}/g, name);
+        await this.whatsAppClient.sendTextMessage(phoneNumber, personalizedIntro);
+        
+        // Update state
+        this.userStates.set(phoneNumber, 'registered');
+        
+        // Create ticket
+        await this.createOrReopenTicket(phoneNumber, name, null, text);
+      } else {
+        // Existing user sending a message
+        const userCard = await this.userCardManager.getUserCard(phoneNumber);
+        const name = userCard ? userCard.name : "Customer";
+        
+        // Create or update ticket
+        await this.createOrReopenTicket(phoneNumber, name, null, text);
+      }
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error processing text message:`, error);
+    }
+  }
+  
+  /**
+   * Process media message
+   * @param {Object} message - WhatsApp message
+   * @param {string} phoneNumber - Sender's phone number
+   */
+  async processMediaMessage(message, phoneNumber) {
+    try {
+      console.log(`[WhatsAppHandler:${this.instanceId}] Processing media message from ${phoneNumber}: ${message.type}`);
+      
+      // Extract caption from message
+      const caption = message.content || '';
+      const mediaType = message.type;
+      
+      // Get user state
+      const userState = this.userStates.get(phoneNumber) || 'new';
+      
+      // Check if user exists in userCardManager
+      const userExists = await this.userCardManager.userExists(phoneNumber);
+      
+      if (!userExists && userState === 'new') {
+        // First message from new user - ask for their name
+        await this.whatsAppClient.sendTextMessage(phoneNumber, this.welcomeMessage);
+        this.userStates.set(phoneNumber, 'awaiting_name');
+        return;
+      } else if (!userExists && userState === 'awaiting_name') {
+        // User is sending media before providing name
+        // We'll use caption as name if available
+        let name = caption.trim();
+        
+        // If no caption, generate a generic name
+        if (!name || name.length < 2) {
+          name = `User ${phoneNumber.split('@')[0].substring(phoneNumber.length - 4)}`;
+        }
+        
+        // Create user card
+        await this.userCardManager.createUserCard(phoneNumber, name);
+        
+        // Send intro message with name
+        const personalizedIntro = this.introMessage.replace(/{name}/g, name);
+        await this.whatsAppClient.sendTextMessage(phoneNumber, personalizedIntro);
+        
+        // Update state
+        this.userStates.set(phoneNumber, 'registered');
+        
+        // Download media and create ticket
+        try {
+          const mediaPath = await this.downloadMedia(message);
+          await this.createOrReopenTicket(phoneNumber, name, mediaPath, caption, mediaType);
+        } catch (mediaError) {
+          console.error(`[WhatsAppHandler:${this.instanceId}] Error downloading media:`, mediaError);
+          await this.createOrReopenTicket(phoneNumber, name, null, `${caption}\n\n[Media download failed: ${mediaType}]`);
+        }
+      } else {
+        // Existing user sending a message
+        const userCard = await this.userCardManager.getUserCard(phoneNumber);
+        const name = userCard ? userCard.name : "Customer";
+        
+        // Download media and update ticket
+        try {
+          const mediaPath = await this.downloadMedia(message);
+          await this.createOrReopenTicket(phoneNumber, name, mediaPath, caption, mediaType);
+        } catch (mediaError) {
+          console.error(`[WhatsAppHandler:${this.instanceId}] Error downloading media:`, mediaError);
+          await this.createOrReopenTicket(phoneNumber, name, null, `${caption}\n\n[Media download failed: ${mediaType}]`);
+        }
+      }
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error processing media message:`, error);
+    }
+  }
+  
+  /**
+   * Download media from message
+   * @param {Object} message - WhatsApp message
+   * @returns {Promise<string|null>} - Path to downloaded media or null
+   */
+  async downloadMedia(message) {
+    try {
+      if (!this.whatsAppClient || typeof this.whatsAppClient.downloadMedia !== 'function') {
+        console.error(`[WhatsAppHandler:${this.instanceId}] WhatsApp client has no downloadMedia method`);
+        return null;
+      }
+      
+      // Get media type for extension
+      const mediaType = message.type;
+      let extension = '.bin';
+      
+      switch (mediaType) {
+        case 'image':
+          extension = '.jpg';
+          break;
+        case 'video':
+          extension = '.mp4';
+          break;
+        case 'audio':
+          extension = '.ogg';
+          break;
+        case 'document':
+          // Try to get extension from filename if available
+          try {
+            if (message.rawMessage?.message?.documentMessage?.fileName) {
+              const origExt = path.extname(message.rawMessage.message.documentMessage.fileName);
+              if (origExt) extension = origExt;
+            }
+          } catch (e) {
+            // Keep default extension
+          }
+          break;
+        case 'sticker':
+          extension = '.webp';
+          break;
+      }
+      
+      // Generate temp file path
+      const timestamp = Date.now();
+      const randomNum = Math.floor(Math.random() * 10000);
+      const filename = `${timestamp}_${randomNum}${extension}`;
+      const mediaPath = path.join(this.tempDir, filename);
+      
+      // Ensure temp directory exists
+      if (!fs.existsSync(this.tempDir)) {
+        fs.mkdirSync(this.tempDir, { recursive: true });
+      }
+      
+      // Download media using the client's method
+      const buffer = await this.whatsAppClient.downloadMedia(message);
+      
+      // Save buffer to file
+      fs.writeFileSync(mediaPath, buffer);
+      
+      console.log(`[WhatsAppHandler:${this.instanceId}] Media saved to ${mediaPath}`);
+      return mediaPath;
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error downloading media:`, error);
+      return null;
+    }
+  }
+  
+  /**
+   * Create or reopen a ticket for a user
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} name - User's name
+   * @param {string} mediaPath - Path to media file (if any)
+   * @param {string} caption - Message caption or text
+   * @param {string} mediaType - Type of media
+   * @returns {Promise<Object>} - Ticket object
+   */
+  async createOrReopenTicket(phoneNumber, name, mediaPath = null, caption = '', mediaType = 'image') {
+    try {
+      console.log(`[WhatsAppHandler:${this.instanceId}] Creating or reopening ticket for ${phoneNumber} (${name || 'unknown'})`);
+      
+      // If name not provided, try to get it from user card
+      if (!name) {
+        try {
+          const userCard = await this.userCardManager.getUserCard(phoneNumber);
+          if (userCard) name = userCard.name;
+        } catch (error) {
+          console.error(`[WhatsAppHandler:${this.instanceId}] Error getting user card:`, error);
+        }
+      }
+      
+      // Fallback name
+      if (!name) name = "Customer";
+      
+      // Check if channel exists for this phone number
+      const channelExists = this.channelManager.channelExists(phoneNumber);
+      
+      if (channelExists) {
+        // Channel exists - get it and send message
+        const channelId = this.channelManager.getChannelId(phoneNumber);
+        
+        if (!channelId) {
+          // Channel mapping exists but channel ID is missing - recreate
+          console.log(`[WhatsAppHandler:${this.instanceId}] Channel mapping exists but ID is missing, recreating ticket`);
+          return this.ticketManager.createTicket(phoneNumber, name, caption, mediaPath, mediaType);
+        }
+        
+        // Send message to channel
+        if (mediaPath && fs.existsSync(mediaPath)) {
+          // Send media with caption
+          await this.ticketManager.sendMediaToTicket(phoneNumber, mediaPath, caption, mediaType);
+        } else if (caption) {
+          // Send text message
+          await this.ticketManager.sendMessageToTicket(phoneNumber, caption);
+        }
+        
+        // Return existing ticket info
+        return {
+          channelId,
+          isNew: false,
+          phoneNumber,
+          name
+        };
+      } else {
+        // No channel exists - create new ticket
+        console.log(`[WhatsAppHandler:${this.instanceId}] Creating new ticket for ${phoneNumber} (${name})`);
+        return this.ticketManager.createTicket(phoneNumber, name, caption, mediaPath, mediaType);
+      }
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error creating/reopening ticket:`, error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Send vouch request to user
+   * @param {string} phoneNumber - User's phone number 
+   * @returns {Promise<boolean>} - Success status
+   */
+  async sendVouchRequest(phoneNumber) {
+    try {
+      if (!this.vouchHandler) {
+        console.error(`[WhatsAppHandler:${this.instanceId}] Vouch handler not configured`);
         return false;
       }
       
-      console.log(`[BaileysWhatsAppHandler:${this.instanceId}] Sending message to ${to}: ${text.substring(0, 50)}...`);
-      
-      // Use sendMessage for Baileys
-      if (typeof this.whatsAppClient.sendMessage === 'function') {
-        await this.whatsAppClient.sendMessage(to, { text });
-        return true;
-      }
-      
-      return false;
+      return await this.vouchHandler.sendVouchRequest(phoneNumber);
     } catch (error) {
-      console.error(`[BaileysWhatsAppHandler:${this.instanceId}] Error sending message:`, error);
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error sending vouch request:`, error);
       return false;
     }
   }

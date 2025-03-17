@@ -1,259 +1,263 @@
-// modules/channelManager.js - FIXED VERSION
+// modules/managers/ChannelManager.js
 const fs = require('fs');
 const path = require('path');
 
+/**
+ * ChannelManager - Handles mapping between WhatsApp users and Discord channels
+ */
 class ChannelManager {
-  constructor(instanceId) {
-    this.instanceId = instanceId || 'default';
+  /**
+   * Create a new channel manager
+   * @param {string} instanceId - Instance ID
+   */
+  constructor(instanceId = 'default') {
+    this.instanceId = instanceId;
     this.channelMap = new Map();
+    this.whatsAppClient = null;
+    this.specialChannels = {};
     
-    // FIXED: Use more reliable path calculation
-    const baseDir = instanceId 
-      ? path.join(__dirname, '..', 'instances', instanceId)
-      : path.join(__dirname, '..');
+    // Set storage paths
+    this.baseDir = path.join(__dirname, '..', '..', 'instances', instanceId);
+    this.channelMapPath = path.join(this.baseDir, 'channel_map.json');
     
-    // Instance-specific file path
-    this.filePath = path.join(baseDir, 'channel_map.json');
-    
-    // Ensure the directory exists
-    const dirPath = path.dirname(this.filePath);
-    if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
+    // Ensure directory exists
+    if (!fs.existsSync(this.baseDir)) {
+      fs.mkdirSync(this.baseDir, { recursive: true });
     }
     
-    // Log initialization
-    console.log(`[ChannelManager] Initialized with instance ID: ${this.instanceId}`);
-    console.log(`[ChannelManager] Using file path: ${this.filePath}`);
-    
+    // Load channel map from disk
     this.loadChannelMap();
+    
+    console.log(`[ChannelManager:${instanceId}] Initialized with ${this.channelMap.size} channels`);
   }
   
-  // Save channel mappings to file
-  saveChannelMap() {
-    try {
-      // Convert Map to an object for serialization
-      const mapObj = {};
-      this.channelMap.forEach((channelId, number) => {
-        mapObj[number] = channelId;
-      });
-      
-      fs.writeFileSync(this.filePath, JSON.stringify(mapObj, null, 2), 'utf8');
-      console.log(`[ChannelManager] Saved ${this.channelMap.size} channel mappings to ${this.filePath}`);
-    } catch (error) {
-      console.error(`[ChannelManager] Error saving channel map: ${error.message}`);
-      // Try to create backup of the channel map in case of file write errors
-      try {
-        const backupPath = `${this.filePath}.backup`;
-        const mapObj = {};
-        this.channelMap.forEach((channelId, number) => {
-          mapObj[number] = channelId;
-        });
-        fs.writeFileSync(backupPath, JSON.stringify(mapObj, null, 2), 'utf8');
-        console.log(`[ChannelManager] Created backup of channel map at ${backupPath}`);
-      } catch (backupError) {
-        console.error(`[ChannelManager] Error creating backup: ${backupError.message}`);
-      }
-    }
+  /**
+   * Set WhatsApp client
+   * @param {Object} client - WhatsApp client
+   */
+  setWhatsAppClient(client) {
+    this.whatsAppClient = client;
   }
   
-  // Load channel mappings from file
-  loadChannelMap() {
-    try {
-      // First try to load the regular file
-      if (fs.existsSync(this.filePath)) {
-        const data = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
-        this.channelMap = new Map();
-        
-        // Convert object to Map
-        Object.entries(data).forEach(([number, channelId]) => {
-          this.channelMap.set(this.normalizePhoneNumber(number), channelId);
-        });
-        
-        console.log(`[ChannelManager] Loaded ${this.channelMap.size} channel mappings from ${this.filePath}`);
-      } 
-      // If regular file doesn't exist, try to load backup
-      else if (fs.existsSync(`${this.filePath}.backup`)) {
-        console.log(`[ChannelManager] Main file not found, trying to load from backup`);
-        const data = JSON.parse(fs.readFileSync(`${this.filePath}.backup`, 'utf8'));
-        this.channelMap = new Map();
-        
-        // Convert object to Map
-        Object.entries(data).forEach(([number, channelId]) => {
-          this.channelMap.set(this.normalizePhoneNumber(number), channelId);
-        });
-        
-        console.log(`[ChannelManager] Loaded ${this.channelMap.size} channel mappings from backup`);
-        
-        // Save the recovered data to the main file
-        this.saveChannelMap();
-      }
-      // No file exists, create new empty one
-      else {
-        console.log(`[ChannelManager] No channel map file found at ${this.filePath}, starting with empty map`);
-        this.channelMap = new Map();
-        // Create empty file
-        fs.writeFileSync(this.filePath, '{}', 'utf8');
-        console.log(`[ChannelManager] Created empty channel map file at ${this.filePath}`);
-      }
-    } catch (error) {
-      console.error(`[ChannelManager] Error loading channel map: ${error.message}`);
-      this.channelMap = new Map();
-      
-      // Create empty file if it doesn't exist
-      if (!fs.existsSync(this.filePath)) {
-        try {
-          fs.writeFileSync(this.filePath, '{}', 'utf8');
-          console.log(`[ChannelManager] Created empty channel map file at ${this.filePath}`);
-        } catch (writeError) {
-          console.error(`[ChannelManager] Error creating empty channel map file: ${writeError.message}`);
-        }
-      }
-    }
+  /**
+   * Get WhatsApp client
+   * @returns {Object} - WhatsApp client
+   */
+  getWhatsAppClient() {
+    return this.whatsAppClient;
   }
   
-  // FIXED: Helper method to normalize phone numbers
-  normalizePhoneNumber(phoneNumber) {
+  /**
+   * Set special channels map
+   * @param {Object} specialChannels - Special channels map
+   */
+  setSpecialChannels(specialChannels) {
+    this.specialChannels = specialChannels || {};
+  }
+  
+  /**
+   * Get special channels map
+   * @returns {Object} - Special channels map
+   */
+  getSpecialChannels() {
+    return this.specialChannels;
+  }
+  
+  /**
+   * Clean phone number for consistent storage
+   * @param {string} phoneNumber - Raw phone number
+   * @returns {string} - Cleaned phone number
+   */
+  cleanPhoneNumber(phoneNumber) {
     if (!phoneNumber) return 'unknown';
     
-    // Remove WhatsApp extensions if present
-    let normalized = String(phoneNumber).replace(/@.*$/, '');
+    // Convert to string first
+    let clean = String(phoneNumber);
     
-    // Ensure it's a string
-    normalized = String(normalized);
+    // Remove WhatsApp extensions (be thorough)
+    clean = clean.replace(/@s\.whatsapp\.net/g, '')
+                .replace(/@c\.us/g, '')
+                .replace(/@g\.us/g, '')
+                .replace(/@broadcast/g, '')
+                .replace(/@.*$/, '');
     
-    // Clean up any other formatting issues
-    normalized = normalized.trim();
-    
-    return normalized;
-  }
-  
-  getWhatsAppNumberByChannelId(channelId) {
-    if (!channelId) {
-      console.error(`[ChannelManager] getWhatsAppNumberByChannelId called with empty channelId`);
-      return null;
+    // Remove any non-digit characters except possibly leading '+' sign
+    if (clean.startsWith('+')) {
+      clean = '+' + clean.substring(1).replace(/[^0-9]/g, '');
+    } else {
+      clean = clean.replace(/[^0-9]/g, '');
     }
     
-    for (const [number, id] of this.channelMap.entries()) {
+    return clean;
+  }
+  
+  /**
+   * Format phone number consistently
+   * @param {string} phoneNumber - Phone number
+   * @returns {string} - Formatted phone number
+   */
+  formatPhoneNumber(phoneNumber) {
+    const clean = this.cleanPhoneNumber(phoneNumber);
+    
+    // Make sure it has the WhatsApp suffix if not already present
+    if (!phoneNumber.includes('@')) {
+      return `${clean}@s.whatsapp.net`;
+    }
+    
+    return phoneNumber;
+  }
+  
+  /**
+   * Load channel map from disk
+   */
+  loadChannelMap() {
+    try {
+      if (fs.existsSync(this.channelMapPath)) {
+        const mapData = JSON.parse(fs.readFileSync(this.channelMapPath, 'utf8'));
+        
+        // Convert to Map object
+        Object.entries(mapData).forEach(([phone, channelId]) => {
+          this.channelMap.set(this.formatPhoneNumber(phone), channelId);
+        });
+        
+        console.log(`[ChannelManager:${this.instanceId}] Loaded ${this.channelMap.size} channels from ${this.channelMapPath}`);
+      } else {
+        console.log(`[ChannelManager:${this.instanceId}] No channel map file found at ${this.channelMapPath}`);
+      }
+    } catch (error) {
+      console.error(`[ChannelManager:${this.instanceId}] Error loading channel map:`, error);
+    }
+  }
+  
+  /**
+   * Save channel map to disk
+   */
+  saveChannelMap() {
+    try {
+      // Convert Map to regular object for JSON serialization
+      const mapData = {};
+      this.channelMap.forEach((channelId, phone) => {
+        mapData[phone] = channelId;
+      });
+      
+      // Ensure directory exists
+      if (!fs.existsSync(this.baseDir)) {
+        fs.mkdirSync(this.baseDir, { recursive: true });
+      }
+      
+      // Write to file
+      fs.writeFileSync(this.channelMapPath, JSON.stringify(mapData, null, 2), 'utf8');
+      
+      console.log(`[ChannelManager:${this.instanceId}] Saved ${this.channelMap.size} channels to ${this.channelMapPath}`);
+    } catch (error) {
+      console.error(`[ChannelManager:${this.instanceId}] Error saving channel map:`, error);
+    }
+  }
+  
+  /**
+   * Set channel for phone number
+   * @param {string} phoneNumber - Phone number
+   * @param {string} channelId - Discord channel ID
+   */
+  setChannel(phoneNumber, channelId) {
+    // Format phone number
+    const phone = this.formatPhoneNumber(phoneNumber);
+    
+    // Update map
+    this.channelMap.set(phone, channelId);
+    
+    // Save to disk
+    this.saveChannelMap();
+    
+    console.log(`[ChannelManager:${this.instanceId}] Set channel ${channelId} for ${phone}`);
+  }
+  
+  /**
+   * Get channel ID for phone number
+   * @param {string} phoneNumber - Phone number
+   * @returns {string|null} - Discord channel ID or null if not found
+   */
+  getChannelId(phoneNumber) {
+    // Format phone number
+    const phone = this.formatPhoneNumber(phoneNumber);
+    
+    // Get from map
+    return this.channelMap.get(phone) || null;
+  }
+  
+  /**
+   * Check if channel exists for phone number
+   * @param {string} phoneNumber - Phone number
+   * @returns {boolean} - Whether channel exists
+   */
+  channelExists(phoneNumber) {
+    // Format phone number
+    const phone = this.formatPhoneNumber(phoneNumber);
+    
+    // Check if in map
+    return this.channelMap.has(phone);
+  }
+  
+  /**
+   * Get phone number from channel ID
+   * @param {string} channelId - Discord channel ID
+   * @returns {string|null} - Phone number or null if not found
+   */
+  getPhoneNumber(channelId) {
+    // Iterate through map to find matching channel ID
+    for (const [phone, id] of this.channelMap.entries()) {
       if (id === channelId) {
-        console.log(`[ChannelManager] Found WhatsApp number ${number} for channel ID: ${channelId}`);
-        return number;
+        return phone;
       }
     }
     
-    console.log(`[ChannelManager] No WhatsApp number found for channel ID: ${channelId}`);
     return null;
   }
   
-  getChannelIdByPhoneNumber(phoneNumber) {
-    // Normalize the phone number
-    phoneNumber = this.normalizePhoneNumber(phoneNumber);
+  /**
+   * Remove channel for phone number
+   * @param {string} phoneNumber - Phone number
+   */
+  removeChannel(phoneNumber) {
+    // Format phone number
+    const phone = this.formatPhoneNumber(phoneNumber);
     
-    // Check if we have a mapping
-    const channelId = this.channelMap.get(phoneNumber);
+    // Remove from map
+    this.channelMap.delete(phone);
     
-    if (channelId) {
-      console.log(`[ChannelManager] Found channel ID ${channelId} for phone: ${phoneNumber}`);
-    } else {
-      console.log(`[ChannelManager] No channel found for phone: ${phoneNumber}`);
-    }
-    
-    return channelId;
-  }
-  
-  setChannelMapping(phoneNumber, channelId) {
-    // Validate inputs
-    if (!phoneNumber) {
-      console.error(`[ChannelManager] setChannelMapping called with empty phoneNumber`);
-      return;
-    }
-    
-    if (!channelId) {
-      console.error(`[ChannelManager] setChannelMapping called with empty channelId`);
-      return;
-    }
-    
-    // Normalize the phone number
-    phoneNumber = this.normalizePhoneNumber(phoneNumber);
-    
-    this.channelMap.set(phoneNumber, channelId);
+    // Save to disk
     this.saveChannelMap();
-    console.log(`[ChannelManager] Set mapping: ${phoneNumber} -> ${channelId}`);
+    
+    console.log(`[ChannelManager:${this.instanceId}] Removed channel for ${phone}`);
   }
   
-  removeChannelMapping(phoneNumber) {
-    // Normalize the phone number
-    phoneNumber = this.normalizePhoneNumber(phoneNumber);
-    
-    if (this.channelMap.has(phoneNumber)) {
-      const channelId = this.channelMap.get(phoneNumber);
-      this.channelMap.delete(phoneNumber);
-      this.saveChannelMap();
-      console.log(`[ChannelManager] Removed mapping for: ${phoneNumber} (was ${channelId})`);
-      return true;
-    }
-    
-    console.log(`[ChannelManager] No mapping found for: ${phoneNumber}`);
-    return false;
-  }
-  
+  /**
+   * Get channel map size
+   * @returns {number} - Number of mapped channels
+   */
   getChannelMapSize() {
     return this.channelMap.size;
   }
   
   /**
-   * Get all channel mappings
-   * @returns {Array} - Array of {phoneNumber, channelId} objects
+   * Clear all channels
    */
-  getAllMappings() {
-    const mappings = [];
-    for (const [phoneNumber, channelId] of this.channelMap.entries()) {
-      mappings.push({ phoneNumber, channelId });
-    }
-    return mappings;
-  }
-  
-  /**
-   * Check if a channel is mapped to any phone number
-   * @param {string} channelId - Discord channel ID
-   * @returns {boolean} - True if channel is mapped
-   */
-  isChannelMapped(channelId) {
-    for (const id of this.channelMap.values()) {
-      if (id === channelId) {
-        return true;
-      }
-    }
-    return false;
-  }
-  
-  /**
-   * Remove mapping by channel ID
-   * @param {string} channelId - Discord channel ID
-   * @returns {boolean} - Success status
-   */
-  removeChannelMappingByChannelId(channelId) {
-    for (const [phoneNumber, id] of this.channelMap.entries()) {
-      if (id === channelId) {
-        this.channelMap.delete(phoneNumber);
-        this.saveChannelMap();
-        console.log(`[ChannelManager] Removed mapping for channel: ${channelId} (was mapped to ${phoneNumber})`);
-        return true;
-      }
-    }
-    console.log(`[ChannelManager] No mapping found for channel: ${channelId}`);
-    return false;
-  }
-  
-  /**
-   * Clear all channel mappings
-   * @returns {number} - Number of mappings cleared
-   */
-  clearAllMappings() {
-    const count = this.channelMap.size;
+  clearAllChannels() {
+    // Clear map
     this.channelMap.clear();
+    
+    // Save to disk
     this.saveChannelMap();
-    console.log(`[ChannelManager] Cleared all ${count} channel mappings`);
-    return count;
+    
+    console.log(`[ChannelManager:${this.instanceId}] Cleared all channels`);
+  }
+  
+  /**
+   * Get all channels
+   * @returns {Map} - Map of phone numbers to channel IDs
+   */
+  getAllChannels() {
+    return new Map(this.channelMap);
   }
 }
 

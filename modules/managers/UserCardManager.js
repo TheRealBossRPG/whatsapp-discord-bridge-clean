@@ -1,283 +1,332 @@
-// modules/userCardManager.js - FIXED FOR PROPER NAME HANDLING
+// modules/managers/UserCardManager.js
 const fs = require('fs');
 const path = require('path');
-const MediaManager = require('../../utils/MediaManager');
 
+/**
+ * Manages user profile information and WhatsApp contact details
+ */
 class UserCardManager {
-  constructor(instanceId) {
-    this.instanceId = instanceId || 'default';
+  /**
+   * Create a new user card manager
+   * @param {string} instanceId - Instance ID
+   */
+  constructor(instanceId = 'default') {
+    this.instanceId = instanceId;
     this.userCards = new Map();
-    this.userState = new Map();
     
-    // FIXED: Use more reliable path calculation
-    const baseDir = instanceId 
-      ? path.join(__dirname, '..', 'instances', instanceId)
-      : path.join(__dirname, '..');
+    // Set storage paths
+    this.baseDir = path.join(__dirname, '..', '..', 'instances', instanceId);
+    this.userCardsPath = path.join(this.baseDir, 'user_cards.json');
     
-    // Instance-specific file path
-    this.filePath = path.join(baseDir, 'user_cards.json');
-    
-    // Ensure the directory exists
-    const dirPath = path.dirname(this.filePath);
-    if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
+    // Ensure directory exists
+    if (!fs.existsSync(this.baseDir)) {
+      fs.mkdirSync(this.baseDir, { recursive: true });
     }
     
-    // Log initialization
-    console.log(`[UserCardManager:${this.instanceId}] Initialized with instance ID: ${this.instanceId}`);
-    console.log(`[UserCardManager:${this.instanceId}] Using file path: ${this.filePath}`);
-    
+    // Load user cards from disk
     this.loadUserCards();
+    
+    console.log(`[UserCardManager:${instanceId}] Initialized with ${this.userCards.size} user cards`);
   }
-
-  loadUserCards() {
-    try {
-      if (fs.existsSync(this.filePath)) {
-        const data = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
-        this.userCards = new Map(Object.entries(data));
-        console.log(`[UserCardManager:${this.instanceId}] Loaded ${this.userCards.size} user cards from ${this.filePath}`);
-      } else {
-        console.log(`[UserCardManager:${this.instanceId}] No user cards file found at ${this.filePath}, starting with empty map`);
-        this.userCards = new Map();
-        // Create empty file
-        fs.writeFileSync(this.filePath, '{}', 'utf8');
-        console.log(`[UserCardManager:${this.instanceId}] Created empty user cards file at ${this.filePath}`);
-      }
-    } catch (error) {
-      console.error(`[UserCardManager:${this.instanceId}] Error loading user cards: ${error.message}`);
-      this.userCards = new Map();
-      
-      // Create empty file if it doesn't exist
-      if (!fs.existsSync(this.filePath)) {
-        try {
-          fs.writeFileSync(this.filePath, '{}', 'utf8');
-          console.log(`[UserCardManager:${this.instanceId}] Created empty user cards file at ${this.filePath}`);
-        } catch (writeError) {
-          console.error(`[UserCardManager:${this.instanceId}] Error creating empty user cards file: ${writeError.message}`);
-        }
-      }
-    }
-  }
-
-  saveUserCards() {
-    try {
-      const cardObj = Object.fromEntries(this.userCards);
-      fs.writeFileSync(this.filePath, JSON.stringify(cardObj, null, 2), 'utf8');
-      console.log(`[UserCardManager:${this.instanceId}] Saved ${this.userCards.size} user cards to ${this.filePath}`);
-    } catch (error) {
-      console.error(`[UserCardManager:${this.instanceId}] Error saving user cards: ${error.message}`);
-    }
-  }
-
-  // CRITICAL FIX: Ensure phone number normalization is consistent
-  normalizePhoneNumber(phoneNumber) {
+  
+  /**
+   * Clean phone number for consistent storage
+   * @param {string} phoneNumber - Raw phone number
+   * @returns {string} - Cleaned phone number
+   */
+  cleanPhoneNumber(phoneNumber) {
     if (!phoneNumber) return 'unknown';
     
-    // Remove WhatsApp extensions if present
-    let normalized = String(phoneNumber).replace(/@.*$/, '');
+    // Convert to string first
+    let clean = String(phoneNumber);
     
-    // Ensure it's a string
-    normalized = String(normalized);
+    // Remove WhatsApp extensions (be thorough)
+    clean = clean.replace(/@s\.whatsapp\.net/g, '')
+                .replace(/@c\.us/g, '')
+                .replace(/@g\.us/g, '')
+                .replace(/@broadcast/g, '')
+                .replace(/@.*$/, '');
     
-    // Clean up any other formatting issues
-    normalized = normalized.trim();
-    
-    return normalized;
-  }
-
-  // CRITICAL FIX: Better user card retrieval without including phone in name
-  getUserCard(phoneNumber) {
-    // Validate input
-    if (!phoneNumber) {
-      console.error(`[UserCardManager:${this.instanceId}] getUserCard called with empty phoneNumber`);
-      phoneNumber = 'unknown';
+    // Remove any non-digit characters except possibly leading '+' sign
+    if (clean.startsWith('+')) {
+      clean = '+' + clean.substring(1).replace(/[^0-9]/g, '');
+    } else {
+      clean = clean.replace(/[^0-9]/g, '');
     }
     
-    // Normalize phone number
-    phoneNumber = this.normalizePhoneNumber(phoneNumber);
+    return clean;
+  }
+  
+  /**
+   * Format phone number consistently
+   * @param {string} phoneNumber - Phone number
+   * @returns {string} - Formatted phone number
+   */
+  formatPhoneNumber(phoneNumber) {
+    const clean = this.cleanPhoneNumber(phoneNumber);
     
-    // Check for existing user card
-    if (!this.userCards.has(phoneNumber)) {
-      // Create a new user card with defaults
-      console.log(`[UserCardManager:${this.instanceId}] Creating new user card for ${phoneNumber}`);
-      const newCard = {
-        phoneNumber: phoneNumber,
-        name: null, // Will be filled in during conversation
-        createdAt: new Date().toISOString(),
-        lastContact: new Date().toISOString()
+    // Make sure it has the WhatsApp suffix if not already present
+    if (!phoneNumber.includes('@')) {
+      return `${clean}@s.whatsapp.net`;
+    }
+    
+    return phoneNumber;
+  }
+  
+  /**
+   * Load user cards from disk
+   */
+  loadUserCards() {
+    try {
+      if (fs.existsSync(this.userCardsPath)) {
+        const cardsData = JSON.parse(fs.readFileSync(this.userCardsPath, 'utf8'));
+        
+        // Convert to Map object
+        Object.entries(cardsData).forEach(([phone, userCard]) => {
+          this.userCards.set(this.formatPhoneNumber(phone), userCard);
+        });
+        
+        console.log(`[UserCardManager:${this.instanceId}] Loaded ${this.userCards.size} user cards from ${this.userCardsPath}`);
+      } else {
+        console.log(`[UserCardManager:${this.instanceId}] No user cards file found at ${this.userCardsPath}`);
+      }
+    } catch (error) {
+      console.error(`[UserCardManager:${this.instanceId}] Error loading user cards:`, error);
+    }
+  }
+  
+  /**
+   * Save user cards to disk
+   */
+  saveUserCards() {
+    try {
+      // Convert Map to regular object for JSON serialization
+      const cardsData = {};
+      this.userCards.forEach((userCard, phone) => {
+        cardsData[phone] = userCard;
+      });
+      
+      // Ensure directory exists
+      if (!fs.existsSync(this.baseDir)) {
+        fs.mkdirSync(this.baseDir, { recursive: true });
+      }
+      
+      // Write to file
+      fs.writeFileSync(this.userCardsPath, JSON.stringify(cardsData, null, 2), 'utf8');
+      
+      console.log(`[UserCardManager:${this.instanceId}] Saved ${this.userCards.size} user cards to ${this.userCardsPath}`);
+    } catch (error) {
+      console.error(`[UserCardManager:${this.instanceId}] Error saving user cards:`, error);
+    }
+  }
+  
+  /**
+   * Create a new user card
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} name - User's name
+   * @param {Object} additionalInfo - Additional user information
+   * @returns {Object} - Created user card
+   */
+  async createUserCard(phoneNumber, name, additionalInfo = {}) {
+    try {
+      // Format phone number
+      const phone = this.formatPhoneNumber(phoneNumber);
+      
+      // Check if user card already exists
+      if (this.userCards.has(phone)) {
+        // Update existing card
+        const existingCard = this.userCards.get(phone);
+        
+        // Only update name if it's significantly different (not just case, spacing, etc.)
+        if (name && existingCard.name.toLowerCase().replace(/\s+/g, '') !== name.toLowerCase().replace(/\s+/g, '')) {
+          existingCard.name = name;
+          existingCard.updatedAt = Date.now();
+        }
+        
+        // Merge additional info
+        Object.assign(existingCard, additionalInfo);
+        
+        // Save to disk
+        this.saveUserCards();
+        
+        console.log(`[UserCardManager:${this.instanceId}] Updated user card for ${phone}: ${name}`);
+        
+        return existingCard;
+      }
+      
+      // Create new user card
+      const userCard = {
+        id: phone,
+        phoneNumber: this.cleanPhoneNumber(phoneNumber),
+        name: name || 'Unknown User',
+        firstContact: Date.now(),
+        lastContact: Date.now(),
+        updatedAt: Date.now(),
+        profilePicUrl: null,
+        ...additionalInfo
       };
       
-      this.userCards.set(phoneNumber, newCard);
-      this.saveUserCards();
-      return newCard;
-    }
-    
-    // Update last contact time
-    const card = this.userCards.get(phoneNumber);
-    card.lastContact = new Date().toISOString();
-    this.userCards.set(phoneNumber, card);
-    
-    return card;
-  }
-
-  // FIXED: Update user card with proper directory structure handling
-  updateUserCard(phoneNumber, updates) {
-    // Normalize the phone number
-    phoneNumber = this.normalizePhoneNumber(phoneNumber);
-    
-    // Make sure we have a card first
-    const card = this.getUserCard(phoneNumber);
-    
-    // Track if name changed for directory updates
-    const nameChanged = updates.name && card.name !== updates.name;
-    const oldName = card.name;
-    
-    // Apply updates
-    Object.keys(updates).forEach(key => {
-      // Don't allow phone number to change
-      if (key !== 'phoneNumber') {
-        card[key] = updates[key];
-      }
-    });
-
-    // When updating a user's name, update the directory structure
-    if (nameChanged) {
-      try {
-        // IMPORTANT - Use clean names for directory structure
-        const cleanOldName = oldName ? MediaManager.formatFunctions.formatDisplayName(oldName) : null;
-        const cleanNewName = MediaManager.formatFunctions.formatDisplayName(updates.name);
-        
-        console.log(`[UserCardManager:${this.instanceId}] Updating username from ${cleanOldName} to ${cleanNewName} for phone ${phoneNumber}`);
-        
-        // Try the proper MediaManager class first
+      // Try to get profile picture if WhatsApp client is available
+      if (this.whatsAppClient && typeof this.whatsAppClient.getProfilePicture === 'function') {
         try {
-          // Create a new MediaManager instance if necessary
-          const mediaManager = new MediaManager({
-            instanceId: this.instanceId,
-            baseDir: path.join(__dirname, '..', 'instances', this.instanceId, 'transcripts')
-          });
-          
-          // Force immediate directory structure updates - IMPORTANT: pass clean names
-          if (cleanOldName) {
-            mediaManager.setPhoneToUsername(phoneNumber, cleanOldName);
-          }
-          mediaManager.setPhoneToUsername(phoneNumber, cleanNewName);
-        } catch (e) {
-          // Fallback to simplified mediaManager
-          const simplifiedMediaManager = require('./simplifiedMediaManager');
-          if (typeof simplifiedMediaManager.setInstanceId === 'function') {
-            simplifiedMediaManager.setInstanceId(this.instanceId);
-          }
-          if (typeof simplifiedMediaManager.setPhoneToUsername === 'function') {
-            simplifiedMediaManager.setPhoneToUsername(phoneNumber, cleanNewName);
+          userCard.profilePicUrl = await this.whatsAppClient.getProfilePicture(phone);
+        } catch (picError) {
+          console.log(`[UserCardManager:${this.instanceId}] Could not get profile picture for ${phone}`);
+        }
+      }
+      
+      // Add to map
+      this.userCards.set(phone, userCard);
+      
+      // Save to disk
+      this.saveUserCards();
+      
+      console.log(`[UserCardManager:${this.instanceId}] Created user card for ${phone}: ${name}`);
+      
+      return userCard;
+    } catch (error) {
+      console.error(`[UserCardManager:${this.instanceId}] Error creating user card:`, error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Get user card
+   * @param {string} phoneNumber - User's phone number
+   * @returns {Object|null} - User card or null if not found
+   */
+  async getUserCard(phoneNumber) {
+    try {
+      // Format phone number
+      const phone = this.formatPhoneNumber(phoneNumber);
+      
+      // Get from map
+      const userCard = this.userCards.get(phone);
+      
+      if (userCard) {
+        // Update last contact time
+        userCard.lastContact = Date.now();
+        
+        // If we have a WhatsApp client but no profile pic, try to get it
+        if (this.whatsAppClient && !userCard.profilePicUrl && typeof this.whatsAppClient.getProfilePicture === 'function') {
+          try {
+            userCard.profilePicUrl = await this.whatsAppClient.getProfilePicture(phone);
+            userCard.updatedAt = Date.now();
+            
+            // Save updated user card
+            this.saveUserCards();
+          } catch (picError) {
+            // Ignore profile pic errors
           }
         }
-      } catch (error) {
-        console.error(`[UserCardManager:${this.instanceId}] Error updating directory structure: ${error.message}`);
       }
+      
+      return userCard || null;
+    } catch (error) {
+      console.error(`[UserCardManager:${this.instanceId}] Error getting user card:`, error);
+      return null;
     }
+  }
+  
+  /**
+   * Check if user exists
+   * @param {string} phoneNumber - User's phone number
+   * @returns {boolean} - Whether user exists
+   */
+  async userExists(phoneNumber) {
+    // Format phone number
+    const phone = this.formatPhoneNumber(phoneNumber);
     
-    this.userCards.set(phoneNumber, card);
-    this.saveUserCards();
-    return card;
+    // Check if in map
+    return this.userCards.has(phone);
   }
   
-  hasUserCard(phoneNumber) {
-    // Normalize the phone number
-    phoneNumber = this.normalizePhoneNumber(phoneNumber);
-    return this.userCards.has(phoneNumber);
+  /**
+   * Update user card
+   * @param {string} phoneNumber - User's phone number
+   * @param {Object} updates - Updates to apply
+   * @returns {Object|null} - Updated user card or null if not found
+   */
+  async updateUserCard(phoneNumber, updates) {
+    try {
+      // Format phone number
+      const phone = this.formatPhoneNumber(phoneNumber);
+      
+      // Check if user card exists
+      if (!this.userCards.has(phone)) {
+        console.log(`[UserCardManager:${this.instanceId}] User card not found for ${phone}`);
+        return null;
+      }
+      
+      // Get existing card
+      const userCard = this.userCards.get(phone);
+      
+      // Apply updates
+      Object.assign(userCard, updates, { updatedAt: Date.now() });
+      
+      // Save to disk
+      this.saveUserCards();
+      
+      console.log(`[UserCardManager:${this.instanceId}] Updated user card for ${phone}`);
+      
+      return userCard;
+    } catch (error) {
+      console.error(`[UserCardManager:${this.instanceId}] Error updating user card:`, error);
+      return null;
+    }
   }
   
-  getUserState(phoneNumber) {
-    // Normalize the phone number
-    phoneNumber = this.normalizePhoneNumber(phoneNumber);
-    return this.userState.get(phoneNumber);
+  /**
+   * Delete user card
+   * @param {string} phoneNumber - User's phone number
+   * @returns {boolean} - Whether deletion was successful
+   */
+  deleteUserCard(phoneNumber) {
+    try {
+      // Format phone number
+      const phone = this.formatPhoneNumber(phoneNumber);
+      
+      // Remove from map
+      const deleted = this.userCards.delete(phone);
+      
+      if (deleted) {
+        // Save to disk
+        this.saveUserCards();
+        
+        console.log(`[UserCardManager:${this.instanceId}] Deleted user card for ${phone}`);
+      } else {
+        console.log(`[UserCardManager:${this.instanceId}] User card not found for ${phone}`);
+      }
+      
+      return deleted;
+    } catch (error) {
+      console.error(`[UserCardManager:${this.instanceId}] Error deleting user card:`, error);
+      return false;
+    }
   }
   
-  setUserState(phoneNumber, state) {
-    // Normalize the phone number
-    phoneNumber = this.normalizePhoneNumber(phoneNumber);
-    this.userState.set(phoneNumber, state);
+  /**
+   * Get all user cards
+   * @returns {Array} - Array of user cards
+   */
+  getAllUserCards() {
+    return Array.from(this.userCards.values());
   }
   
-  clearUserState(phoneNumber) {
-    // Normalize the phone number
-    phoneNumber = this.normalizePhoneNumber(phoneNumber);
-    this.userState.delete(phoneNumber);
-  }
-  
+  /**
+   * Get user card count
+   * @returns {number} - Number of user cards
+   */
   getUserCardCount() {
     return this.userCards.size;
   }
-
-  /**
-   * Find a user card by username (useful for lookups)
-   * @param {string} username - Username to search for
-   * @returns {Object|null} - User card object if found, null otherwise
-   */
-  findUserCardByUsername(username) {
-    if (!username) return null;
-    
-    // Clean and normalize the search term
-    const normalizedSearch = MediaManager.formatFunctions.formatDisplayName(username).toLowerCase().trim();
-    
-    for (const [phone, card] of this.userCards.entries()) {
-      if (card.name) {
-        // Clean and normalize stored name for comparison
-        const normalizedName = MediaManager.formatFunctions.formatDisplayName(card.name).toLowerCase().trim();
-        if (normalizedName === normalizedSearch) {
-          return { ...card, phoneNumber: phone };
-        }
-      }
-    }
-    
-    return null;
-  }
   
   /**
-   * Find users by partial username match
-   * @param {string} partialName - Partial name to search for
-   * @param {number} limit - Maximum number of results (default 5)
-   * @returns {Array} - Array of matching user cards
+   * Set WhatsApp client
+   * @param {Object} client - WhatsApp client
    */
-  findUsersByPartialName(partialName, limit = 5) {
-    if (!partialName || partialName.length < 2) return [];
-    
-    // Clean and normalize the search term
-    const normalizedSearch = MediaManager.formatFunctions.formatDisplayName(partialName).toLowerCase().trim();
-    const results = [];
-    
-    for (const [phone, card] of this.userCards.entries()) {
-      if (card.name) {
-        // Clean and normalize stored name for comparison
-        const normalizedName = MediaManager.formatFunctions.formatDisplayName(card.name).toLowerCase().trim();
-        if (normalizedName.includes(normalizedSearch)) {
-          results.push({ ...card, phoneNumber: phone });
-          
-          if (results.length >= limit) break;
-        }
-      }
-    }
-    
-    return results;
-  }
-  
-  /**
-   * Delete a user card
-   * @param {string} phoneNumber - Phone number to delete
-   * @returns {boolean} - Success status
-   */
-  deleteUserCard(phoneNumber) {
-    // Normalize the phone number
-    phoneNumber = this.normalizePhoneNumber(phoneNumber);
-    
-    if (!this.userCards.has(phoneNumber)) {
-      return false;
-    }
-    
-    this.userCards.delete(phoneNumber);
-    this.saveUserCards();
-    return true;
+  setWhatsAppClient(client) {
+    this.whatsAppClient = client;
   }
 }
 
