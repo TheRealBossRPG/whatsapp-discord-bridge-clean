@@ -18,7 +18,7 @@ class ReconnectButton extends Button {
       await interaction.deferUpdate();
       
       await interaction.editReply({
-        content: "🔄 Disconnecting current session and preparing new QR code...",
+        content: "🔄 Attempting to reconnect WhatsApp...",
         components: [],
       });
 
@@ -33,6 +33,32 @@ class ReconnectButton extends Button {
         });
         return;
       }
+
+      // FIRST: Try to reconnect WITHOUT deleting auth data
+      await interaction.editReply("🔄 Trying to reconnect with existing session...");
+      
+      let reconnected = false;
+      try {
+        // Temporarily disconnect but don't log out
+        if (instance.clients && instance.clients.whatsAppClient) {
+          await instance.clients.whatsAppClient.disconnect(false);
+        }
+        
+        // Attempt to reconnect with existing auth
+        reconnected = await instance.connect(false);
+        
+        // Check if reconnect was successful
+        if (reconnected && instance.isConnected()) {
+          await interaction.editReply("✅ Successfully reconnected to WhatsApp!");
+          return;
+        }
+      } catch (reconnectError) {
+        console.error(`[Instance:${instance.instanceId}] Error in initial reconnect attempt: ${reconnectError.message}`);
+        // Continue to QR code generation if reconnect failed
+      }
+
+      // ONLY IF RECONNECT FAILED: Now try with new QR code
+      await interaction.editReply("⚠️ Could not reconnect with existing session. Preparing new QR code...");
 
       // Show that we're clearing files
       await interaction.editReply("🗑️ Clearing previous authentication data...");
@@ -103,8 +129,22 @@ class ReconnectButton extends Button {
 
       await interaction.editReply("📱 Generating new QR code for WhatsApp connection...");
 
+      // Add a short delay before reconnection to avoid server throttling
+      await interaction.editReply("⏳ Waiting a moment before connecting to WhatsApp...");
+      await new Promise(resolve => setTimeout(resolve, 3000)); // 3 second delay
+      
       // IMPORTANT: Generate fresh QR code with existing configuration
       try {
+        await interaction.editReply("🔄 Requesting QR code from WhatsApp servers...");
+        
+        // Modify instance settings to increase QR code timeout
+        if (instance.clients && instance.clients.whatsAppClient) {
+          // Try to increase timeout if the method exists
+          if (typeof instance.clients.whatsAppClient.setQrTimeout === 'function') {
+            instance.clients.whatsAppClient.setQrTimeout(90000); // 90 seconds timeout
+          }
+        }
+        
         const qrCode = await InstanceManager.generateQRCode({
           guildId: interaction.guild.id,
           categoryId: instance.categoryId,
@@ -112,6 +152,7 @@ class ReconnectButton extends Button {
           vouchChannelId: instance.vouchChannelId || instance.transcriptChannelId,
           customSettings: instance.customSettings || {},
           discordClient: interaction.client,
+          qrTimeout: 90000 // 90 seconds timeout (pass to InstanceManager too)
         });
 
         if (qrCode === null) {
@@ -123,7 +164,7 @@ class ReconnectButton extends Button {
 
         if (qrCode === "TIMEOUT") {
           await interaction.editReply({
-            content: "⚠️ QR code generation timed out. Please try again.",
+            content: "⚠️ QR code generation timed out after waiting 90 seconds. Please try again later or use /setup instead.",
           });
           return;
         }
