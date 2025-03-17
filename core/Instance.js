@@ -55,13 +55,15 @@ class Instance {
         return;
       }
       
-      // Handle QR code
+      // Handle QR code - use off() first to prevent duplicate handlers
+      this.clients.whatsAppClient.off('qr');
       this.clients.whatsAppClient.on('qr', (qrCode) => {
         console.log(`[Instance:${this.instanceId}] New QR code generated`);
         this.events.emit('qr', qrCode);
       });
       
       // Handle ready event
+      this.clients.whatsAppClient.off('ready');
       this.clients.whatsAppClient.on('ready', () => {
         console.log(`[Instance:${this.instanceId}] WhatsApp client ready`);
         this.connected = true;
@@ -69,6 +71,7 @@ class Instance {
       });
       
       // Handle disconnected event
+      this.clients.whatsAppClient.off('disconnected');
       this.clients.whatsAppClient.on('disconnected', () => {
         console.log(`[Instance:${this.instanceId}] WhatsApp client disconnected`);
         this.connected = false;
@@ -76,6 +79,7 @@ class Instance {
       });
       
       // Handle message events
+      this.clients.whatsAppClient.off('message');
       this.clients.whatsAppClient.on('message', (message) => {
         if (this.handlers.whatsAppHandler) {
           this.handlers.whatsAppHandler.handleMessage(message);
@@ -451,6 +455,7 @@ class Instance {
           authFolder: this.paths.auth,
           tempDir: this.paths.temp,
           instanceId: this.instanceId,
+          maxRetries: 10  // Increased retries for better stability
         });
   
         // Set up event handlers
@@ -458,14 +463,15 @@ class Instance {
       }
   
       // Set a flag on the WhatsApp client to indicate if QR codes should be shown
-      // This will be used in the client to decide whether to emit QR codes or not
       if (this.clients.whatsAppClient && typeof this.clients.whatsAppClient.setShowQrCode === 'function') {
         this.clients.whatsAppClient.setShowQrCode(showQrCode);
       }
   
-      // Check if auth exists first
-      const authExists = fs.existsSync(path.join(this.paths.auth, 'creds.json')) || 
-                        fs.existsSync(path.join(this.paths.auth, 'baileys_auth'));
+      // IMPROVED: Better auth detection
+      const authExists = [
+        path.join(this.paths.auth, 'creds.json'),
+        path.join(this.paths.auth, 'baileys_auth', 'creds.json')
+      ].some(file => fs.existsSync(file));
       
       if (!authExists && !showQrCode) {
         console.log(`[Instance:${this.instanceId}] No auth found and QR code display not requested. Skipping connection.`);
@@ -478,8 +484,8 @@ class Instance {
       // Set connected state
       this.connected = success && this.clients.whatsAppClient.isReady;
   
-      // If already authenticated, initialize handlers
-      if (success && this.clients.whatsAppClient.isReady) {
+      // IMPROVED: Properly handle already authenticated case
+      if (this.clients.whatsAppClient.isReady) {
         console.log(`[Instance:${this.instanceId}] WhatsApp already authenticated`);
         
         // Call the ready callback if set
@@ -494,6 +500,7 @@ class Instance {
       return false;
     }
   }
+  
   
   async disconnect(logOut = false) {
       try {
