@@ -94,7 +94,7 @@ class ContinueSetupButton extends Button {
       }
   
       // Import and use the QR code display function
-      const { displayQRCode } = require('../utils/qrCodeUtils');
+      const { displayQRCode } = require('../../utils/qrCodeUtils');
       await displayQRCode(interaction, qrCode, guildId);
   
       // Clean up setup params after successful QR code display
