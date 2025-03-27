@@ -7,9 +7,11 @@ class EventHandler {
    * Create a new event handler
    * @param {Object} options - Event options
    * @param {string} options.event - Event name
+   * @param {boolean} [options.once=false] - Whether to handle the event only once
    */
   constructor(options) {
     this.event = options.event;
+    this.once = options.once || false;
   }
   
   /**
@@ -18,16 +20,16 @@ class EventHandler {
    * @param {Object} instance - Server instance
    */
   register(client, instance) {
-    client.on(this.event, (...args) => this.execute(...args, instance));
+    const method = this.once ? 'once' : 'on';
+    client[method](this.event, (...args) => this.execute(...args, instance));
   }
   
   /**
    * Execute the event handler
    * @param {...any} args - Event arguments
-   * @param {Object} instance - Server instance
    */
   async execute(...args) {
-    throw new Error('Method not implemented');
+    throw new Error(`Method not implemented for event: ${this.event}`);
   }
 }
 
