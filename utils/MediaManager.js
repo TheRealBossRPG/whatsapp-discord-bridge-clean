@@ -103,21 +103,32 @@ class MediaManager {
   extractCleanUsername(username) {
     if (!username) return 'unknown';
     
+    // Convert to string and trim
+    let clean = String(username).trim();
+    
     // Remove phone number if it's in parentheses at the end
-    let clean = String(username).replace(/\([^)]*\)$/, '').trim();
+    clean = clean.replace(/\([^)]*\)$/, '').trim();
     
     // Also check for WhatsApp extensions directly in the username
     clean = clean.replace(/@s\.whatsapp\.net/g, '')
               .replace(/@c\.us/g, '')
               .replace(/@g\.us/g, '')
               .replace(/@broadcast/g, '')
-              .replace(/@.*$/, '');
+              .replace(/@.*$/, '').trim();
+    
+    // Remove just numbers that look like phone numbers (10+ digits)
+    clean = clean.replace(/\s+\d{10,}$/, '').trim();
+    clean = clean.replace(/^\d{10,}\s+/, '').trim();
+    
+    // Check for phone numbers that might be separated by hyphens, spaces, etc.
+    clean = clean.replace(/\s+\d{3}[\s-]*\d{3}[\s-]*\d{4}$/, '').trim();
     
     // If username is now empty, use 'unknown'
     if (!clean) return 'unknown';
     
     return clean;
   }
+  
   
   /**
    * Format display name for UI presentation - NO phone number included

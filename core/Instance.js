@@ -83,7 +83,24 @@ class Instance {
         }, 45000);
         
         console.log(`[Instance:${this.instanceId}] New QR code generated (${qrCode.length} chars)`);
-        this.events.emit('qr', qrCode);
+        
+        // Emit QR code event - this is crucial
+        if (this.events) {
+          this.events.emit('qr', qrCode);
+        } else {
+          console.error(`[Instance:${this.instanceId}] Events system not initialized`);
+        }
+        
+        // Call any registered QR code listeners directly
+        if (this.qrCodeListeners && this.qrCodeListeners.size > 0) {
+          for (const listener of this.qrCodeListeners) {
+            try {
+              listener(qrCode);
+            } catch (e) {
+              console.error(`[Instance:${this.instanceId}] Error in QR code listener:`, e);
+            }
+          }
+        }
       });
       
       // Handle ready event
@@ -98,14 +115,21 @@ class Instance {
         }
         
         this.connected = true;
-        this.events.emit('ready');
+        
+        // Emit ready event
+        if (this.events) {
+          this.events.emit('ready');
+        }
       });
       
       // Handle disconnected event
       this.clients.whatsAppClient.on('disconnected', () => {
         console.log(`[Instance:${this.instanceId}] WhatsApp client disconnected`);
         this.connected = false;
-        this.events.emit('disconnect');
+        
+        if (this.events) {
+          this.events.emit('disconnect');
+        }
       });
       
       // Handle message events
@@ -525,20 +549,22 @@ class Instance {
       // Set up event handlers - BEFORE initialization
       this.setupWhatsAppClientEvents();
       
-      // Set showQrCode flag on client if method available
+      // Set force QR flag
       if (typeof this.clients.whatsAppClient.setShowQrCode === 'function') {
         this.clients.whatsAppClient.setShowQrCode(showQrCode);
       }
   
       // Check if we need to force new QR code generation
       if (showQrCode) {
+        console.log(`[Instance:${this.instanceId}] Forcing QR code generation by cleaning auth data`);
+        
         // Clean existing auth files if we want a QR code
         const authFiles = [
           path.join(this.paths.auth, 'creds.json'),
           path.join(this.paths.auth, 'baileys_auth', 'creds.json')
         ];
         
-        authFiles.forEach(file => {
+        for (const file of authFiles) {
           if (fs.existsSync(file)) {
             try {
               fs.unlinkSync(file);
@@ -547,7 +573,25 @@ class Instance {
               console.error(`[Instance:${this.instanceId}] Error deleting auth file: ${e.message}`);
             }
           }
-        });
+        }
+        
+        // Also delete entire baileys_auth directory
+        const baileysDirPath = path.join(this.paths.auth, 'baileys_auth');
+        if (fs.existsSync(baileysDirPath)) {
+          try {
+            const files = fs.readdirSync(baileysDirPath);
+            for (const file of files) {
+              try {
+                fs.unlinkSync(path.join(baileysDirPath, file));
+                console.log(`[Instance:${this.instanceId}] Deleted baileys_auth file: ${file}`);
+              } catch (e) {
+                console.error(`[Instance:${this.instanceId}] Error deleting baileys_auth file: ${e.message}`);
+              }
+            }
+          } catch (e) {
+            console.error(`[Instance:${this.instanceId}] Error cleaning baileys_auth directory: ${e.message}`);
+          }
+        }
       }
   
       // Initialize WhatsApp client
@@ -564,6 +608,8 @@ class Instance {
         if (this.events) {
           this.events.emit('ready');
         }
+      } else {
+        console.log(`[Instance:${this.instanceId}] WhatsApp initialization completed, waiting for connection...`);
       }
   
       return success;

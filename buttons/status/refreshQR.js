@@ -1,8 +1,7 @@
-// buttons/status/refreshQR.js - Fixed QR Code Handler
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require('discord.js');
+// buttons/status/refreshQR.js - Simplified QR Code Handler
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
-const { createCanvas } = require('canvas');
 const qrcode = require('qrcode');
 
 /**
@@ -30,11 +29,7 @@ module.exports = {
       
       // First, disconnect existing client to ensure clean state
       console.log(`Generating QR code for guild ${instance.guildId}...`);
-      console.log(`Disconnect existing instance for guild ${instance.guildId} to generate fresh QR code`);
       await instance.disconnect();
-      
-      // Generate a new QR code with explicit showQR flag set to true
-      instance.whatsAppClient?.setShowQrCode(true);
       
       // Set up event listeners BEFORE connecting
       // Create a promise that will resolve when we get a QR code
@@ -76,33 +71,20 @@ module.exports = {
         // Wait for QR code or timeout
         const qrCode = await qrPromise;
         
-        // Generate QR code image
-        console.log(`Generating QR code image for guild ${instance.guildId}, QR data length: ${qrCode.length}`);
+        // Ensure we have a temp directory
+        const tempDir = instance.paths?.temp || path.join(__dirname, '..', '..', 'instances', instance.instanceId, 'temp');
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
         
-        // Create directory if it doesn't exist
-        const qrImagePath = path.join(instance.paths.temp, 'qrcode.png');
-        
-        // Generate QR code image using canvas
-        const canvas = createCanvas(512, 512);
-        await qrcode.toCanvas(canvas, qrCode, {
-          width: 512,
-          margin: 2,
-          errorCorrectionLevel: 'M',
-          color: {
-            dark: '#000000',
-            light: '#ffffff'
-          }
+        // Generate QR code image file
+        const qrImagePath = path.join(tempDir, 'qrcode.png');
+        await qrcode.toFile(qrImagePath, qrCode, {
+          scale: 8,
+          margin: 4
         });
         
-        // Save QR code image
-        const buffer = canvas.toBuffer('image/png');
-        fs.writeFileSync(qrImagePath, buffer);
-        console.log(`QR code image saved to ${qrImagePath}`);
-        
-        // Create attachment
-        const attachment = new AttachmentBuilder(qrImagePath, { name: 'qrcode.png' });
-        
-        // Create refresh button
+        // Create buttons
         const row = new ActionRowBuilder()
           .addComponents(
             new ButtonBuilder()
@@ -117,16 +99,8 @@ module.exports = {
         
         // Update message with QR code
         await interaction.editReply({
-          content: '',
-          embeds: [
-            new EmbedBuilder()
-              .setColor('#3498db')
-              .setTitle('WhatsApp QR Code')
-              .setDescription('Scan this QR code with WhatsApp on your phone to connect.\n\n**Note:** QR codes expire in 45 seconds. Click "Refresh QR Code" if it expires.')
-              .setImage('attachment://qrcode.png')
-              .setFooter({ text: 'Scan with your phone to connect' })
-          ],
-          files: [attachment],
+          content: '📱 **Scan this QR code with WhatsApp on your phone to connect.**\n\nOpen WhatsApp > Menu (⋮) > Linked Devices > Link a Device',
+          files: [qrImagePath],
           components: [row]
         });
       } catch (qrError) {
@@ -147,14 +121,8 @@ module.exports = {
         
         // Update message with error
         await interaction.editReply({
-          content: '',
-          embeds: [
-            new EmbedBuilder()
-              .setColor('#e74c3c')
-              .setTitle('WhatsApp QR Code')
-              .setDescription(`❌ Failed to generate QR code: ${qrError.message}\n\nPlease try again.`)
-              .setFooter({ text: 'Click "Try Again" to retry' })
-          ],
+          content: `⚠️ Failed to generate QR code: ${qrError.message}\n\nPlease try again.`,
+          embeds: [],
           components: [row]
         });
       }
@@ -177,14 +145,8 @@ module.exports = {
       // Send error message
       try {
         await interaction.editReply({
-          content: '',
-          embeds: [
-            new EmbedBuilder()
-              .setColor('#e74c3c')
-              .setTitle('Error')
-              .setDescription(`Failed to refresh QR code: ${error.message}`)
-              .setFooter({ text: 'Click "Try Again" to retry' })
-          ],
+          content: `⚠️ Failed to refresh QR code: ${error.message}`,
+          embeds: [],
           components: [row]
         });
       } catch (replyError) {
