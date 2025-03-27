@@ -1,4 +1,4 @@
-// index.js - Main entry point (Updated)
+// index.js - Main entry point (FIXED for better auto-reconnection)
 const express = require('express');
 const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
 const dotenv = require('dotenv');
@@ -240,6 +240,48 @@ discordClient.on('ready', async () => {
     console.error('Error initializing instances:', error);
   }
   
+  // ADDED: Restore WhatsApp connections systematically
+  console.log('Restoring WhatsApp connections...');
+  
+  const instances = InstanceManager.getStatus();
+  for (const instance of instances) {
+    try {
+      const instanceObj = InstanceManager.getInstanceByGuildId(instance.guildId);
+      if (instanceObj) {
+        console.log(`Attempting to restore connection for ${instance.instanceId}...`);
+        
+        // First check if authenticated but disconnected
+        if (instanceObj.clients?.whatsAppClient?.isAuthenticated && 
+            typeof instanceObj.clients.whatsAppClient.isAuthenticated === 'function') {
+          
+          const isAuth = await instanceObj.clients.whatsAppClient.isAuthenticated();
+          
+          if (isAuth) {
+            console.log(`Found existing authentication for ${instance.instanceId}, restoring session...`);
+            
+            // Try direct session restore first
+            if (instanceObj.clients.whatsAppClient.restoreSession && 
+                typeof instanceObj.clients.whatsAppClient.restoreSession === 'function') {
+              
+              const restored = await instanceObj.clients.whatsAppClient.restoreSession();
+              if (restored) {
+                console.log(`Session restored successfully for ${instance.instanceId}`);
+                continue;
+              }
+            }
+          }
+        }
+        
+        // If direct restore didn't work (or not available), try normal connection
+        console.log(`Attempting normal connection for ${instance.instanceId}...`);
+        const connected = await instanceObj.ensureConnected();
+        console.log(`Instance ${instance.instanceId} connection ${connected ? 'restored' : 'requires QR scan'}`);
+      }
+    } catch (restoreError) {
+      console.error(`Error restoring connection for ${instance.instanceId}:`, restoreError);
+    }
+  }
+  
   console.log(`Ready to serve ${InstanceManager.instances.size} WhatsApp bridges`);
 });
 
@@ -263,7 +305,7 @@ async function registerCommands(client) {
   }
 }
 
-// Handle incoming interactions - UPDATED to use the new centralized interaction handler
+// Handle incoming interactions
 discordClient.on('interactionCreate', async (interaction) => {
   try {
     // Use the centralized interaction handler
@@ -402,22 +444,6 @@ async function start() {
     // Login to Discord
     console.log('Logging in to Discord...');
     await discordClient.login(process.env.DISCORD_TOKEN);
-
-    // Add this new code to restore connections:
-    console.log('Restoring WhatsApp connections...');
-    const instances = InstanceManager.getStatus();
-    for (const instance of instances) {
-      try {
-        const instanceObj = InstanceManager.getInstanceByGuildId(instance.guildId);
-        if (instanceObj) {
-          console.log(`Attempting to restore connection for ${instance.instanceId}...`);
-          const connected = await instanceObj.ensureConnected();
-          console.log(`Instance ${instance.instanceId} connection ${connected ? 'restored' : 'requires QR scan'}`);
-        }
-      } catch (restoreError) {
-        console.error(`Error restoring connection for ${instance.instanceId}:`, restoreError);
-      }
-    }
 
     console.log('Bridge startup complete');
   } catch (error) {

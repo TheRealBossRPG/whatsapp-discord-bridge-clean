@@ -1,4 +1,4 @@
-// utils/qrCodeUtils.js - Consolidated QR code handling
+// utils/qrCodeUtils.js - Fixed with proper dependencies
 const fs = require('fs');
 const path = require('path');
 const qrcode = require('qrcode');
@@ -6,9 +6,31 @@ const { EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, Button
 
 /**
  * Comprehensive QR code utility functions for WhatsApp connection
- * Central hub for all QR code generation, display, and connection handling
  */
 class QRCodeUtils {
+  /**
+   * Generate QR code data using InstanceManager
+   * @param {Object} options - Options for QR code generation
+   * @returns {Promise<string|null>} - QR code data or null
+   */
+  static async generateQRCode(options) {
+    try {
+      // Validate required parameters
+      if (!options || !options.guildId) {
+        throw new Error('Guild ID is required for QR code generation');
+      }
+      
+      // Get instance manager
+      const InstanceManager = require('../core/InstanceManager');
+      
+      // Generate the QR code via instance manager
+      return await InstanceManager.generateQRCode(options);
+    } catch (error) {
+      console.error(`[QRCodeUtils] Error generating QR code:`, error);
+      throw error;
+    }
+  }
+
   /**
    * Generate and display QR code for WhatsApp connection
    * @param {Object} interaction - Discord interaction
@@ -27,10 +49,6 @@ class QRCodeUtils {
         throw new Error("Invalid or empty QR code");
       }
 
-      if (!guildId) {
-        throw new Error("Missing guild ID");
-      }
-
       // Let user know we're generating the QR code
       await interaction.editReply({
         content: "⌛ Generating QR code for WhatsApp connection...",
@@ -39,37 +57,36 @@ class QRCodeUtils {
       });
 
       // Create directory for QR code if it doesn't exist
-      const instancesDir = path.join(__dirname, "..", "instances");
+      const instancesDir = path.join(__dirname, '..', 'instances');
       const guildDir = path.join(instancesDir, guildId);
+      const tempDir = path.join(guildDir, 'temp');
 
-      if (!fs.existsSync(guildDir)) {
-        fs.mkdirSync(guildDir, { recursive: true });
-      }
+      // Create directories if they don't exist
+      [guildDir, tempDir].forEach(dir => {
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+      });
 
-      const qrCodePath = path.join(guildDir, "qrcode.png");
+      const qrCodePath = path.join(tempDir, "qrcode.png");
 
       console.log(`Generating QR code image for guild ${guildId}, QR data length: ${qrCode.length}`);
 
       // Generate high quality QR code image
       await qrcode.toFile(qrCodePath, qrCode, {
         type: 'png',
-        errorCorrectionLevel: 'H', // Highest error correction
+        errorCorrectionLevel: 'H',
         margin: 4,
-        scale: 16, // Larger scale for better quality
+        scale: 16,
         color: {
-          dark: '#000000',  // Black dots
-          light: '#FFFFFF'  // White background
+          dark: '#000000',
+          light: '#FFFFFF'
         }
       });
 
       console.log(`QR code image saved to ${qrCodePath}`);
 
-      // Verify file was created
-      if (!fs.existsSync(qrCodePath)) {
-        throw new Error("QR code file was not created");
-      }
-
-      // Create modern embed with clearer instructions
+      // Create modern embed with clear instructions
       const embed = new EmbedBuilder()
         .setColor(0x25D366) // WhatsApp green
         .setTitle("📱 Connect WhatsApp")
@@ -110,7 +127,7 @@ class QRCodeUtils {
           .setStyle(ButtonStyle.Primary)
           .setEmoji("🔄"),
         new ButtonBuilder()
-          .setCustomId("check_connection")
+          .setCustomId("reconnect_status")
           .setLabel("Check Status")
           .setStyle(ButtonStyle.Secondary)
       );
@@ -204,7 +221,14 @@ class QRCodeUtils {
             content: "",
             embeds: [successEmbed],
             files: [], // Remove QR code
-            components: [], // Remove buttons
+            components: [
+              new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                  .setCustomId("check_status")
+                  .setLabel("Check Status")
+                  .setStyle(ButtonStyle.Success)
+              )
+            ],
           });
 
           // Clean up the stored data
@@ -229,28 +253,22 @@ class QRCodeUtils {
       
       const instanceDir = instance.baseDir || path.join(__dirname, '..', 'instances', instance.instanceId);
       
-      // Make sure directories exist
-      if (!fs.existsSync(instanceDir)) {
-        fs.mkdirSync(instanceDir, { recursive: true });
-      }
-      
       // Define auth directories and files
-      const authStructure = {
-        directories: [
-          path.join(instanceDir, 'auth'),
-          path.join(instanceDir, 'auth', 'baileys_auth'), 
-          path.join(instanceDir, 'baileys_auth')
-        ],
-        files: [
-          path.join(instanceDir, 'creds.json'),
-          path.join(instanceDir, 'auth', 'creds.json'),
-          path.join(instanceDir, 'auth', 'baileys_auth', 'creds.json'),
-          path.join(instanceDir, 'baileys_auth', 'creds.json')
-        ]
-      };
+      const authDirs = [
+        path.join(instanceDir, 'auth'),
+        path.join(instanceDir, 'baileys_auth'),
+        path.join(instanceDir, 'auth', 'baileys_auth')
+      ];
       
-      // Create directories if they don't exist (needed for proper cleanup)
-      for (const dir of authStructure.directories) {
+      const authFiles = [
+        path.join(instanceDir, 'creds.json'),
+        path.join(instanceDir, 'auth', 'creds.json'),
+        path.join(instanceDir, 'baileys_auth', 'creds.json'),
+        path.join(instanceDir, 'auth', 'baileys_auth', 'creds.json')
+      ];
+      
+      // Create directories if they don't exist
+      for (const dir of authDirs) {
         if (!fs.existsSync(dir)) {
           try {
             fs.mkdirSync(dir, { recursive: true });
@@ -260,15 +278,16 @@ class QRCodeUtils {
         }
       }
       
-      // Delete specific auth files first
-      for (const file of authStructure.files) {
+      // Delete auth files
+      for (const file of authFiles) {
         if (fs.existsSync(file)) {
           try {
             fs.unlinkSync(file);
             console.log(`[Instance:${instance.instanceId}] Deleted auth file: ${file}`);
           } catch (unlinkError) {
             console.warn(`[Instance:${instance.instanceId}] Warning: Could not delete ${file}: ${unlinkError.message}`);
-            // Try to truncate the file if we can't delete it
+            
+            // Try to truncate the file if can't delete
             try {
               fs.truncateSync(file, 0);
               console.log(`[Instance:${instance.instanceId}] Truncated auth file: ${file}`);
@@ -279,18 +298,14 @@ class QRCodeUtils {
         }
       }
       
-      // Clean content of directories
-      for (const dir of authStructure.directories) {
+      // Clean auth directories
+      for (const dir of authDirs) {
         if (fs.existsSync(dir)) {
           try {
             const files = fs.readdirSync(dir);
             for (const file of files) {
-              // Skip the entire directory itself
-              if (file === '.' || file === '..') continue;
-              
               const filePath = path.join(dir, file);
               try {
-                // Only delete files, not subdirectories
                 if (fs.statSync(filePath).isFile()) {
                   fs.unlinkSync(filePath);
                   console.log(`[Instance:${instance.instanceId}] Deleted auth file: ${filePath}`);
@@ -305,7 +320,6 @@ class QRCodeUtils {
         }
       }
       
-      console.log(`[Instance:${instance.instanceId}] Authentication files cleaned`);
       return true;
     } catch (error) {
       console.error(`[Instance:${instance.instanceId}] Error cleaning auth files: ${error.message}`);
@@ -314,136 +328,7 @@ class QRCodeUtils {
   }
 
   /**
-   * Generate QR code for a new or existing instance
-   * Centralized method to replace InstanceManager.generateQRCode
-   * @param {Object} options - Options for QR code generation
-   * @returns {Promise<string|null>} - QR code data or null if already connected
-   */
-  static async generateQRCode(options) {
-    const { guildId, categoryId, transcriptChannelId, vouchChannelId, customSettings, discordClient, qrTimeout = 60000 } = options;
-    
-    try {
-      // Validate required parameters
-      if (!guildId) throw new Error('Guild ID is required');
-      if (!categoryId) throw new Error('Category ID is required');
-      if (!discordClient) throw new Error('Discord client is required');
-      
-      console.log(`Generating QR code for guild ${guildId}...`);
-      
-      // Get InstanceManager
-      const InstanceManager = require('../core/InstanceManager');
-      
-      // Check if we already have an instance for this guild
-      let instance = InstanceManager.getInstanceByGuildId(guildId);
-      
-      // If already authenticated and connected, return null to indicate no QR code needed
-      if (instance && !instance.isTemporary && instance.isConnected && instance.isConnected()) {
-        console.log(`WhatsApp already connected for guild ${guildId}`);
-        return null;
-      }
-      
-      // Create config for this guild
-      const config = {
-        guildId,
-        categoryId,
-        transcriptChannelId,  // Can be null
-        vouchChannelId,       // Can be null
-        customSettings,       // Can be null/undefined
-        discordClient
-      };
-      
-      // Create new instance or disconnect existing one
-      if (!instance || instance.isTemporary) {
-        console.log(`Creating new instance for guild ${guildId}`);
-        instance = await InstanceManager.createInstance(config);
-      } else {
-        console.log(`Disconnect existing instance for guild ${guildId} to generate fresh QR code`);
-        await instance.disconnect();
-        
-        // Update instance properties if they've changed
-        instance.categoryId = categoryId;
-        instance.transcriptChannelId = transcriptChannelId;
-        instance.vouchChannelId = vouchChannelId;
-        
-        // Update customSettings if provided
-        if (customSettings) {
-          instance.customSettings = {
-            ...instance.customSettings,
-            ...customSettings
-          };
-        }
-      }
-      
-      // Clean auth files to force new QR code
-      await this.cleanAuthFiles(instance);
-      
-      // Set QR code timeout and make sure QR code is shown
-      if (instance.clients?.whatsAppClient) {
-        if (typeof instance.clients.whatsAppClient.setQrTimeout === 'function') {
-          instance.clients.whatsAppClient.setQrTimeout(qrTimeout);
-        }
-        
-        if (typeof instance.clients.whatsAppClient.setShowQrCode === 'function') {
-          instance.clients.whatsAppClient.setShowQrCode(true);
-        }
-      }
-      
-      // Set up promise to catch QR code with improved error handling
-      return new Promise((resolve, reject) => {
-        // Set timeout for QR code generation
-        const timeout = setTimeout(() => {
-          console.log(`QR code generation timed out for guild ${guildId}`);
-          resolve("TIMEOUT");
-        }, qrTimeout);
-        
-        // Set flag for QR code received
-        let qrCodeReceived = false;
-        
-        // Set callback for QR code
-        const qrCodeHandler = (qrCode) => {
-          console.log(`Got QR code for guild ${guildId} (${qrCode.length} chars)`);
-          clearTimeout(timeout);
-          qrCodeReceived = true;
-          resolve(qrCode);
-        };
-        
-        // Set callback for ready event
-        const readyHandler = () => {
-          console.log(`WhatsApp connected for guild ${guildId}`);
-          clearTimeout(timeout);
-          // Only resolve if we haven't already received a QR code
-          if (!qrCodeReceived) {
-            resolve(null); // Already authenticated
-          }
-        };
-        
-        // Register handlers
-        instance.onQRCode(qrCodeHandler);
-        instance.onReady(readyHandler);
-        
-        // Connect WhatsApp - EXPLICITLY SET showQrCode to true
-        instance.connect(true)  // Pass true to force QR code generation
-          .then(success => {
-            if (!success && !qrCodeReceived) {
-              console.error(`Failed to connect WhatsApp for guild ${guildId}`);
-              clearTimeout(timeout);
-              reject(new Error('Failed to connect WhatsApp'));
-            }
-          })
-          .catch(error => {
-            console.error(`Error connecting WhatsApp for guild ${guildId}: ${error.message}`);
-            clearTimeout(timeout);
-            reject(error);
-          });
-      });
-    } catch (error) {
-      console.error(`Error generating QR code for guild ${guildId}:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Handle WhatsApp reconnection with improved error handling and QR code display
+   * Handle WhatsApp reconnection
    * @param {Object} interaction - Discord interaction
    * @param {Object} instance - Server instance
    * @param {Object} options - Additional options
@@ -454,14 +339,14 @@ class QRCodeUtils {
       // Set default options
       const defaultOptions = {
         ephemeral: false,
-        fromStatus: false, // If called from status command
-        preserveComponents: false, // Whether to keep original components
-        timeoutDuration: 120000, // 2 minute timeout for QR code
+        fromStatus: false,
+        preserveComponents: false,
+        timeoutDuration: 120000,
       };
       
       options = { ...defaultOptions, ...options };
       
-      // Immediately respond to the interaction to prevent timeout
+      // Immediately defer update to prevent timeout
       if (!interaction.deferred) {
         await interaction.deferUpdate();
       }
@@ -501,8 +386,21 @@ class QRCodeUtils {
       
       let reconnected = false;
       try {
-        // Attempt to reconnect with existing auth
-        reconnected = await instance.ensureConnected();
+        // Attempt to restore session
+        if (instance.clients && instance.clients.whatsAppClient) {
+          if (typeof instance.clients.whatsAppClient.restoreSession === 'function') {
+            reconnected = await instance.clients.whatsAppClient.restoreSession();
+            
+            if (reconnected) {
+              console.log(`Successfully restored session for guild ${interaction.guild.id}`);
+            }
+          }
+          
+          // If session restore failed or not available, try normal connect
+          if (!reconnected) {
+            reconnected = await instance.connect(false);
+          }
+        }
         
         // Check if reconnect was successful
         if (reconnected && instance.isConnected()) {
@@ -521,7 +419,6 @@ class QRCodeUtils {
         }
       } catch (reconnectError) {
         console.error(`[Instance:${instance.instanceId}] Error in initial reconnect attempt: ${reconnectError.message}`);
-        // Continue to QR code generation if reconnect failed
       }
       
       // SECOND ATTEMPT: Generate new QR code
@@ -537,19 +434,18 @@ class QRCodeUtils {
       // Delete auth files to force new QR code
       await this.cleanAuthFiles(instance);
 
-      // Disconnect the instance - this won't cause errors even if already disconnected
+      // Disconnect the instance
       try {
         await instance.disconnect();
       } catch (error) {
         console.error(`[Instance:${instance.instanceId}] Error disconnecting instance: ${error.message}`);
-        // Continue anyway
       }
 
-      // Add a short delay before reconnection to avoid server throttling
+      // Add delay before reconnection to avoid server throttling
       await interaction.editReply({
         content: "⏳ Preparing to connect to WhatsApp..."
       });
-      await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
+      await new Promise(resolve => setTimeout(resolve, 2000));
       
       // Generate fresh QR code
       try {
@@ -557,7 +453,7 @@ class QRCodeUtils {
           content: "🔄 Requesting QR code from WhatsApp servers..."
         });
         
-        // Generate a new QR code using our central method
+        // Get a new QR code
         const qrCode = await this.generateQRCode({
           guildId: interaction.guild.id,
           categoryId: instance.categoryId,
@@ -570,7 +466,7 @@ class QRCodeUtils {
 
         if (qrCode === null) {
           await interaction.editReply({
-            content: "⚠️ WhatsApp is already connected! This is unexpected since we cleared auth data. Please try again with `/setup` instead.",
+            content: "⚠️ WhatsApp is already connected! This is unexpected since we cleared auth data. Please try again.",
             components: []
           });
           return false;
@@ -578,7 +474,7 @@ class QRCodeUtils {
 
         if (qrCode === "TIMEOUT") {
           await interaction.editReply({
-            content: "⚠️ QR code generation timed out. Please try again later or use `/setup` command.",
+            content: "⚠️ QR code generation timed out. Please try again later.",
             components: []
           });
           return false;
@@ -589,7 +485,7 @@ class QRCodeUtils {
       } catch (qrError) {
         console.error(`[Instance:${instance.instanceId}] Error generating QR code:`, qrError);
         await interaction.editReply({
-          content: `❌ Error generating QR code: ${qrError.message}. Please try running /setup again.`,
+          content: `❌ Error generating QR code: ${qrError.message}. Please try again.`,
           components: []
         });
         return false;
@@ -598,12 +494,8 @@ class QRCodeUtils {
       console.error(`[QRCodeUtils] Error handling reconnect:`, error);
       
       try {
-        if (!interaction.deferred) {
-          await interaction.deferUpdate();
-        }
-        
         await interaction.editReply({
-          content: `❌ Error reconnecting: ${error.message}. Please try again or use /setup command.`,
+          content: `❌ Error reconnecting: ${error.message}. Please try again.`,
           components: []
         });
       } catch (replyError) {
@@ -648,7 +540,6 @@ class QRCodeUtils {
         await instance.disconnect();
       } catch (error) {
         console.error(`[Instance:${instance.instanceId}] Error disconnecting instance: ${error.message}`);
-        // Continue anyway
       }
       
       // Update message to show progress
@@ -659,7 +550,7 @@ class QRCodeUtils {
         components: []
       });
       
-      // Get a new QR code using our central method
+      // Get a new QR code
       const qrCode = await this.generateQRCode({
         guildId: interaction.guild.id,
         categoryId: instance.categoryId,
@@ -667,7 +558,7 @@ class QRCodeUtils {
         vouchChannelId: instance.vouchChannelId || instance.transcriptChannelId,
         customSettings: instance.customSettings || {},
         discordClient: interaction.client,
-        qrTimeout: 120000 // 2 minute timeout
+        qrTimeout: 120000
       });
       
       if (qrCode === null) {
@@ -680,7 +571,7 @@ class QRCodeUtils {
       
       if (qrCode === "TIMEOUT") {
         await interaction.editReply({
-          content: "⚠️ QR code generation timed out after waiting. Please try again later.",
+          content: "⚠️ QR code generation timed out. Please try again later.",
           components: []
         });
         return false;
@@ -713,13 +604,13 @@ class QRCodeUtils {
   }
 }
 
-// Export the class for creating new instances
-module.exports = QRCodeUtils;
-
-// For backward compatibility, also export individual functions
-module.exports.displayQRCode = QRCodeUtils.displayQRCode.bind(QRCodeUtils);
-module.exports.generateQRCode = QRCodeUtils.generateQRCode.bind(QRCodeUtils);
-module.exports.handleReconnect = QRCodeUtils.handleReconnect.bind(QRCodeUtils);
-module.exports.refreshQRCode = QRCodeUtils.refreshQRCode.bind(QRCodeUtils);
-module.exports.cleanAuthFiles = QRCodeUtils.cleanAuthFiles.bind(QRCodeUtils);
-module.exports.startConnectionStatusUpdates = QRCodeUtils.startConnectionStatusUpdates.bind(QRCodeUtils);
+// Export functions
+module.exports = {
+  displayQRCode: QRCodeUtils.displayQRCode.bind(QRCodeUtils),
+  handleReconnect: QRCodeUtils.handleReconnect.bind(QRCodeUtils),
+  refreshQRCode: QRCodeUtils.refreshQRCode.bind(QRCodeUtils),
+  cleanAuthFiles: QRCodeUtils.cleanAuthFiles.bind(QRCodeUtils),
+  startConnectionStatusUpdates: QRCodeUtils.startConnectionStatusUpdates.bind(QRCodeUtils),
+  generateQRCode: QRCodeUtils.generateQRCode.bind(QRCodeUtils), // Important to export this!
+  QRCodeUtils
+};

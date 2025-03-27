@@ -1,7 +1,7 @@
-// core/Instance.js - Improved connection handling
-const fs = require("fs");
-const path = require("path");
-const EventBus = require("./EventBus");
+// core/Instance.js - FIXED VERSION with improved reconnection handling
+const fs = require('fs');
+const path = require('path');
+const EventBus = require('./EventBus');
 
 class Instance {
   constructor(options) {
@@ -18,9 +18,9 @@ class Instance {
 
     // Track connection state
     this.connected = false;
-    this.lastConnectionAttempt = 0;
-    this.connectionAttempts = 0;
-    this.maxConnectionAttempts = 5;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnecting = false;
 
     // Initialize empty component references
     this.managers = {};
@@ -37,15 +37,16 @@ class Instance {
   }
 
   initializeDirectories() {
-    this.baseDir = path.join(__dirname, "..", "instances", this.instanceId);
+    this.baseDir = path.join(__dirname, '..', 'instances', this.instanceId);
 
     // Define paths with fallbacks to default locations
     this.paths = {
-      auth: path.join(this.baseDir, "auth"),
-      temp: path.join(this.baseDir, "temp"),
-      transcripts: path.join(this.baseDir, "transcripts"),
-      assets: path.join(this.baseDir, "assets"),
-      logs: path.join(this.baseDir, "logs"),
+      auth: path.join(this.baseDir, 'auth'),
+      baileys_auth: path.join(this.baseDir, 'baileys_auth'), // Added explicit baileys auth dir
+      temp: path.join(this.baseDir, 'temp'),
+      transcripts: path.join(this.baseDir, 'transcripts'),
+      assets: path.join(this.baseDir, 'assets'),
+      logs: path.join(this.baseDir, 'logs'),
     };
 
     // Create directories if they don't exist
@@ -57,29 +58,28 @@ class Instance {
   }
 
   /**
-   * Set up event handlers for WhatsApp client
-   * Properly manages event listeners to prevent memory leaks
+   * Set up WhatsApp client event listeners
+   * FIXED: Improved event handling
    */
   setupWhatsAppClientEvents() {
     try {
       if (!this.clients.whatsAppClient) {
-        console.error(
-          `[Instance:${this.instanceId}] Cannot set up events for null WhatsApp client`
-        );
+        console.error(`[Instance:${this.instanceId}] Cannot set up events for null WhatsApp client`);
         return;
       }
 
-      // First, remove any existing handlers to prevent duplication
-      if (this.cleanupFunction) {
-        console.log(`[Instance:${this.instanceId}] Cleaning up previous event handlers`);
-        this.cleanupFunction();
-      }
+      // Remove any existing handlers to prevent duplication
+      this.clients.whatsAppClient.removeAllListeners('qr');
+      this.clients.whatsAppClient.removeAllListeners('ready');
+      this.clients.whatsAppClient.removeAllListeners('authenticated');
+      this.clients.whatsAppClient.removeAllListeners('auth_failure');
+      this.clients.whatsAppClient.removeAllListeners('disconnected');
+      this.clients.whatsAppClient.removeAllListeners('message');
 
-      // Array to store cleanup functions
-      const cleanupFunctions = [];
-
-      // Handle QR code
-      const qrHandler = (qrCode) => {
+      // Handle QR code - FIXED for better event processing
+      this.clients.whatsAppClient.on('qr', (qrCode) => {
+        console.log(`[Instance:${this.instanceId}] QR code received (${qrCode.length} chars)`);
+        
         // Store the last QR code
         this.lastQrCode = qrCode;
 
@@ -88,37 +88,54 @@ class Instance {
           clearTimeout(this.qrCodeTimer);
         }
 
-        // Set a timer to clear QR code after 45 seconds
+        // Set a timer to clear QR code after 60 seconds
         this.qrCodeTimer = setTimeout(() => {
           this.lastQrCode = null;
-        }, 45000);
-
-        console.log(
-          `[Instance:${this.instanceId}] New QR code generated (${qrCode.length} chars)`
-        );
+          console.log(`[Instance:${this.instanceId}] QR code cleared due to timeout`);
+        }, 60000);
 
         // Emit QR code event
         if (this.events) {
-          this.events.emit("qr", qrCode);
+          this.events.emit('qr', qrCode);
         }
 
-        // Call any registered QR code listeners directly
+        // Call any registered QR code listeners
         if (this.qrCodeListeners && this.qrCodeListeners.size > 0) {
           for (const listener of this.qrCodeListeners) {
             try {
               listener(qrCode);
-            } catch (e) {
-              console.error(
-                `[Instance:${this.instanceId}] Error in QR code listener:`,
-                e
-              );
+            } catch (error) {
+              console.error(`[Instance:${this.instanceId}] Error in QR code listener:`, error);
             }
           }
         }
-      };
+      });
+
+      // Handle authentication
+      this.clients.whatsAppClient.on('authenticated', () => {
+        console.log(`[Instance:${this.instanceId}] WhatsApp authenticated`);
+        
+        // Reset reconnection attempts on successful authentication
+        this.reconnectAttempts = 0;
+        this.reconnecting = false;
+      });
+
+      // Handle authentication failure
+      this.clients.whatsAppClient.on('auth_failure', (error) => {
+        console.error(`[Instance:${this.instanceId}] WhatsApp authentication failed:`, error);
+        this.connected = false;
+        
+        // Increment reconnection attempts
+        this.reconnectAttempts++;
+        
+        // Emit auth failure event
+        if (this.events) {
+          this.events.emit('auth_failure', error);
+        }
+      });
 
       // Handle ready event
-      const readyHandler = () => {
+      this.clients.whatsAppClient.on('ready', () => {
         console.log(`[Instance:${this.instanceId}] WhatsApp client ready`);
 
         // Clear QR code and timer
@@ -128,71 +145,181 @@ class Instance {
           this.qrCodeTimer = null;
         }
 
+        // Update connection state
         this.connected = true;
-        this.connectionAttempts = 0;
-        this.lastConnectionAttempt = Date.now();
+        this.reconnectAttempts = 0;
+        this.reconnecting = false;
 
         // Emit ready event
         if (this.events) {
-          this.events.emit("ready");
+          this.events.emit('ready');
         }
-      };
+      });
 
       // Handle disconnected event
-      const disconnectHandler = (reason) => {
-        console.log(
-          `[Instance:${this.instanceId}] WhatsApp client disconnected: ${reason || "unknown reason"}`
-        );
+      this.clients.whatsAppClient.on('disconnected', (reason) => {
+        console.log(`[Instance:${this.instanceId}] WhatsApp client disconnected: ${reason || 'Unknown reason'}`);
         this.connected = false;
 
+        // Emit disconnect event
         if (this.events) {
-          this.events.emit("disconnect", reason);
+          this.events.emit('disconnect', reason);
         }
-      };
+
+        // Attempt auto-reconnect if not deliberately disconnected
+        if (reason !== 'user_disconnected' && reason !== 'logout' && !this.reconnecting) {
+          this.attemptReconnect();
+        }
+      });
+
+      // Handle connection_closed event (specific to baileys)
+      this.clients.whatsAppClient.on('connection_closed', () => {
+        console.log(`[Instance:${this.instanceId}] WhatsApp connection closed`);
+        this.connected = false;
+
+        // Attempt reconnection
+        if (!this.reconnecting) {
+          this.attemptReconnect();
+        }
+      });
 
       // Handle message events
-      const messageHandler = (message) => {
+      this.clients.whatsAppClient.on('message', (message) => {
         try {
           if (this.handlers.whatsAppHandler) {
             this.handlers.whatsAppHandler.handleMessage(message);
           }
         } catch (error) {
-          console.error(
-            `[Instance:${this.instanceId}] Error in message handler:`,
-            error
-          );
+          console.error(`[Instance:${this.instanceId}] Error in message handler:`, error);
         }
-      };
+      });
 
-      // Register new handlers and save references for later cleanup
-      this.clients.whatsAppClient.on("qr", qrHandler);
-      this.clients.whatsAppClient.on("ready", readyHandler);
-      this.clients.whatsAppClient.on("disconnected", disconnectHandler);
-      this.clients.whatsAppClient.on("message", messageHandler);
-
-      // Create a single cleanup function that removes all listeners
-      this.cleanupFunction = () => {
-        if (!this.clients.whatsAppClient) return;
-
-        this.clients.whatsAppClient.removeListener("qr", qrHandler);
-        this.clients.whatsAppClient.removeListener("ready", readyHandler);
-        this.clients.whatsAppClient.removeListener("disconnected", disconnectHandler);
-        this.clients.whatsAppClient.removeListener("message", messageHandler);
-      };
-
-      console.log(
-        `[Instance:${this.instanceId}] WhatsApp client events set up`
-      );
+      console.log(`[Instance:${this.instanceId}] WhatsApp client events set up`);
     } catch (error) {
-      console.error(
-        `[Instance:${this.instanceId}] Error setting up WhatsApp client events:`,
-        error
-      );
+      console.error(`[Instance:${this.instanceId}] Error setting up WhatsApp client events:`, error);
     }
   }
 
   /**
-   * Clean temporary files for this instance
+   * Attempt to reconnect WhatsApp with exponential backoff
+   * @private
+   */
+  async attemptReconnect() {
+    try {
+      // Prevent multiple reconnection attempts
+      if (this.reconnecting) {
+        console.log(`[Instance:${this.instanceId}] Reconnection already in progress`);
+        return;
+      }
+
+      // Set reconnecting flag
+      this.reconnecting = true;
+
+      // Check if we've exceeded max attempts
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        console.error(`[Instance:${this.instanceId}] Max reconnection attempts (${this.maxReconnectAttempts}) reached`);
+        this.reconnecting = false;
+        return;
+      }
+
+      // Increment attempt counter
+      this.reconnectAttempts++;
+
+      // Calculate backoff time with exponential increase (1s, 2s, 4s, 8s, etc)
+      const backoffTime = Math.min(30000, 1000 * Math.pow(2, this.reconnectAttempts - 1));
+      
+      console.log(`[Instance:${this.instanceId}] Attempting reconnect in ${backoffTime}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+
+      // Wait for backoff time
+      await new Promise(resolve => setTimeout(resolve, backoffTime));
+
+      // Check if the client still exists
+      if (!this.clients.whatsAppClient) {
+        console.log(`[Instance:${this.instanceId}] WhatsApp client no longer exists, cannot reconnect`);
+        this.reconnecting = false;
+        return;
+      }
+
+      // Attempt reconnection
+      console.log(`[Instance:${this.instanceId}] Executing reconnection attempt ${this.reconnectAttempts}`);
+      
+      // Perform the reconnection without showing QR code first
+      const success = await this.connect(false);
+
+      if (success && this.isConnected()) {
+        console.log(`[Instance:${this.instanceId}] Reconnection successful`);
+        this.reconnectAttempts = 0;
+        this.reconnecting = false;
+      } else {
+        console.log(`[Instance:${this.instanceId}] Reconnection attempt failed, will retry`);
+        
+        // Reset reconnecting flag to allow another attempt
+        this.reconnecting = false;
+        
+        // Try again with backoff
+        this.attemptReconnect();
+      }
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error during reconnection:`, error);
+      this.reconnecting = false;
+      
+      // Try again despite error unless max attempts reached
+      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+        setTimeout(() => this.attemptReconnect(), 5000);
+      }
+    }
+  }
+
+  /**
+   * Initialize ticket manager
+   */
+  initializeTicketManager() {
+    try {
+      console.log(`[Instance:${this.instanceId}] Initializing ticket manager`);
+
+      if (!this.managers.ticketManager) {
+        // Get required managers
+        const channelManager = this.managers.channelManager;
+
+        // Create the ticket manager
+        const TicketManager = require("../modules/managers/TicketManager");
+        this.managers.ticketManager = new TicketManager(
+          channelManager,
+          this.discordClient,
+          this.guildId,
+          this.categoryId,
+          {
+            instanceId: this.instanceId,
+            customIntroMessages: this.customSettings?.introMessage,
+            customCloseMessages: this.customSettings?.closingMessage,
+          }
+        );
+
+        // Connect managers to each other
+        if (this.managers.userCardManager) {
+          this.managers.ticketManager.setUserCardManager(
+            this.managers.userCardManager
+          );
+        }
+
+        if (this.managers.transcriptManager) {
+          this.managers.ticketManager.setTranscriptManager(
+            this.managers.transcriptManager
+          );
+        }
+
+        console.log(`[Instance:${this.instanceId}] Ticket manager initialized`);
+      }
+
+      return this.managers.ticketManager;
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error initializing ticket manager: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Clean temporary files
    */
   cleanTempFiles() {
     try {
@@ -201,9 +328,7 @@ class Instance {
       // Get temp directory
       const tempDir = this.paths.temp;
       if (!tempDir || !fs.existsSync(tempDir)) {
-        console.log(
-          `[Instance:${this.instanceId}] No temp directory found at ${tempDir}`
-        );
+        console.log(`[Instance:${this.instanceId}] No temp directory found at ${tempDir}`);
         return;
       }
 
@@ -211,16 +336,14 @@ class Instance {
       const files = fs.readdirSync(tempDir);
       let deletedCount = 0;
 
-      // Delete each file
+      // Delete each file except QR code
       for (const file of files) {
+        // Skip qrcode.png file
+        if (file === "qrcode.png") continue;
+        
         const filePath = path.join(tempDir, file);
 
         try {
-          // Skip qrcode.png file
-          if (file === "qrcode.png") {
-            continue;
-          }
-
           // Get file stats to check if it's a file (not a directory)
           const stats = fs.statSync(filePath);
 
@@ -229,42 +352,29 @@ class Instance {
             deletedCount++;
           }
         } catch (fileError) {
-          console.error(
-            `[Instance:${this.instanceId}] Error deleting file ${filePath}: ${fileError.message}`
-          );
+          console.error(`[Instance:${this.instanceId}] Error deleting file ${filePath}: ${fileError.message}`);
         }
       }
 
-      console.log(
-        `[Instance:${this.instanceId}] Deleted ${deletedCount} temporary files`
-      );
+      console.log(`[Instance:${this.instanceId}] Deleted ${deletedCount} temporary files`);
     } catch (error) {
-      console.error(
-        `[Instance:${this.instanceId}] Error cleaning temp files: ${error.message}`
-      );
+      console.error(`[Instance:${this.instanceId}] Error cleaning temp files: ${error.message}`);
     }
   }
 
   /**
-   * Initialize the instance components
-   * @returns {Promise<boolean>} Success status
+   * Initialize all managers, handlers and clients
    */
   async initialize() {
     try {
-      // Import necessary modules
+      // 1. Initialize all managers
       const ChannelManager = require("../modules/managers/ChannelManager");
       const UserCardManager = require("../modules/managers/UserCardManager");
       const TranscriptManager = require("../modules/managers/TranscriptManager");
       const TicketManager = require("../modules/managers/TicketManager");
-      const BaileysClient = require("../modules/clients/BaileysClient");
-      const WhatsAppHandler = require("../modules/handlers/WhatsAppHandler");
-      const DiscordHandler = require("../modules/handlers/DiscordHandler");
-      const VouchHandler = require("../modules/handlers/VouchHandler");
 
-      // 1. Initialize managers
       this.managers.channelManager = new ChannelManager(this.instanceId);
       this.managers.userCardManager = new UserCardManager(this.instanceId);
-      
       this.managers.transcriptManager = new TranscriptManager({
         instanceId: this.instanceId,
         transcriptChannelId: this.transcriptChannelId,
@@ -294,14 +404,21 @@ class Instance {
       );
 
       // 2. Initialize WhatsApp client
+      const BaileysClient = require("../modules/clients/BaileysClient");
       this.clients.whatsAppClient = new BaileysClient({
-        instanceId: this.instanceId,
         authFolder: this.paths.auth,
+        baileysAuthFolder: this.paths.baileys_auth, // Add explicit Baileys auth folder
         tempDir: this.paths.temp,
+        instanceId: this.instanceId,
         maxRetries: 5,
       });
 
-      // 3. Initialize vouch handler if a channel is configured
+      // 3. Initialize handlers
+      const WhatsAppHandler = require("../modules/handlers/WhatsAppHandler");
+      const DiscordHandler = require("../modules/handlers/DiscordHandler");
+      const VouchHandler = require("../modules/handlers/VouchHandler");
+
+      // Initialize vouch handler if a channel is configured
       if (this.vouchChannelId) {
         this.handlers.vouchHandler = new VouchHandler(
           this.clients.whatsAppClient,
@@ -327,9 +444,14 @@ class Instance {
             this.customSettings.vouchMessage
           );
         }
+        
+        // Set vouch enabled state
+        if (this.customSettings && this.customSettings.hasOwnProperty('vouchEnabled')) {
+          this.handlers.vouchHandler.isDisabled = !this.customSettings.vouchEnabled;
+        }
       }
 
-      // 4. Initialize WhatsApp handler
+      // Initialize WhatsApp handler
       this.handlers.whatsAppHandler = new WhatsAppHandler(
         this.clients.whatsAppClient,
         this.managers.userCardManager,
@@ -359,7 +481,7 @@ class Instance {
         }
       }
 
-      // 5. Initialize Discord handler
+      // Initialize Discord handler
       this.handlers.discordHandler = new DiscordHandler(
         this.discordClient,
         this.categoryId,
@@ -388,23 +510,17 @@ class Instance {
         this.clients.whatsAppClient
       );
 
-      // 6. Load instance settings
+      // 4. Load instance settings
       await this.loadSettings();
 
       console.log(`Instance ${this.instanceId} initialized successfully`);
       return true;
     } catch (error) {
-      console.error(
-        `Error initializing instance ${this.instanceId}: ${error.message}`
-      );
+      console.error(`Error initializing instance ${this.instanceId}: ${error.message}`);
       return false;
     }
   }
 
-  /**
-   * Load settings from disk
-   * @returns {Promise<Object>} The loaded settings
-   */
   async loadSettings() {
     try {
       const settingsPath = path.join(this.baseDir, "settings.json");
@@ -454,18 +570,11 @@ class Instance {
         return defaultSettings;
       }
     } catch (error) {
-      console.error(
-        `Error loading settings for instance ${this.instanceId}: ${error.message}`
-      );
+      console.error(`Error loading settings for instance ${this.instanceId}: ${error.message}`);
       return {};
     }
   }
 
-  /**
-   * Save settings to disk
-   * @param {Object} settings - Settings to save
-   * @returns {Promise<boolean>} Success status
-   */
   async saveSettings(settings) {
     try {
       const settingsPath = path.join(this.baseDir, "settings.json");
@@ -488,18 +597,11 @@ class Instance {
 
       return true;
     } catch (error) {
-      console.error(
-        `Error saving settings for instance ${this.instanceId}: ${error.message}`
-      );
+      console.error(`Error saving settings for instance ${this.instanceId}: ${error.message}`);
       return false;
     }
   }
 
-  /**
-   * Apply settings to all components
-   * @param {Object} settings - Settings to apply
-   * @returns {Promise<boolean>} Success status
-   */
   async applySettings(settings) {
     try {
       // Apply to WhatsApp handler
@@ -574,9 +676,7 @@ class Instance {
 
       return true;
     } catch (error) {
-      console.error(
-        `Error applying settings for instance ${this.instanceId}: ${error.message}`
-      );
+      console.error(`Error applying settings for instance ${this.instanceId}: ${error.message}`);
       return false;
     }
   }
@@ -600,121 +700,182 @@ class Instance {
       instance: this,
     });
 
-    console.log(
-      `[Instance:${this.instanceId}] Route set up for category ${this.categoryId}`
-    );
+    console.log(`[Instance:${this.instanceId}] Route set up for category ${this.categoryId}`);
   }
 
   /**
-   * Connect WhatsApp client
-   * @param {boolean} showQrCode - Whether to force QR code display
+   * Connect WhatsApp client with improved error handling
+   * @param {boolean} showQrCode - Whether to force QR code generation
    * @returns {Promise<boolean>} - Connection success status
    */
   async connect(showQrCode = false) {
     try {
       console.log(`[Instance:${this.instanceId}] Connecting WhatsApp...`);
       
-      // Track connection attempt
-      this.lastConnectionAttempt = Date.now();
-      this.connectionAttempts++;
-
-      // Load instance settings
       await this.loadSettings();
 
       // Verify Discord client is available
       if (!this.discordClient) {
-        throw new Error(
-          `[Instance:${this.instanceId}] Discord client is required to connect WhatsApp`
-        );
+        throw new Error(`[Instance:${this.instanceId}] Discord client is required to connect WhatsApp`);
       }
 
-      // Setup WhatsApp client events first
-      if (this.clients.whatsAppClient) {
-        this.setupWhatsAppClientEvents();
-        
-        // Set force QR flag if the method exists
-        if (typeof this.clients.whatsAppClient.setShowQrCode === 'function') {
-          this.clients.whatsAppClient.setShowQrCode(showQrCode);
-        }
-        
-        // Initialize WhatsApp client (force new connection if showQrCode is true)
-        const success = await this.clients.whatsAppClient.initialize(showQrCode);
-        
-        // Set connected state - but check isReady flag from client
-        if (success && this.clients.whatsAppClient.isReady) {
-          this.connected = true;
-          console.log(
-            `[Instance:${this.instanceId}] WhatsApp connected successfully!`
-          );
+      // Make sure ticket manager is initialized
+      if (!this.managers.ticketManager) {
+        this.initializeTicketManager();
+      }
 
-          // Set up routes for Discord
-          this._setupDiscordRoutes();
+      // Create WhatsApp client if not already initialized
+      if (!this.clients.whatsAppClient) {
+        // Import BaileysClient properly
+        const BaileysClient = require("../modules/clients/BaileysClient");
 
-          // Emit ready event
-          if (this.events) {
-            this.events.emit("ready");
+        this.clients.whatsAppClient = new BaileysClient({
+          authFolder: this.paths.auth,
+          baileysAuthFolder: this.paths.baileys_auth, // Explicit Baileys auth folder
+          tempDir: this.paths.temp,
+          instanceId: this.instanceId,
+          maxRetries: 5,
+        });
+      }
+
+      // Set up event handlers - CRITICAL: Do this BEFORE initialization
+      this.setupWhatsAppClientEvents();
+
+      // Update component relationships
+      this.managers.channelManager.setWhatsAppClient(this.clients.whatsAppClient);
+      this.managers.userCardManager.setWhatsAppClient(this.clients.whatsAppClient);
+
+      if (this.handlers.vouchHandler) {
+        this.handlers.vouchHandler.whatsAppClient = this.clients.whatsAppClient;
+      }
+
+      if (this.handlers.discordHandler) {
+        this.handlers.discordHandler.whatsAppClient = this.clients.whatsAppClient;
+      }
+
+      // Set force QR flag if method exists
+      if (typeof this.clients.whatsAppClient.setShowQrCode === 'function') {
+        this.clients.whatsAppClient.setShowQrCode(showQrCode);
+      }
+
+      // Clear any existing QR code timeout
+      if (this.qrCodeTimer) {
+        clearTimeout(this.qrCodeTimer);
+        this.qrCodeTimer = null;
+      }
+
+      // Initialize WhatsApp client with retry mechanism
+      let success = false;
+      let retryCount = 0;
+      const maxRetries = 3;
+      
+      while (!success && retryCount < maxRetries) {
+        try {
+          console.log(`[Instance:${this.instanceId}] Initialization attempt ${retryCount + 1}/${maxRetries}`);
+          success = await this.clients.whatsAppClient.initialize();
+          
+          if (success) {
+            console.log(`[Instance:${this.instanceId}] WhatsApp client initialized successfully`);
+            break;
+          } else {
+            console.log(`[Instance:${this.instanceId}] Initialization returned false, retrying...`);
           }
-        } else if (success) {
-          console.log(
-            `[Instance:${this.instanceId}] WhatsApp initialized but waiting for connection...`
-          );
-        } else {
-          console.log(
-            `[Instance:${this.instanceId}] WhatsApp initialization failed`
-          );
+        } catch (initError) {
+          console.error(`[Instance:${this.instanceId}] Error during initialization attempt ${retryCount + 1}:`, initError);
         }
-
-        return success;
-      } else {
-        console.error(`[Instance:${this.instanceId}] WhatsApp client not initialized`);
-        return false;
+        
+        retryCount++;
+        if (retryCount < maxRetries) {
+          // Add small delay before retry
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
       }
+
+      // Update connection state based on client status
+      if (success && this.clients.whatsAppClient.isReady) {
+        this.connected = true;
+        console.log(`[Instance:${this.instanceId}] WhatsApp connected and ready`);
+        
+        // Set up Discord routes for message handling
+        this._setupDiscordRoutes();
+        
+        // Emit ready event
+        if (this.events) {
+          this.events.emit('ready');
+        }
+      } else if (success) {
+        console.log(`[Instance:${this.instanceId}] WhatsApp initialized but waiting for connection`);
+      } else {
+        console.log(`[Instance:${this.instanceId}] WhatsApp initialization failed after ${maxRetries} attempts`);
+      }
+
+      return success;
     } catch (error) {
-      console.error(
-        `[Instance:${this.instanceId}] Error connecting WhatsApp:`,
-        error
-      );
+      console.error(`[Instance:${this.instanceId}] Error connecting WhatsApp:`, error);
       return false;
     }
   }
 
   /**
-   * Ensure the instance is connected, attempting to reconnect if necessary
-   * @returns {Promise<boolean>} Connection status
+   * Ensure instance is connected - for auto-reconnect on startup
+   * @returns {Promise<boolean>} - Connection status
    */
   async ensureConnected() {
-    // If already connected, just return true
-    if (this.isConnected()) {
-      console.log(`[Instance:${this.instanceId}] Already connected`);
-      return true;
-    }
-    
-    // Check if we've attempted too many reconnections in a short period
-    const cooldownPeriod = 30000; // 30 seconds
-    const now = Date.now();
-    const timeSinceLastAttempt = now - this.lastConnectionAttempt;
-    
-    if (this.connectionAttempts > this.maxConnectionAttempts && timeSinceLastAttempt < cooldownPeriod) {
-      console.log(`[Instance:${this.instanceId}] Too many connection attempts, cooling down`);
+    try {
+      // Check if already connected
+      if (this.isConnected()) {
+        console.log(`[Instance:${this.instanceId}] Already connected, no action needed`);
+        return true;
+      }
+      
+      console.log(`[Instance:${this.instanceId}] Not connected, attempting to restore connection`);
+      
+      // Try to connect without forcing QR code
+      const connected = await this.connect(false);
+      
+      // Check if connection was successful
+      if (connected && this.isConnected()) {
+        console.log(`[Instance:${this.instanceId}] Connection restored successfully`);
+        return true;
+      }
+      
+      // Check if we have client and it's pre-authenticated
+      if (this.clients.whatsAppClient && await this.clients.whatsAppClient.isAuthenticated()) {
+        console.log(`[Instance:${this.instanceId}] Client is pre-authenticated, but not yet connected`);
+        
+        // Try more directly to restore session
+        try {
+          await this.clients.whatsAppClient.restoreSession();
+          
+          // Check if now connected
+          if (this.isConnected()) {
+            console.log(`[Instance:${this.instanceId}] Session restored successfully`);
+            return true;
+          }
+        } catch (restoreError) {
+          console.error(`[Instance:${this.instanceId}] Error restoring session:`, restoreError);
+        }
+      }
+      
+      console.log(`[Instance:${this.instanceId}] Could not restore connection automatically, QR code scan needed`);
+      return false;
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error ensuring connection:`, error);
       return false;
     }
-    
-    // Try to reconnect
-    return await this.connect(false);
   }
 
   /**
-   * Disconnect WhatsApp client
-   * @param {boolean} logOut - Whether to perform full logout
+   * Disconnect the WhatsApp client with improved cleanup
+   * @param {boolean} logOut - Whether to logout/remove auth data
    * @returns {Promise<boolean>} - Disconnect success status
    */
   async disconnect(logOut = false) {
     try {
-      console.log(
-        `[Instance:${this.instanceId}] Disconnecting WhatsApp...${
-          logOut ? " (with full logout)" : ""
-        }`
-      );
+      console.log(`[Instance:${this.instanceId}] Disconnecting WhatsApp...${logOut ? ' (with full logout)' : ''}`);
+
+      // Flag to prevent auto-reconnect
+      this.reconnecting = false;
 
       if (!this.clients.whatsAppClient) {
         console.log(`[Instance:${this.instanceId}] No WhatsApp client to disconnect`);
@@ -722,8 +883,21 @@ class Instance {
         return true;
       }
 
-      // Use client's disconnect method
-      const success = await this.clients.whatsAppClient.disconnect(logOut);
+      // Clear QR code tracking
+      this.lastQrCode = null;
+      if (this.qrCodeTimer) {
+        clearTimeout(this.qrCodeTimer);
+        this.qrCodeTimer = null;
+      }
+
+      // Properly disconnect the client
+      try {
+        await this.clients.whatsAppClient.disconnect(logOut);
+        console.log(`[Instance:${this.instanceId}] WhatsApp client disconnected successfully`);
+      } catch (disconnectError) {
+        console.error(`[Instance:${this.instanceId}] Error during client disconnect:`, disconnectError);
+        // Continue anyway
+      }
 
       // Clean up Discord routes
       if (this.discordClient && this.discordClient._instanceRoutes) {
@@ -731,53 +905,32 @@ class Instance {
         this.discordClient._instanceRoutes.delete(this.categoryId);
       }
 
-      // Clean temp files
-      this.cleanTempFiles();
+      // Additional cleanup for auth files if requested
+      if (logOut) {
+        this.cleanAuthFiles();
+      }
 
-      // Clean up event handlers
-      if (this.cleanupFunction) {
-        this.cleanupFunction();
-        this.cleanupFunction = null;
-      }
-      
-      // Clear QR code
-      this.lastQrCode = null;
-      if (this.qrCodeTimer) {
-        clearTimeout(this.qrCodeTimer);
-        this.qrCodeTimer = null;
-      }
+      // Clean temporary files
+      this.cleanTempFiles();
 
       // Update state
       this.connected = false;
 
       // Emit disconnect event
       if (this.events) {
-        this.events.emit("disconnect");
+        this.events.emit('disconnect', logOut ? 'logout' : 'disconnect');
       }
 
-      return success;
+      return true;
     } catch (error) {
-      console.error(
-        `[Instance:${this.instanceId}] Error disconnecting:`,
-        error
-      );
+      console.error(`[Instance:${this.instanceId}] Error disconnecting:`, error);
 
       // Force update state on error
       this.connected = false;
-      
-      // Clean up as much as possible
-      if (this.cleanupFunction) {
-        try {
-          this.cleanupFunction();
-        } catch (e) {
-          console.error(`[Instance:${this.instanceId}] Error in cleanup:`, e);
-        }
-        this.cleanupFunction = null;
-      }
 
       // Try to emit disconnect event even on error
       if (this.events) {
-        this.events.emit("disconnect");
+        this.events.emit('disconnect', 'error');
       }
 
       return false;
@@ -785,9 +938,60 @@ class Instance {
   }
 
   /**
-   * Check if the instance is connected
-   * @returns {boolean} True if connected
+   * Clean auth files to force new QR code on next connection
    */
+  cleanAuthFiles() {
+    try {
+      console.log(`[Instance:${this.instanceId}] Cleaning authentication files`);
+      
+      // Define auth directories and files
+      const authDirs = [
+        this.paths.auth,
+        this.paths.baileys_auth,
+        path.join(this.paths.auth, 'baileys_auth')
+      ];
+      
+      const authFiles = [
+        path.join(this.baseDir, 'creds.json'),
+        path.join(this.paths.auth, 'creds.json'),
+        path.join(this.paths.baileys_auth, 'creds.json'),
+        path.join(this.paths.auth, 'baileys_auth', 'creds.json')
+      ];
+      
+      // Clean auth files
+      for (const filePath of authFiles) {
+        if (fs.existsSync(filePath)) {
+          try {
+            fs.unlinkSync(filePath);
+            console.log(`[Instance:${this.instanceId}] Deleted auth file: ${filePath}`);
+          } catch (error) {
+            console.error(`[Instance:${this.instanceId}] Error deleting auth file ${filePath}:`, error);
+          }
+        }
+      }
+      
+      // Clean auth directories
+      for (const dirPath of authDirs) {
+        if (fs.existsSync(dirPath)) {
+          try {
+            const files = fs.readdirSync(dirPath);
+            for (const file of files) {
+              const fullPath = path.join(dirPath, file);
+              if (fs.statSync(fullPath).isFile()) {
+                fs.unlinkSync(fullPath);
+                console.log(`[Instance:${this.instanceId}] Deleted auth file: ${fullPath}`);
+              }
+            }
+          } catch (error) {
+            console.error(`[Instance:${this.instanceId}] Error cleaning auth directory ${dirPath}:`, error);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error cleaning auth files:`, error);
+    }
+  }
+
   isConnected() {
     return (
       this.connected &&
@@ -796,10 +1000,6 @@ class Instance {
     );
   }
 
-  /**
-   * Register a callback for QR code events
-   * @param {Function} callback - Callback function
-   */
   onQRCode(callback) {
     if (!this.events) {
       this.events = new EventBus();
@@ -817,10 +1017,6 @@ class Instance {
     this.qrCodeListeners.add(callback);
   }
 
-  /**
-   * Remove a QR code event callback
-   * @param {Function} callback - Callback function to remove
-   */
   offQRCode(callback) {
     if (this.events && callback) {
       this.events.off("qr", callback);
@@ -828,21 +1024,18 @@ class Instance {
     }
   }
 
-  /**
-   * Register a callback for ready events
-   * @param {Function} callback - Callback function
-   */
   onReady(callback) {
     if (!this.events) {
       this.events = new EventBus();
     }
     this.events.on("ready", callback);
+    
+    // If already connected, trigger immediately
+    if (this.isConnected()) {
+      setTimeout(() => callback(), 0);
+    }
   }
 
-  /**
-   * Register a callback for disconnect events
-   * @param {Function} callback - Callback function
-   */
   onDisconnect(callback) {
     if (!this.events) {
       this.events = new EventBus();
@@ -850,10 +1043,6 @@ class Instance {
     this.events.on("disconnect", callback);
   }
 
-  /**
-   * Get the instance status
-   * @returns {Object} Instance status
-   */
   getStatus() {
     return {
       instanceId: this.instanceId,
@@ -870,6 +1059,8 @@ class Instance {
       categoryId: this.categoryId,
       paths: this.paths,
       hasQrCode: !!this.lastQrCode,
+      reconnectAttempts: this.reconnectAttempts,
+      reconnecting: this.reconnecting
     };
   }
 }
