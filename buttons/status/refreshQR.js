@@ -1,6 +1,6 @@
-// buttons/refreshQR.js
-const Button = require('../templates/Button');
-const { refreshQRCode } = require('../utils/qrCodeUtils');
+// buttons/status/refreshQR.js - FIXED path issue
+const Button = require('../../templates/Button');
+const { refreshQRCode } = require('../../utils/qrCodeUtils');
 
 class RefreshQRButton extends Button {
   constructor() {
