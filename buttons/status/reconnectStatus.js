@@ -18,8 +18,13 @@ class ReconnectStatusButton extends Button {
    */
   async execute(interaction, instance) {
     try {
-      // Defer update to prevent interaction timeout
-      await interaction.deferUpdate();
+      // CRITICAL FIX: Check if interaction can be deferred
+      // This helps prevent the "Unknown interaction" errors
+      if (interaction.isMessageComponent() && !interaction.deferred && !interaction.replied) {
+        await interaction.deferUpdate();
+      } else {
+        console.log("Interaction already deferred or replied to, skipping deferUpdate");
+      }
       
       // Get the instance manager
       const InstanceManager = require('../../core/InstanceManager');
@@ -45,112 +50,82 @@ class ReconnectStatusButton extends Button {
         embeds: []
       });
       
-      // Check if already connected
-      if (instance.isConnected && instance.isConnected()) {
-        await interaction.editReply({
-          content: '✅ WhatsApp is already connected! Loading current status...'
-        });
-        
-        // Load status command to show current status
-        const statusCommand = require('../../commands/status');
-        if (statusCommand && typeof statusCommand.execute === 'function') {
-          await statusCommand.execute(interaction, instance);
-        } else {
-          await interaction.editReply({
-            content: '✅ WhatsApp is connected and ready to use.'
-          });
-        }
-        return;
-      }
-      
-      // Try to reconnect automatically without QR code first
-      await interaction.editReply({
-        content: '🔄 Attempting to reconnect automatically...'
-      });
-      
-      // First check if authenticated
-      let isAuthenticated = false;
-      if (instance.clients?.whatsAppClient?.isAuthenticated) {
-        try {
-          isAuthenticated = await instance.clients.whatsAppClient.isAuthenticated();
-        } catch (authError) {
-          console.error(`Error checking authentication status:`, authError);
-        }
-      }
-      
-      if (isAuthenticated) {
-        // Try to restore session
-        let restored = false;
-        
-        if (instance.clients?.whatsAppClient?.restoreSession) {
-          try {
-            await interaction.editReply({
-              content: '🔄 Authentication data found. Attempting to restore session...'
-            });
-            
-            restored = await instance.clients.whatsAppClient.restoreSession();
-            
-            if (restored) {
-              await interaction.editReply({
-                content: '✅ Session restored successfully! Loading status...'
-              });
-              
-              // Show status
-              const statusCommand = require('../../commands/status');
-              if (statusCommand && typeof statusCommand.execute === 'function') {
-                await statusCommand.execute(interaction, instance);
-              }
-              return;
-            }
-          } catch (restoreError) {
-            console.error(`Error restoring session:`, restoreError);
-          }
-        }
-        
-        // Try normal connect if restore failed
-        try {
-          await interaction.editReply({
-            content: '🔄 Session restore failed. Trying normal connection...'
-          });
-          
-          const connected = await instance.connect(false);
-          
-          if (connected && instance.isConnected()) {
-            await interaction.editReply({
-              content: '✅ Connection restored successfully! Loading status...'
-            });
-            
-            // Show status
-            const statusCommand = require('../../commands/status');
-            if (statusCommand && typeof statusCommand.execute === 'function') {
-              await statusCommand.execute(interaction, instance);
-            }
-            return;
-          }
-        } catch (connectError) {
-          console.error(`Error connecting:`, connectError);
-        }
-      }
-      
-      // If we reach here, we couldn't reconnect automatically
-      // Try using the QR code utils for a more robust reconnection
       try {
-        const { handleReconnect } = require('../../utils/qrCodeUtils');
+        // Get QRCodeUtils
+        const { cleanAuthFiles } = require('../../utils/qrCodeUtils');
         
-        // Call the robust reconnect handler
-        await handleReconnect(interaction, instance, {
-          fromStatus: true,
-          timeoutDuration: 120000 // 2 minutes
+        // Update message
+        await interaction.editReply({
+          content: '🔄 Preparing for fresh connection...'
         });
+        
+        // Clean up authentication files first
+        await cleanAuthFiles(instance);
+        
+        // Try to disconnect existing connection if any
+        if (instance.disconnect) {
+          try {
+            await instance.disconnect(false);
+          } catch (disconnectError) {
+            console.error(`Error disconnecting current session:`, disconnectError);
+            // Continue anyway
+          }
+        }
+        
+        // Add a short delay
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Update message
+        await interaction.editReply({
+          content: '🔄 Requesting QR code from WhatsApp servers...'
+        });
+        
+        // Generate a new QR code
+        const { generateQRCode, displayQRCode } = require('../../utils/qrCodeUtils');
+        
+        const qrCode = await generateQRCode({
+          guildId: interaction.guild.id,
+          categoryId: instance.categoryId,
+          transcriptChannelId: instance.transcriptChannelId,
+          vouchChannelId: instance.vouchChannelId,
+          customSettings: instance.customSettings || {},
+          discordClient: interaction.client,
+          qrTimeout: 120000 // 2 minutes
+        });
+        
+        if (qrCode === null) {
+          await interaction.editReply({
+            content: "✅ WhatsApp is already connected! Loading current status..."
+          });
+          
+          // Show status
+          const statusCommand = require('../../commands/status');
+          if (statusCommand && typeof statusCommand.execute === 'function') {
+            await statusCommand.execute(interaction, instance);
+          }
+          return;
+        }
+        
+        if (qrCode === "TIMEOUT") {
+          await interaction.editReply({
+            content: "⚠️ QR code generation timed out. Please try again later.",
+            components: []
+          });
+          return;
+        }
+        
+        // Show QR code
+        await displayQRCode(interaction, qrCode, interaction.guild.id);
+        
       } catch (qrError) {
         console.error(`Error during QR reconnect:`, qrError);
         
-        // If QR code handling failed too, show simplified message with buttons
+        // If QR code handling failed, show simplified message with buttons
         const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
         
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
-            .setCustomId('reconnect')
+            .setCustomId('reconnect_status')
             .setLabel('Try Reconnect')
             .setStyle(ButtonStyle.Primary),
           new ButtonBuilder()
@@ -160,7 +135,7 @@ class ReconnectStatusButton extends Button {
         );
         
         await interaction.editReply({
-          content: '❌ Could not reconnect to WhatsApp. You may need to run setup again.',
+          content: `❌ Could not reconnect to WhatsApp: ${qrError.message}. You may need to run setup again.`,
           components: [row]
         });
       }
@@ -168,9 +143,12 @@ class ReconnectStatusButton extends Button {
       console.error(`Error executing reconnect button:`, error);
       
       try {
-        await interaction.editReply({
-          content: `❌ Error reconnecting: ${error.message}`
-        });
+        // CRITICAL FIX: Check if we can still edit the reply
+        if (interaction.isMessageComponent()) {
+          await interaction.editReply({
+            content: `❌ Error reconnecting: ${error.message}. Please try again.`
+          });
+        }
       } catch (replyError) {
         console.error(`Error sending error message:`, replyError);
       }

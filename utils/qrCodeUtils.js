@@ -9,27 +9,117 @@ const { EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, Button
  */
 class QRCodeUtils {
   /**
-   * Generate QR code data using InstanceManager
-   * @param {Object} options - Options for QR code generation
-   * @returns {Promise<string|null>} - QR code data or null
-   */
-  static async generateQRCode(options) {
-    try {
-      // Validate required parameters
-      if (!options || !options.guildId) {
-        throw new Error('Guild ID is required for QR code generation');
+ * Generate QR code data using InstanceManager
+ * @param {Object} options - Options for QR code generation
+ * @returns {Promise<string|null>} - QR code data or null
+ */
+static async generateQRCode(options) {
+  try {
+    // Validate required parameters
+    if (!options || !options.guildId) {
+      throw new Error('Guild ID is required for QR code generation');
+    }
+    
+    const guildId = options.guildId;
+    console.log(`Generating QR code for guild ${guildId}`);
+    
+    // CRITICAL FIX: First check if instance exists and is already connected
+    const InstanceManager = require('../core/InstanceManager');
+    const existingInstance = InstanceManager.getInstanceByGuildId(guildId);
+    
+    if (existingInstance && existingInstance.isConnected && existingInstance.isConnected()) {
+      console.log(`[QRCodeUtils] Guild ${guildId} already has a connected WhatsApp instance`);
+      return null;
+    }
+    
+    // Set default timeout
+    const qrTimeout = options.qrTimeout || 60000; // Default 60 seconds
+    
+    // Create or get the instance
+    let instance = existingInstance;
+    
+    // If no instance exists, create one
+    if (!instance || instance.isTemporary) {
+      try {
+        console.log(`[QRCodeUtils] Creating new instance for guild ${guildId}`);
+        
+        // Create with exact options passed in
+        instance = await InstanceManager.createInstance({
+          guildId: guildId,
+          categoryId: options.categoryId,
+          transcriptChannelId: options.transcriptChannelId,
+          vouchChannelId: options.vouchChannelId,
+          customSettings: options.customSettings || {},
+          discordClient: options.discordClient
+        });
+      } catch (createError) {
+        console.error(`[QRCodeUtils] Error creating instance for ${guildId}:`, createError);
+        throw createError;
+      }
+    } else {
+      console.log(`[QRCodeUtils] Using existing instance for guild ${guildId}`);
+    }
+    
+    // Add QR code listener to get the code when it's generated
+    return new Promise((resolve, reject) => {
+      // Set timeout to prevent hanging
+      const timeout = setTimeout(() => {
+        console.log(`[QRCodeUtils] QR code generation timed out for guild ${guildId}`);
+        
+        // Clean up QR code listener if any
+        if (qrListener) {
+          instance.offQRCode(qrListener);
+        }
+        
+        resolve("TIMEOUT");
+      }, qrTimeout);
+      
+      // Create QR code listener function
+      const qrListener = (qrCode) => {
+        // Clear timeout
+        clearTimeout(timeout);
+        
+        // Remove the listener to prevent memory leaks
+        instance.offQRCode(qrListener);
+        
+        // CRITICAL FIX: Validate QR code data before resolving
+        if (!qrCode || typeof qrCode !== 'string' || qrCode.length < 20) {
+          console.error(`[QRCodeUtils] Invalid QR code data received for guild ${guildId}`);
+          resolve("TIMEOUT");
+          return;
+        }
+        
+        // Resolve with the QR code
+        resolve(qrCode);
+      };
+      
+      // Register QR code listener
+      instance.onQRCode(qrListener);
+      
+      // CRITICAL FIX: Force QR code generation by explicitly setting flag
+      if (instance.clients && instance.clients.whatsAppClient) {
+        if (typeof instance.clients.whatsAppClient.setShowQrCode === 'function') {
+          instance.clients.whatsAppClient.setShowQrCode(true);
+        }
       }
       
-      // Get instance manager
-      const InstanceManager = require('../core/InstanceManager');
-      
-      // Generate the QR code via instance manager
-      return await InstanceManager.generateQRCode(options);
-    } catch (error) {
-      console.error(`[QRCodeUtils] Error generating QR code:`, error);
-      throw error;
-    }
+      // Connect with QR code display
+      instance.connect(true).catch(error => {
+        console.error(`[QRCodeUtils] Error connecting instance:`, error);
+        
+        // Clean up
+        clearTimeout(timeout);
+        instance.offQRCode(qrListener);
+        
+        // Reject with error
+        reject(error);
+      });
+    });
+  } catch (error) {
+    console.error(`[QRCodeUtils] Error generating QR code:`, error);
+    throw error;
   }
+}
 
   /**
    * Generate and display QR code for WhatsApp connection

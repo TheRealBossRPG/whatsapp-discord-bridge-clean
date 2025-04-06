@@ -81,8 +81,12 @@ class SelectMenuLoader {
    * @returns {Promise<boolean>} - Whether the interaction was handled
    */
   async handleInteraction(interaction, instance) {
-    // FIXED: Changed from isSelectMenu to isStringSelectMenu
-    if (!interaction.isStringSelectMenu()) return false;
+    // Check for both old and new methods for backward compatibility
+    const isSelectMenu = interaction.isStringSelectMenu ? 
+      interaction.isStringSelectMenu() : 
+      (interaction.isSelectMenu ? interaction.isSelectMenu() : false);
+      
+    if (!isSelectMenu) return false;
     
     const handler = this.getHandler(interaction.customId);
     
@@ -92,14 +96,6 @@ class SelectMenuLoader {
     }
     
     try {
-      // Defer reply first to prevent timeout
-      if (!interaction.deferred && !interaction.replied) {
-        await interaction.deferUpdate().catch(err => {
-          console.error(`Error deferring select menu response: ${err.message}`);
-        });
-      }
-      
-      // Then execute the handler
       await handler.execute(interaction, instance);
       return true;
     } catch (error) {

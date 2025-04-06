@@ -18,8 +18,12 @@ class RefreshQRButton extends Button {
    */
   async execute(interaction, instance) {
     try {
-      // Defer update to prevent interaction timeout
-      await interaction.deferUpdate();
+      // CRITICAL FIX: Check if interaction is still valid before deferring
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.deferUpdate();
+      } else {
+        console.log("Interaction already responded to, continuing without deferring");
+      }
       
       // Get the instance if not provided
       if (!instance) {
@@ -38,34 +42,35 @@ class RefreshQRButton extends Button {
       
       // Update message to show progress
       await interaction.editReply({
-        content: '🔄 Refreshing QR code...',
+        content: '🧹 Cleaning up authentication data...',
         components: [],
         embeds: [],
         files: []
       });
       
-      // First, disconnect the client if connected
-      if (instance.clients?.whatsAppClient) {
-        try {
-          await instance.disconnect(false);
-          console.log(`Disconnected WhatsApp client for refresh`);
-        } catch (disconnectError) {
-          console.error(`Error disconnecting before refresh:`, disconnectError);
-          // Continue anyway
-        }
-      }
-      
-      // Clean auth files to force new QR code
+      // Clean auth files first
       try {
         const { cleanAuthFiles } = require('../../utils/qrCodeUtils');
         await cleanAuthFiles(instance);
+        console.log(`Authentication files cleaned for ${instance.instanceId}`);
       } catch (cleanError) {
         console.error(`Error cleaning auth files:`, cleanError);
         // Continue anyway
       }
       
+      // Disconnect first to ensure clean state
+      try {
+        if (instance.clients?.whatsAppClient) {
+          await instance.disconnect(false);
+          console.log(`WhatsApp client disconnected for refresh`);
+        }
+      } catch (disconnectError) {
+        console.error(`Error disconnecting:`, disconnectError);
+        // Continue anyway
+      }
+      
       // Add a small delay to avoid rate limits
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
       // Update UI
       await interaction.editReply({
@@ -74,16 +79,15 @@ class RefreshQRButton extends Button {
       
       // Get QR code
       try {
-        // Get InstanceManager
-        const InstanceManager = require('../../core/InstanceManager');
+        const { generateQRCode, displayQRCode } = require('../../utils/qrCodeUtils');
         
-        // Force QR code display
+        // Important: Set the show QR code flag explicitly to true
         if (instance.clients?.whatsAppClient?.setShowQrCode) {
           instance.clients.whatsAppClient.setShowQrCode(true);
         }
         
         // Generate a new QR code
-        const qrCode = await InstanceManager.generateQRCode({
+        const qrCode = await generateQRCode({
           guildId: interaction.guild.id,
           categoryId: instance.categoryId,
           transcriptChannelId: instance.transcriptChannelId,
@@ -110,10 +114,7 @@ class RefreshQRButton extends Button {
         }
         
         // Display the QR code
-        const { displayQRCode } = require('../../utils/qrCodeUtils');
         await displayQRCode(interaction, qrCode, interaction.guild.id);
-        
-        return;
       } catch (qrError) {
         console.error(`Error generating QR code:`, qrError);
         

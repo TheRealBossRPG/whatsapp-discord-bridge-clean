@@ -299,7 +299,7 @@ class Instance {
     console.log(`[Instance:${this.instanceId}] Route set up for category ${this.categoryId}`);
   }
 
-  /**
+/**
  * Connect WhatsApp client
  * @param {boolean} showQrCode - Whether to show QR code
  * @returns {Promise<boolean>} - Connection success
@@ -331,10 +331,11 @@ async connect(showQrCode = false) {
       });
     }
 
-    // Set show QR code flag with proper null check
+    // CRITICAL FIX: Set show QR code flag properly
     if (this.clients && this.clients.whatsAppClient && 
         typeof this.clients.whatsAppClient.setShowQrCode === 'function') {
       this.clients.whatsAppClient.setShowQrCode(showQrCode);
+      console.log(`[Instance:${this.instanceId}] Set QR code display to: ${showQrCode}`);
     } else {
       console.warn(`[Instance:${this.instanceId}] Cannot set showQrCode flag, whatsAppClient.setShowQrCode is not a function`);
     }
@@ -356,7 +357,9 @@ async connect(showQrCode = false) {
         
         if (this.clients && this.clients.whatsAppClient && 
             typeof this.clients.whatsAppClient.initialize === 'function') {
-          success = await this.clients.whatsAppClient.initialize();
+          
+          // FIX: Pass the showQrCode flag to initialization method
+          success = await this.clients.whatsAppClient.initialize(showQrCode);
         } else {
           console.error(`[Instance:${this.instanceId}] WhatsApp client not properly initialized or missing initialize method`);
           break;
