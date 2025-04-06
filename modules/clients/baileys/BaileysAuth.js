@@ -1,172 +1,281 @@
-'use strict';
-
-const { useMultiFileAuthState } = require('@whiskeysockets/baileys');
+// modules/clients/baileys/BaileysAuth.js - Fixed for @whiskeysockets/baileys compatibility
+const { proto } = require('@whiskeysockets/baileys');
 const fs = require('fs');
 const path = require('path');
+const { Boom } = require('@hapi/boom');
 
 /**
- * Handles WhatsApp authentication state
+ * Handles authentication for Baileys WhatsApp client
  */
 class BaileysAuth {
   /**
-   * Create a new authentication handler
-   * @param {string} instanceId - Instance ID
-   * @param {string} authFolder - Auth folder path
+   * Create an authentication handler
+   * @param {Object} options - Options
+   * @param {string} options.instanceId - Instance ID
+   * @param {string} options.authFolder - Authentication folder
+   * @param {string} options.baileysAuthFolder - Baileys auth folder
    */
-  constructor(instanceId, authFolder) {
-    // Basic properties
-    this.instanceId = instanceId || 'default';
-    this.authFolder = authFolder || path.join(__dirname, '..', '..', '..', 'baileys_auth', this.instanceId);
-    this.authState = null;
+  constructor(options) {
+    this.instanceId = options.instanceId.toString();
+    this.authFolder = options.authFolder.toString();
+    this.baileysAuthFolder = options.baileysAuthFolder.toString();
+    this.state = {};
     this.saveCreds = null;
     
-    // Create auth folder if it doesn't exist
-    if (!fs.existsSync(this.authFolder)) {
-      try {
-        fs.mkdirSync(this.authFolder, { recursive: true });
-      } catch (mkdirError) {
-        console.error(`[BaileysAuth:${this.instanceId}] Error creating auth folder:`, mkdirError);
-      }
-    }
+    console.log(`[BaileysAuth:${this.instanceId}] Auth handler initialized with auth folder: ${this.authFolder}, baileys folder: ${this.baileysAuthFolder}`);
     
-    // Bind methods to ensure 'this' context
-    this.initialize = this.initialize.bind(this);
-    this.getAuthState = this.getAuthState.bind(this);
-    this.saveCredentials = this.saveCredentials.bind(this);
-    this.isAuthenticated = this.isAuthenticated.bind(this);
-    this.logout = this.logout.bind(this);
+    // Create auth folders if they don't exist
+    this.createAuthFolders();
   }
   
   /**
-   * Initialize auth state
-   * @returns {Promise<boolean>} Success status
+   * Create authentication folders
+   */
+  createAuthFolders() {
+    [this.authFolder, this.baileysAuthFolder].forEach(folder => {
+      if (!fs.existsSync(folder)) {
+        try {
+          fs.mkdirSync(folder, { recursive: true });
+          console.log(`[BaileysAuth:${this.instanceId}] Created folder: ${folder}`);
+        } catch (error) {
+          console.error(`[BaileysAuth:${this.instanceId}] Error creating folder ${folder}:`, error);
+        }
+      }
+    });
+  }
+  
+  /**
+   * Get credentials path
+   * @returns {string} - Credentials path
+   */
+  getCredsPath() {
+    return path.join(this.baileysAuthFolder, 'creds.json');
+  }
+  
+  /**
+   * Check if credentials exist
+   * @returns {boolean} - Whether credentials exist
+   */
+  async credentialsExist() {
+    try {
+      const credsPath = this.getCredsPath();
+      return fs.existsSync(credsPath);
+    } catch (error) {
+      console.error(`[BaileysAuth:${this.instanceId}] Error checking credentials:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Initialize authentication
+   * @returns {Object} - Authentication state and handlers
    */
   async initialize() {
     try {
-      console.log(`[BaileysAuth:${this.instanceId}] Initializing auth state from ${this.authFolder}`);
+      console.log(`[BaileysAuth:${this.instanceId}] Initializing authentication...`);
       
-      // Use Baileys multi-file auth state
-      const { state, saveCreds } = await useMultiFileAuthState(this.authFolder);
+      const credsPath = this.getCredsPath();
       
-      if (!state) {
-        console.error(`[BaileysAuth:${this.instanceId}] Failed to initialize auth state`);
-        return false;
+      // Check if creds file exists
+      const credentialsExist = await this.credentialsExist();
+      console.log(`[BaileysAuth:${this.instanceId}] Credentials file exists: ${credentialsExist}`);
+      
+      let creds = null;
+      if (credentialsExist) {
+        try {
+          // Read credentials
+          const rawCreds = fs.readFileSync(credsPath, { encoding: 'utf8' });
+          creds = JSON.parse(rawCreds);
+          console.log(`[BaileysAuth:${this.instanceId}] Successfully loaded credentials from ${credsPath}`);
+        } catch (error) {
+          console.error(`[BaileysAuth:${this.instanceId}] Error loading credentials:`, error);
+          
+          // On error loading creds, we'll start fresh
+          creds = null;
+        }
       }
       
-      this.authState = state;
+      // If no creds or error loading them, initialize a basic object
+      if (!creds) {
+        // Initialize with empty creds structure that Baileys expects
+        creds = {
+          creds: {
+            noiseKey: null,
+            signedIdentityKey: null,
+            signedPreKey: null,
+            registrationId: 0,
+            advSecretKey: null,
+            nextPreKeyId: 0,
+            firstUnuploadedPreKeyId: 0,
+            serverHasPreKeys: false,
+            account: null,
+            me: null,
+            signalIdentities: [],
+            lastAccountSyncTimestamp: 0,
+            myAppStateKeyId: null
+          },
+          keys: {}
+        };
+      }
+      
+      // Define function to save credentials
+      const saveCreds = async () => {
+        if (this.state?.creds) {
+          try {
+            // Create auth folder if it doesn't exist
+            if (!fs.existsSync(this.baileysAuthFolder)) {
+              fs.mkdirSync(this.baileysAuthFolder, { recursive: true });
+            }
+            
+            // Save creds to file
+            fs.writeFileSync(
+              credsPath,
+              JSON.stringify(this.state.creds, null, 2),
+              { encoding: 'utf8' }
+            );
+            
+            console.log(`[BaileysAuth:${this.instanceId}] Saved credentials to ${credsPath}`);
+          } catch (error) {
+            console.error(`[BaileysAuth:${this.instanceId}] Error saving credentials:`, error);
+          }
+        } else {
+          console.warn(`[BaileysAuth:${this.instanceId}] No state.creds to save!`);
+        }
+      };
+      
+      // Set instance state and saveCreds function
+      this.state = creds;
       this.saveCreds = saveCreds;
       
-      console.log(`[BaileysAuth:${this.instanceId}] Auth state loaded successfully`);
-      
-      return true;
+      return {
+        state: this.state,
+        saveCreds: this.saveCreds
+      };
     } catch (error) {
       console.error(`[BaileysAuth:${this.instanceId}] Error initializing auth:`, error);
-      return false;
+      throw error;
     }
   }
   
   /**
-   * Get auth state
-   * @returns {Object} Auth state
+   * Get current authentication state
+   * @returns {Object} - Authentication state
    */
-  getAuthState() {
-    return this.authState;
+  async getState() {
+    return this.state;
   }
   
   /**
-   * Save auth credentials
-   * @param {Object} creds - Auth credentials
-   * @returns {Promise<boolean>} Success status
+   * Handle connection update
+   * @param {Object} update - Connection update
    */
-  async saveCredentials(creds) {
+  async handleConnectionUpdate(update) {
     try {
-      if (!creds) {
-        console.error(`[BaileysAuth:${this.instanceId}] No credentials to save`);
-        return false;
+      const { connection, lastDisconnect } = update;
+      
+      // Save credentials on successful connection
+      if (connection === 'open') {
+        console.log(`[BaileysAuth:${this.instanceId}] Connection opened, saving credentials`);
+        await this.saveCreds();
       }
       
-      if (!this.saveCreds || typeof this.saveCreds !== 'function') {
-        console.error(`[BaileysAuth:${this.instanceId}] Save credentials function not available`);
-        return false;
+      // Handle disconnections
+      if (connection === 'close') {
+        // Get status code
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        
+        // Logout if the status code indicates logout
+        if (statusCode === 401 || statusCode === 410) {
+          console.log(`[BaileysAuth:${this.instanceId}] User logged out or credentials revoked, clearing auth data`);
+          await this.clearCredentials();
+        }
       }
-      
-      await this.saveCreds(creds);
-      console.log(`[BaileysAuth:${this.instanceId}] Credentials saved successfully`);
-      return true;
     } catch (error) {
-      console.error(`[BaileysAuth:${this.instanceId}] Error saving credentials:`, error);
-      return false;
+      console.error(`[BaileysAuth:${this.instanceId}] Error handling connection update:`, error);
     }
   }
   
   /**
    * Check if authenticated
-   * @returns {Promise<boolean>} Authentication status
+   * @returns {boolean} - Whether authenticated
    */
   async isAuthenticated() {
     try {
-      // Check if auth state exists
-      if (!this.authState) {
-        await this.initialize();
-      }
+      // Check if credentials file exists
+      const credsExist = await this.credentialsExist();
+      if (!credsExist) return false;
       
-      // Check if auth state has credentials
-      if (!this.authState || !this.authState.creds) {
-        return false;
-      }
+      // Read and parse credentials to check for necessary properties
+      const credsPath = this.getCredsPath();
+      const rawCreds = fs.readFileSync(credsPath, { encoding: 'utf8' });
+      const creds = JSON.parse(rawCreds);
       
-      // Check if there's a key ID and registration
-      const isAuth = !!(
-        this.authState.creds.me && 
-        this.authState.creds.me.id &&
-        this.authState.creds.registered
-      );
+      // Simple validation - check if the basic required properties exist
+      const hasKeys = Boolean(creds?.creds?.noiseKey && 
+                             creds?.creds?.signedIdentityKey && 
+                             creds?.creds?.signedPreKey);
       
-      console.log(`[BaileysAuth:${this.instanceId}] Authentication status: ${isAuth}`);
-      return isAuth;
+      return hasKeys;
     } catch (error) {
-      console.error(`[BaileysAuth:${this.instanceId}] Error checking auth:`, error);
+      console.error(`[BaileysAuth:${this.instanceId}] Error checking authentication:`, error);
       return false;
     }
   }
   
   /**
-   * Logout and clear auth data
-   * @returns {Promise<boolean>} Success status
+   * Clear credentials
+   * @returns {Promise<boolean>} - Success status
    */
-  async logout() {
+  async clearCredentials() {
     try {
-      const authDir = this.authFolder;
+      console.log(`[BaileysAuth:${this.instanceId}] Clearing credentials`);
       
-      // Check if auth directory exists
-      if (fs.existsSync(authDir)) {
-        // Delete all files in the directory
-        const files = fs.readdirSync(authDir);
-        
-        for (const file of files) {
-          const filePath = path.join(authDir, file);
+      // Get credentials path
+      const credsPath = this.getCredsPath();
+      
+      // Check if file exists
+      if (fs.existsSync(credsPath)) {
+        try {
+          // Delete the file
+          fs.unlinkSync(credsPath);
+          console.log(`[BaileysAuth:${this.instanceId}] Deleted credentials file: ${credsPath}`);
+        } catch (unlinkError) {
+          console.error(`[BaileysAuth:${this.instanceId}] Error deleting credentials file:`, unlinkError);
           
-          // Check if it's a file
-          if (fs.statSync(filePath).isFile()) {
-            try {
-              fs.unlinkSync(filePath);
-              console.log(`[BaileysAuth:${this.instanceId}] Deleted auth file: ${file}`);
-            } catch (unlinkError) {
-              console.error(`[BaileysAuth:${this.instanceId}] Error deleting file ${file}:`, unlinkError);
-            }
+          // As fallback, try to truncate the file
+          try {
+            fs.truncateSync(credsPath, 0);
+            console.log(`[BaileysAuth:${this.instanceId}] Truncated credentials file: ${credsPath}`);
+          } catch (truncateError) {
+            console.error(`[BaileysAuth:${this.instanceId}] Error truncating credentials file:`, truncateError);
+            return false;
           }
         }
       }
       
-      console.log(`[BaileysAuth:${this.instanceId}] Logged out and cleared auth data`);
-      
-      // Reset auth state
-      this.authState = null;
-      this.saveCreds = null;
+      // Reset state
+      this.state = {
+        creds: {
+          noiseKey: null,
+          signedIdentityKey: null,
+          signedPreKey: null,
+          registrationId: 0,
+          advSecretKey: null,
+          nextPreKeyId: 0,
+          firstUnuploadedPreKeyId: 0,
+          serverHasPreKeys: false,
+          account: null,
+          me: null,
+          signalIdentities: [],
+          lastAccountSyncTimestamp: 0,
+          myAppStateKeyId: null
+        },
+        keys: {}
+      };
       
       return true;
     } catch (error) {
-      console.error(`[BaileysAuth:${this.instanceId}] Error during logout:`, error);
+      console.error(`[BaileysAuth:${this.instanceId}] Error clearing credentials:`, error);
       return false;
     }
   }
