@@ -1,4 +1,4 @@
-// utils/logger.js - Enhanced logging system with filtering
+// utils/logger.js - Enhanced logging system with Baileys compatibility
 const fs = require('fs');
 const path = require('path');
 
@@ -24,6 +24,7 @@ function initializeLogger() {
   console.oldWarn = console.warn;
   console.oldInfo = console.info;
   console.oldDebug = console.debug;
+  console.oldTrace = console.trace || console.oldLog; // Fallback if trace doesn't exist
 
   // Track repeat messages to prevent log spam
   const messageCache = {
@@ -138,6 +139,32 @@ function initializeLogger() {
     }
   };
 
+  // CRITICAL FIX: Add console.trace that Baileys specifically requires
+  console.trace = function(...args) {
+    // We need to implement this for Baileys
+    const timestamp = new Date().toISOString();
+    const message = args.join(' ');
+    
+    // Skip normal throttling for trace to ensure Baileys works properly
+    const line = `[${timestamp}] [TRACE] ${message}`;
+    logStream.write(line + '\n');
+    
+    // Only show stack trace in development mode
+    if (process.env.TRACE || process.env.NODE_ENV === 'development') {
+      // Get stack trace
+      const stackTrace = new Error().stack
+        .split('\n')
+        .slice(2) // Remove the Error object and this function from the trace
+        .join('\n');
+      
+      logStream.write(stackTrace + '\n');
+      console.oldLog('\x1b[90m' + line + '\n' + stackTrace + '\x1b[0m'); // Grey
+    } else {
+      // In production just log the trace message without stack
+      console.oldLog('\x1b[90m' + line + '\x1b[0m'); // Grey
+    }
+  };
+
   // Add custom loggers
   console.success = function(...args) {
     const timestamp = new Date().toISOString();
@@ -145,23 +172,6 @@ function initializeLogger() {
     const line = `[${timestamp}] [SUCCESS] ${message}`;
     logStream.write(line + '\n');
     console.oldLog('\x1b[32m' + line + '\x1b[0m'); // Green
-  };
-
-  // Add trace with stack
-  console.trace = function(...args) {
-    const timestamp = new Date().toISOString();
-    const message = args.join(' ');
-    const line = `[${timestamp}] [TRACE] ${message}`;
-    logStream.write(line + '\n');
-    
-    // Get stack trace
-    const stackTrace = new Error().stack
-      .split('\n')
-      .slice(2) // Remove the Error object and this function from the trace
-      .join('\n');
-    
-    logStream.write(stackTrace + '\n');
-    console.oldLog('\x1b[90m' + line + '\n' + stackTrace + '\x1b[0m'); // Grey
   };
 
   // Handle uncaught exceptions
@@ -193,6 +203,17 @@ function initializeLogger() {
       console.oldError('\x1b[31m' + reason.stack + '\x1b[0m');
     }
   });
+
+  // Create a pino-compatible logger object for Baileys
+  // This is available to other modules that need a Pino-like interface
+  global.pinoCompatLogger = {
+    info: (...args) => console.info(...args),
+    error: (...args) => console.error(...args),
+    warn: (...args) => console.warn(...args),
+    debug: (...args) => console.debug(...args),
+    trace: (...args) => console.trace(...args),
+    child: () => global.pinoCompatLogger  // Support child loggers
+  };
 
   // Return the log stream for future use
   return logStream;

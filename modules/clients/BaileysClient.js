@@ -1,188 +1,245 @@
-// modules/clients/BaileysClient.js
+// modules/clients/BaileysClient.js - Fixed event handling and logger
 const fs = require('fs');
 const path = require('path');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, makeCacheableSignalKeyStore, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const EventEmitter = require('events');
+const { DisconnectReason } = require('@whiskeysockets/baileys');
+const makeWASocket = require('@whiskeysockets/baileys').default;
+const { useMultiFileAuthState, makeInMemoryStore } = require('@whiskeysockets/baileys');
 const BaileysEvents = require('./baileys/BaileysEvents');
-const EventBus = require('../../core/EventBus');
+const BaileysAuth = require('./baileys/BaileysAuth');
 
 /**
  * WhatsApp client implementation using Baileys
  */
-class BaileysClient {
+class BaileysClient extends EventEmitter {
   /**
-   * Create a new Baileys WhatsApp client
+   * Create new Baileys WhatsApp client
    * @param {Object} options - Client options
-   * @param {string} options.instanceId - Instance ID
-   * @param {string} options.authFolder - Authentication folder path
-   * @param {string} options.baileysAuthFolder - Baileys auth folder path
-   * @param {string} options.tempDir - Temporary files directory
-   * @param {number} options.maxRetries - Maximum connection retry attempts
    */
-  constructor(options) {
+  constructor(options = {}) {
+    super();
+    
+    // Set instance ID for client
     this.instanceId = options.instanceId || 'default';
     this.authFolder = options.authFolder || path.join(__dirname, '..', '..', 'instances', this.instanceId, 'auth');
     this.baileysAuthFolder = options.baileysAuthFolder || path.join(__dirname, '..', '..', 'instances', this.instanceId, 'baileys_auth');
     this.tempDir = options.tempDir || path.join(__dirname, '..', '..', 'instances', this.instanceId, 'temp');
+    
+    // Max retry attempts for connecting
     this.maxRetries = options.maxRetries || 5;
+    this.retryCount = 0;
     
-    // Create event bus for this client
-    this.events = new EventBus();
-    
-    // Initialize events handler
-    this.eventsHandler = new BaileysEvents(this.events);
-    
-    // State tracking
+    // Connection state tracking
     this.isReady = false;
-    this.socket = null;
-    this.socketError = null;
-    this.reconnectAttempts = 0;
-    this.showQrCode = false;
+    this.isClosing = false;
+    this.showQrCode = true;
+    this.qrStr = null;
+    
+    // Internal socket reference
+    this.sock = null;
+    
+    // Initialize auth and events if needed
+    this.baileysEvents = new BaileysEvents(this.instanceId);
+    this.baileysAuth = new BaileysAuth(this.instanceId, this.authFolder, this.baileysAuthFolder);
+    
+    // Initialize store for message history
+    this.initStore();
+    
+    // Create a custom logger that wraps our console logger
+    this.logger = {
+      info: (...args) => console.log(`[BaileysClient:${this.instanceId}]`, ...args),
+      error: (...args) => console.error(`[BaileysClient:${this.instanceId}]`, ...args),
+      warn: (...args) => console.warn(`[BaileysClient:${this.instanceId}]`, ...args),
+      debug: (...args) => {
+        if (process.env.DEBUG) {
+          console.log(`[BaileysClient:${this.instanceId}] [DEBUG]`, ...args);
+        }
+      },
+      // CRITICAL FIX: Add trace method that Baileys expects
+      trace: (...args) => {
+        if (process.env.TRACE) {
+          console.log(`[BaileysClient:${this.instanceId}] [TRACE]`, ...args);
+        }
+      }
+    };
+    
+    // Forward events from baileysEvents
+    this.baileysEvents.on('connecting', () => this.emit('connecting'));
+    this.baileysEvents.on('open', () => {
+      this.isReady = true;
+      this.retryCount = 0;
+      this.emit('ready');
+    });
+    this.baileysEvents.on('close', (reason) => {
+      this.isReady = false;
+      this.emit('disconnected', reason);
+    });
+    this.baileysEvents.on('qr', (qr) => {
+      this.qrStr = qr;
+      if (this.showQrCode) {
+        this.emit('qr', qr);
+      }
+    });
+    this.baileysEvents.on('message', (msg) => this.emit('message', msg));
+    this.baileysEvents.on('auth_failure', (error) => this.emit('auth_failure', error));
     
     console.log(`[BaileysClient:${this.instanceId}] Client initialized`);
   }
   
   /**
-   * Set whether to show QR code on connection
+   * Initialize message store
+   */
+  initStore() {
+    try {
+      // Create store for caching
+      this.store = makeInMemoryStore({});
+      
+      // Create store directory
+      this.storeDir = path.join(this.tempDir, 'baileys_store');
+      if (!fs.existsSync(this.storeDir)) {
+        fs.mkdirSync(this.storeDir, { recursive: true });
+      }
+      
+      // Set up store logging (disabled by default)
+      this.store.readFromFile = () => {};
+      this.store.writeToFile = () => {};
+      
+      return true;
+    } catch (error) {
+      console.error(`[BaileysClient:${this.instanceId}] Error initializing store:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Set QR code display flag
    * @param {boolean} show - Whether to show QR code
    */
   setShowQrCode(show) {
     this.showQrCode = show;
+    if (show && this.qrStr) {
+      // If we already have a QR code and the flag is being set to true, emit it immediately
+      this.emit('qr', this.qrStr);
+    }
     console.log(`[BaileysClient:${this.instanceId}] QR code display set to: ${show}`);
   }
   
   /**
-   * Initialize the WhatsApp connection
+   * Initialize and connect WhatsApp client
    * @param {boolean} showQrCode - Whether to show QR code
    * @returns {Promise<boolean>} - Connection success
    */
-  async initialize(showQrCode = false) {
+  async initialize(showQrCode = true) {
     try {
-      // Set QR code flag
+      // Set QR code display flag
       this.setShowQrCode(showQrCode);
       
       console.log(`[BaileysClient:${this.instanceId}] Initializing WhatsApp connection...`);
       
-      // Create auth folders if they don't exist
-      if (!fs.existsSync(this.authFolder)) {
-        fs.mkdirSync(this.authFolder, { recursive: true });
+      // Ensure auth directory exists
+      const authDir = this.baileysAuthFolder;
+      console.log(`[BaileysClient:${this.instanceId}] Using auth folder: ${authDir}`);
+      
+      if (!fs.existsSync(authDir)) {
+        fs.mkdirSync(authDir, { recursive: true });
       }
       
-      if (!fs.existsSync(this.baileysAuthFolder)) {
-        fs.mkdirSync(this.baileysAuthFolder, { recursive: true });
-      }
+      // Get auth state
+      const { state, saveCreds } = await useMultiFileAuthState(authDir);
       
-      // Initialize Baileys auth state
-      console.log(`[BaileysClient:${this.instanceId}] Using auth folder: ${this.baileysAuthFolder}`);
-      const { state, saveCreds } = await useMultiFileAuthState(this.baileysAuthFolder);
-      
-      // Get latest version of baileys (update from cached when possible)
-      const { version } = await fetchLatestBaileysVersion();
-      
-      // Initialize event handler
-      this.eventsHandler.initialize();
-      
-      // Create connection
-      this.socket = makeWASocket({
-        auth: {
-          creds: state.creds,
-          keys: makeCacheableSignalKeyStore(state.keys, console.log)
-        },
-        printQRInTerminal: false, // We'll handle QR display ourselves
-        version: version,
-        browser: ['WhatsApp Discord Bridge', 'Chrome', '10.0.0']
+      // Create socket with Baileys
+      this.sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: false, // We'll handle QR codes ourselves
+        logger: this.logger, // Use our custom logger
+        browser: ['WhatsApp Discord Bridge', 'Chrome', '103.0.5060.114'],
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+        qrTimeout: 60000 // 1 minute QR timeout
       });
       
-      // Add auth credentials save on update
-      this.socket.ev.on('creds.update', saveCreds);
+      // Bind credentials saving function
+      this.saveCreds = saveCreds;
       
-      // Handle connection events
-      this.socket.ev.on('connection.update', (update) => {
-        this.handleConnectionUpdate(update);
-      });
+      // Bind store to socket
+      this.store.bind(this.sock.ev);
       
-      // Forward events to the event manager
-      this.eventsHandler.registerSocketEvents(this.socket);
+      // Register event handlers
+      this.baileysEvents.registerEvents(this.sock, this.saveCreds);
       
+      console.log(`[BaileysEvents:${this.instanceId}] Event handler initialized`);
+      
+      // Return true on successful initialization
       return true;
     } catch (error) {
-      console.error(`[BaileysClient:${this.instanceId}] Error initializing WhatsApp client:`, error);
-      this.socketError = error;
+      console.error(`[BaileysClient:${this.instanceId}] Error initializing WhatsApp:`, error);
       return false;
     }
   }
   
   /**
-   * Handle connection updates
-   * @param {Object} update - Connection update
-   * @private
-   */
-  handleConnectionUpdate(update) {
-    const { connection, lastDisconnect, qr } = update;
-    
-    // Handle QR code if showing it
-    if (qr && this.showQrCode) {
-      this.events.emit('qr', qr);
-    }
-    
-    // Handle connection state changes
-    if (connection === 'close') {
-      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log(`[BaileysClient:${this.instanceId}] Connection closed. Reason: ${lastDisconnect?.error?.message || 'Unknown'}`);
-      
-      // If we should reconnect, attempt it
-      if (shouldReconnect) {
-        console.log(`[BaileysClient:${this.instanceId}] Attempting to reconnect...`);
-        this.isReady = false;
-      }
-    } else if (connection === 'open') {
-      console.log(`[BaileysClient:${this.instanceId}] Connection opened!`);
-      this.isReady = true;
-      this.reconnectAttempts = 0;
-      this.events.emit('ready');
-    }
-  }
-  
-  /**
-   * Check if the WhatsApp client is authenticated
+   * Check if client has auth credentials
    * @returns {Promise<boolean>} - Authentication status
    */
   async isAuthenticated() {
     try {
-      // Check if Baileys stored credentials exist
-      const credsPath = path.join(this.baileysAuthFolder, 'creds.json');
-      
-      if (fs.existsSync(credsPath)) {
-        // Check file has some data
-        const stats = fs.statSync(credsPath);
-        if (stats.size > 10) {
-          return true;
-        }
-      }
-      
-      return false;
+      return await this.baileysAuth.checkAuth();
     } catch (error) {
-      console.error(`[BaileysClient:${this.instanceId}] Error checking authentication:`, error);
+      console.error(`[BaileysClient:${this.instanceId}] Error checking auth:`, error);
       return false;
     }
   }
   
   /**
    * Attempt to restore session without QR code
-   * @returns {Promise<boolean>} - Success
+   * @returns {Promise<boolean>} - Restoration success
    */
   async restoreSession() {
     try {
-      if (!this.isAuthenticated()) {
+      if (this.isReady) {
+        console.log(`[BaileysClient:${this.instanceId}] Already connected, no restoration needed`);
+        return true;
+      }
+      
+      if (!await this.isAuthenticated()) {
+        console.log(`[BaileysClient:${this.instanceId}] No auth data found, restoration not possible`);
         return false;
       }
       
-      // Set QR code flag to false
+      // Set QR code flag to false for restoration
       this.setShowQrCode(false);
       
-      // Initialize with QR disabled
+      // Attempt to initialize without showing QR code
       const success = await this.initialize(false);
       
-      return success && this.isReady;
+      if (success) {
+        // Wait for a connection or timeout
+        return new Promise((resolve) => {
+          // Set timeout for connection
+          const timeout = setTimeout(() => {
+            this.removeListener('ready', handleReady);
+            resolve(false);
+          }, 10000);
+          
+          // Set success handler
+          const handleReady = () => {
+            clearTimeout(timeout);
+            resolve(true);
+          };
+          
+          // Already connected?
+          if (this.isReady) {
+            clearTimeout(timeout);
+            resolve(true);
+            return;
+          }
+          
+          // Listen for connection
+          this.once('ready', handleReady);
+        });
+      }
+      
+      return false;
     } catch (error) {
       console.error(`[BaileysClient:${this.instanceId}] Error restoring session:`, error);
       return false;
@@ -190,226 +247,109 @@ class BaileysClient {
   }
   
   /**
-   * Disconnect the WhatsApp client
-   * @param {boolean} logout - Whether to remove authentication
-   * @returns {Promise<boolean>} - Success
+   * Disconnect from WhatsApp
+   * @param {boolean} logout - Whether to remove credentials
+   * @returns {Promise<boolean>} - Disconnection success
    */
   async disconnect(logout = false) {
     try {
       console.log(`[BaileysClient:${this.instanceId}] Disconnecting WhatsApp... ${logout ? '(with logout)' : ''}`);
       
-      // Unbind event listeners
-      this.eventsHandler.resetEventListeners();
+      // Prevent reconnection attempts
+      this.isClosing = true;
       
-      // Close the socket if it exists
-      if (this.socket) {
-        try {
-          // If logout requested, clear credentials
-          if (logout) {
-            // Remove auth folder if logout requested
-            this.clearAuthData();
+      // Reset event handlers
+      this.baileysEvents.resetListeners();
+      
+      // Check if we have a socket to disconnect
+      if (this.sock) {
+        // If logout requested, remove credentials
+        if (logout) {
+          try {
+            this.sock.logout();
+            console.log(`[BaileysClient:${this.instanceId}] Logged out successfully`);
+          } catch (logoutError) {
+            console.error(`[BaileysClient:${this.instanceId}] Error during logout:`, logoutError);
           }
-          
-          // End the socket connection
-          if (this.socket.ws) {
-            this.socket.ws.close();
-            console.log(`[BaileysClient:${this.instanceId}] Socket ended`);
-          }
-          
-          // Nullify the socket reference
-          this.socket = null;
-        } catch (socketError) {
-          console.error(`[BaileysClient:${this.instanceId}] Error closing socket:`, socketError);
         }
+        
+        // End the socket
+        try {
+          this.sock.end();
+          console.log(`[BaileysClient:${this.instanceId}] Socket ended`);
+        } catch (endError) {
+          console.error(`[BaileysClient:${this.instanceId}] Error ending socket:`, endError);
+        }
+        
+        // Clear references
+        this.sock = null;
       }
       
-      // Update state
+      // Reset state
       this.isReady = false;
+      this.isClosing = false;
+      this.qrStr = null;
       
       return true;
     } catch (error) {
       console.error(`[BaileysClient:${this.instanceId}] Error disconnecting:`, error);
       
-      // Force update state on error
+      // Reset state even on error
       this.isReady = false;
+      this.isClosing = false;
       
       return false;
     }
   }
   
   /**
-   * Clear authentication data
-   * @private
+   * Send a message
+   * @param {string} to - Recipient phone number with country code
+   * @param {string} message - Message text
+   * @returns {Promise<Object|null>} - Message info or null on failure
    */
-  clearAuthData() {
+  async sendMessage(to, message) {
     try {
-      // Remove Baileys auth folder
-      if (fs.existsSync(this.baileysAuthFolder)) {
-        const files = fs.readdirSync(this.baileysAuthFolder);
-        
-        for (const file of files) {
-          try {
-            fs.unlinkSync(path.join(this.baileysAuthFolder, file));
-          } catch (fileError) {
-            console.error(`[BaileysClient:${this.instanceId}] Error deleting file ${file}:`, fileError);
-          }
-        }
-        
-        console.log(`[BaileysClient:${this.instanceId}] Cleared Baileys auth folder`);
+      if (!this.isReady || !this.sock) {
+        throw new Error('Client not ready or connected');
       }
       
-      // Remove main auth folder
-      if (fs.existsSync(this.authFolder)) {
-        const files = fs.readdirSync(this.authFolder);
-        
-        for (const file of files) {
-          try {
-            fs.unlinkSync(path.join(this.authFolder, file));
-          } catch (fileError) {
-            console.error(`[BaileysClient:${this.instanceId}] Error deleting file ${file}:`, fileError);
-          }
-        }
-        
-        console.log(`[BaileysClient:${this.instanceId}] Cleared main auth folder`);
-      }
-    } catch (error) {
-      console.error(`[BaileysClient:${this.instanceId}] Error clearing auth data:`, error);
-    }
-  }
-  
-  /**
-   * Send a WhatsApp message
-   * @param {string} jid - JID (phone number with @s.whatsapp.net)
-   * @param {string|Object} content - Message content
-   * @param {Object} options - Message options
-   * @returns {Promise<Object>} - Message info
-   */
-  async sendMessage(jid, content, options = {}) {
-    try {
-      if (!this.socket) {
-        throw new Error('WhatsApp client is not initialized');
-      }
+      // Ensure to has the correct format
+      const jid = this.formatJid(to);
       
-      if (!this.isReady) {
-        throw new Error('WhatsApp client is not connected');
-      }
-      
-      // Format JID if it's a plain phone number
-      const formattedJid = this.formatJid(jid);
-      
-      // Send message using Baileys
-      const result = await this.socket.sendMessage(formattedJid, content, options);
+      // Send the message
+      const result = await this.sock.sendMessage(jid, { text: message });
       return result;
     } catch (error) {
       console.error(`[BaileysClient:${this.instanceId}] Error sending message:`, error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Download media from WhatsApp
-   * @param {Object} message - Message with media
-   * @returns {Promise<Buffer>} - Media buffer
-   */
-  async downloadMedia(message) {
-    try {
-      if (!this.socket) {
-        throw new Error('WhatsApp client is not initialized');
-      }
-      
-      // Get message type and mimeType
-      const messageType = Object.keys(message).find(key => {
-        return (
-          key !== 'conversation' && 
-          key !== 'messageContextInfo' && 
-          message[key] !== null && 
-          typeof message[key] === 'object'
-        );
-      });
-      
-      if (!messageType) {
-        throw new Error('No media found in message');
-      }
-      
-      // Get the message content
-      const content = message[messageType];
-      
-      // Download media
-      let buffer;
-      
-      if (content.directPath) {
-        buffer = await this.socket.downloadMediaMessage(message);
-      } else {
-        buffer = await this.socket.downloadMediaMessage(
-          message,
-          'buffer',
-          {},
-          { 
-            logger: console,
-            reuploadRequest: this.socket.updateMediaMessage 
-          }
-        );
-      }
-      
-      return buffer;
-    } catch (error) {
-      console.error(`[BaileysClient:${this.instanceId}] Error downloading media:`, error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Format a phone number into a JID
-   * @param {string} phoneNumber - Phone number
-   * @returns {string} - Formatted JID
-   */
-  formatJid(phoneNumber) {
-    // If already a valid JID, return as is
-    if (phoneNumber.includes('@')) {
-      return phoneNumber;
-    }
-    
-    // Clean the phone number - remove any non-digit characters
-    const cleanNumber = phoneNumber.replace(/\D/g, '');
-    
-    // Return formatted JID
-    return `${cleanNumber}@s.whatsapp.net`;
-  }
-  
-  /**
-   * Get user's profile picture
-   * @param {string} jid - JID (phone number with @s.whatsapp.net)
-   * @returns {Promise<string|null>} - Profile picture URL
-   */
-  async getProfilePicture(jid) {
-    try {
-      if (!this.socket) {
-        throw new Error('WhatsApp client is not initialized');
-      }
-      
-      // Format JID if it's a plain phone number
-      const formattedJid = this.formatJid(jid);
-      
-      // Get profile picture URL
-      const ppUrl = await this.socket.profilePictureUrl(formattedJid);
-      return ppUrl;
-    } catch (error) {
-      // If error is 404, user has no profile picture
-      if (error.data && error.data.status === 404) {
-        return null;
-      }
-      
-      console.error(`[BaileysClient:${this.instanceId}] Error getting profile picture:`, error);
       return null;
     }
   }
   
   /**
-   * Get connection status
-   * @returns {boolean} - Whether client is connected
+   * Get JID (Jabber ID) for a phone number
+   * @param {string} phoneNumber - Phone number with country code
+   * @returns {string} - Formatted JID
    */
-  isConnected() {
-    return this.isReady;
+  formatJid(phoneNumber) {
+    // Remove any non-digit characters except the leading '+'
+    let cleaned = phoneNumber.toString().trim();
+    
+    // Remove WhatsApp suffixes if present
+    cleaned = cleaned.replace(/@s\.whatsapp\.net/g, '')
+                    .replace(/@c\.us/g, '')
+                    .replace(/@g\.us/g, '')
+                    .replace(/@broadcast/g, '');
+    
+    // Keep only digits and optionally a leading +
+    if (cleaned.startsWith('+')) {
+      cleaned = '+' + cleaned.substring(1).replace(/\D/g, '');
+    } else {
+      cleaned = cleaned.replace(/\D/g, '');
+    }
+    
+    // Add WhatsApp suffix
+    return `${cleaned}@s.whatsapp.net`;
   }
 }
 

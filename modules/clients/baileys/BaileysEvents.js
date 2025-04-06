@@ -1,232 +1,302 @@
-// modules/clients/baileys/BaileysEvents.js
-const { proto } = require('@whiskeysockets/baileys');
+// modules/clients/baileys/BaileysEvents.js - Fixed event handling
+const EventEmitter = require('events');
+const { DisconnectReason } = require('@whiskeysockets/baileys');
 
 /**
- * Handles Baileys events and forwards them to the EventBus
+ * Class to handle Baileys-specific events
  */
-class BaileysEvents {
+class BaileysEvents extends EventEmitter {
   /**
-   * Create a new events handler
-   * @param {EventBus} eventBus - Event bus to emit events on
+   * Create new event handler
+   * @param {string} instanceId - Instance ID
    */
-  constructor(eventBus) {
-    this.eventBus = eventBus;
-    this.boundHandlers = {
-      onMessage: this.onMessage.bind(this),
-      onConnectionUpdate: this.onConnectionUpdate.bind(this),
-      onCredentialsUpdate: this.onCredentialsUpdate.bind(this),
-      onChats: this.onChats.bind(this),
-      onContacts: this.onContacts.bind(this)
-    };
+  constructor(instanceId = 'default') {
+    super();
+    this.instanceId = instanceId;
+    this.boundHandlers = new Map();
+    this.saveCreds = null;
     
-    console.log(`[BaileysEvents:${eventBus?.instanceId || 'default'}] Initialized event handler`);
+    console.log(`[BaileysEvents:${this.instanceId}] Initialized event handler`);
   }
   
   /**
-   * Initialize event handler
+   * Register event handlers with Baileys socket
+   * @param {Object} sock - Baileys socket
+   * @param {Function} saveCreds - Credentials save function
    */
-  initialize() {
-    console.log(`[BaileysEvents:${this.eventBus?.instanceId || 'default'}] Event handler initialized`);
-  }
-  
-  /**
-   * Register event listeners for Baileys socket
-   * @param {Object} socket - Baileys socket
-   */
-  registerSocketEvents(socket) {
-    if (!socket || !socket.ev) {
-      console.error(`[BaileysEvents:${this.eventBus?.instanceId || 'default'}] Cannot register events - invalid socket`);
-      return;
+  registerEvents(sock, saveCreds) {
+    try {
+      if (!sock || !sock.ev) {
+        throw new Error('Invalid socket provided for event registration');
+      }
+      
+      this.saveCreds = saveCreds;
+      this.sock = sock;
+      
+      // Store bound handlers so we can remove them later
+      const createBoundHandler = (event, handler) => {
+        const boundHandler = (...args) => handler.apply(this, args);
+        this.boundHandlers.set(event, boundHandler);
+        return boundHandler;
+      };
+      
+      // Connection events
+      sock.ev.on('connection.update', createBoundHandler('connection.update', this.handleConnectionUpdate));
+      
+      // Credentials update
+      sock.ev.on('creds.update', createBoundHandler('creds.update', this.handleCredsUpdate));
+      
+      // Message events
+      sock.ev.on('messages.upsert', createBoundHandler('messages.upsert', this.handleMessagesUpsert));
+      
+      // Status events
+      sock.ev.on('presence.update', createBoundHandler('presence.update', this.handlePresenceUpdate));
+      
+      // Group events
+      sock.ev.on('chats.update', createBoundHandler('chats.update', this.handleChatsUpdate));
+      sock.ev.on('contacts.update', createBoundHandler('contacts.update', this.handleContactsUpdate));
+      
+      // Call events
+      sock.ev.on('call', createBoundHandler('call', this.handleCall));
+      
+      console.log(`[BaileysEvents:${this.instanceId}] Event handler initialized`);
+      
+      return true;
+    } catch (error) {
+      console.error(`[BaileysEvents:${this.instanceId}] Error registering events:`, error);
+      return false;
     }
-    
-    // Register all event listeners
-    socket.ev.on('messages.upsert', this.boundHandlers.onMessage);
-    socket.ev.on('connection.update', this.boundHandlers.onConnectionUpdate);
-    socket.ev.on('creds.update', this.boundHandlers.onCredentialsUpdate);
-    socket.ev.on('chats.set', this.boundHandlers.onChats);
-    socket.ev.on('contacts.update', this.boundHandlers.onContacts);
   }
   
   /**
    * Reset all event listeners
    */
-  resetEventListeners() {
-    console.log(`[BaileysEvents:${this.eventBus?.instanceId || 'default'}] Event listeners reset`);
+  resetListeners() {
+    try {
+      if (this.sock && this.sock.ev) {
+        // Remove all event listeners
+        this.boundHandlers.forEach((handler, event) => {
+          this.sock.ev.off(event, handler);
+        });
+      }
+      
+      // Clear the handler map
+      this.boundHandlers.clear();
+      this.sock = null;
+      this.saveCreds = null;
+      
+      console.log(`[BaileysEvents:${this.instanceId}] Event listeners reset`);
+      return true;
+    } catch (error) {
+      console.error(`[BaileysEvents:${this.instanceId}] Error resetting event listeners:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Handle connection update events
+   * @param {Object} update - Connection update info
+   */
+  handleConnectionUpdate(update) {
+    const { connection, lastDisconnect, qr } = update;
+    
+    // Handle QR code updates
+    if (qr) {
+      this.emit('qr', qr);
+    }
+    
+    // Handle connection state changes
+    if (connection === 'close') {
+      // Get the disconnect reason
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const reason = this.getDisconnectReason(statusCode);
+      
+      console.log(`[BaileysEvents:${this.instanceId}] Connection closed. Reason: ${reason}`);
+      
+      // Emit disconnected event
+      this.emit('close', reason);
+    } else if (connection === 'open') {
+      console.log(`[BaileysEvents:${this.instanceId}] Connection opened!`);
+      this.emit('open');
+    } else if (connection === 'connecting') {
+      console.log(`[BaileysEvents:${this.instanceId}] Connecting...`);
+      this.emit('connecting');
+    }
+  }
+  
+  /**
+   * Handle credential updates
+   * @param {Object} creds - Credentials
+   */
+  handleCredsUpdate(creds) {
+    if (!this.saveCreds) return;
+    
+    // Save credentials
+    this.saveCreds(creds)
+      .then(() => {
+        console.log(`[BaileysEvents:${this.instanceId}] Credentials saved successfully`);
+      })
+      .catch(error => {
+        console.error(`[BaileysEvents:${this.instanceId}] Error saving credentials:`, error);
+      });
   }
   
   /**
    * Handle incoming messages
-   * @param {Object} data - Message data
+   * @param {Object} param - Message data
    */
-  onMessage(data) {
+  handleMessagesUpsert({ messages, type }) {
     try {
-      const { messages, type } = data;
-      
       if (type !== 'notify') return;
       
       for (const message of messages) {
-        // Skip status messages (receipts, typing, etc.)
-        if (message.key && message.key.remoteJid === 'status@broadcast') continue;
+        // Get relevant message info
+        const { key, pushName, message: messageContent } = message;
         
-        // Skip messages from self (outgoing)
-        if (message.key && message.key.fromMe) continue;
+        // Skip empty or invalid messages
+        if (!messageContent) continue;
         
-        // Process only normal message types
-        const normalMessage = this.extractNormalMessage(message);
-        if (!normalMessage) continue;
-        
-        // Emit message event with normalized data
-        this.eventBus.emit('message', normalMessage);
-      }
-    } catch (error) {
-      console.error(`[BaileysEvents:${this.eventBus?.instanceId || 'default'}] Error processing message:`, error);
-    }
-  }
-  
-  /**
-   * Handle connection updates
-   * @param {Object} update - Connection update
-   */
-  onConnectionUpdate(update) {
-    try {
-      const { connection, lastDisconnect, qr } = update;
-      
-      // Handle QR code
-      if (qr) {
-        this.eventBus.emit('qr', qr);
-      }
-      
-      // Handle connection events
-      if (connection === 'close') {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const reason = lastDisconnect?.error?.message || 'Unknown';
-        
-        this.eventBus.emit('disconnected', reason);
-        
-        // If logged out, emit special event
-        if (statusCode === 401) {
-          this.eventBus.emit('auth_failure', new Error('Session expired'));
+        // Check if it's a message from others (not from us)
+        if (!key.fromMe) {
+          // Extract the sender ID
+          const senderId = key.remoteJid;
+          if (!senderId) continue;
+          
+          // Extract message text or media caption
+          let messageText = '';
+          let messageType = 'unknown';
+          
+          if (messageContent.conversation) {
+            messageText = messageContent.conversation;
+            messageType = 'text';
+          } else if (messageContent.extendedTextMessage?.text) {
+            messageText = messageContent.extendedTextMessage.text;
+            messageType = 'text';
+          } else if (messageContent.imageMessage?.caption) {
+            messageText = messageContent.imageMessage.caption;
+            messageType = 'image';
+          } else if (messageContent.videoMessage?.caption) {
+            messageText = messageContent.videoMessage.caption;
+            messageType = 'video';
+          } else if (messageContent.documentMessage?.caption) {
+            messageText = messageContent.documentMessage.caption;
+            messageType = 'document';
+          } else if (messageContent.locationMessage) {
+            messageText = 'Location shared';
+            messageType = 'location';
+          } else if (messageContent.contactMessage) {
+            messageText = 'Contact shared';
+            messageType = 'contact';
+          } else if (messageContent.audioMessage) {
+            messageText = 'Audio message';
+            messageType = 'audio';
+          } else {
+            // Try to determine the message type
+            const possibleTypes = [
+              'imageMessage', 'videoMessage', 'audioMessage', 
+              'documentMessage', 'stickerMessage', 'contactMessage',
+              'locationMessage'
+            ];
+            
+            for (const type of possibleTypes) {
+              if (messageContent[type]) {
+                messageType = type.replace('Message', '');
+                messageText = `${messageType} message`;
+                break;
+              }
+            }
+          }
+          
+          // Create a simplified message object
+          const simpleMessage = {
+            id: key.id,
+            from: senderId,
+            fromMe: key.fromMe,
+            name: pushName || 'Unknown',
+            timestamp: message.messageTimestamp,
+            text: messageText,
+            type: messageType,
+            original: message
+          };
+          
+          // Emit the message event
+          this.emit('message', simpleMessage);
         }
-      } else if (connection === 'open') {
-        this.eventBus.emit('ready');
       }
     } catch (error) {
-      console.error(`[BaileysEvents:${this.eventBus?.instanceId || 'default'}] Error processing connection update:`, error);
+      console.error(`[BaileysEvents:${this.instanceId}] Error processing messages:`, error);
     }
   }
   
   /**
-   * Handle credentials update
-   * @param {Object} credentials - Updated credentials
+   * Handle presence updates
+   * @param {Object} update - Presence data
    */
-  onCredentialsUpdate(credentials) {
-    try {
-      this.eventBus.emit('credentials', credentials);
-    } catch (error) {
-      console.error(`[BaileysEvents:${this.eventBus?.instanceId || 'default'}] Error processing credentials update:`, error);
-    }
+  handlePresenceUpdate(update) {
+    // Currently not using presence updates
   }
   
   /**
-   * Handle chats update
-   * @param {Object} data - Chats data
+   * Handle chat updates
+   * @param {Array} updates - Chat updates
    */
-  onChats(data) {
-    try {
-      this.eventBus.emit('chats', data);
-    } catch (error) {
-      console.error(`[BaileysEvents:${this.eventBus?.instanceId || 'default'}] Error processing chats:`, error);
-    }
+  handleChatsUpdate(updates) {
+    // Currently not using chat updates
   }
   
   /**
-   * Handle contacts update
-   * @param {Object} contacts - Contacts data
+   * Handle contact updates
+   * @param {Array} updates - Contact updates
    */
-  onContacts(contacts) {
-    try {
-      this.eventBus.emit('contacts', contacts);
-    } catch (error) {
-      console.error(`[BaileysEvents:${this.eventBus?.instanceId || 'default'}] Error processing contacts:`, error);
-    }
+  handleContactsUpdate(updates) {
+    // Currently not using contact updates
   }
   
   /**
-   * Extract normal message from Baileys message
-   * @param {Object} message - Baileys message
-   * @returns {Object|null} Normalized message or null
+   * Handle call events
+   * @param {Array} calls - Call events
    */
-  extractNormalMessage(message) {
-    try {
-      // Skip empty messages
-      if (!message) return null;
-      
-      // Get the JID (phone number)
-      const jid = message.key.remoteJid;
-      if (!jid) return null;
-      
-      // Get message content
-      const msg = message.message;
-      if (!msg) return null;
-      
-      // Determine message type and content
-      let type = 'text';
-      let content = '';
-      let media = null;
-      
-      if (msg.conversation) {
-        content = msg.conversation;
-      } else if (msg.extendedTextMessage) {
-        content = msg.extendedTextMessage.text || '';
-        
-        // Check for quoted message
-        if (msg.extendedTextMessage.contextInfo?.quotedMessage) {
-          type = 'reply';
-          media = msg.extendedTextMessage.contextInfo.quotedMessage;
-        }
-      } else if (msg.imageMessage) {
-        type = 'image';
-        content = msg.imageMessage.caption || '';
-        media = message;
-      } else if (msg.videoMessage) {
-        type = 'video';
-        content = msg.videoMessage.caption || '';
-        media = message;
-      } else if (msg.audioMessage) {
-        type = 'audio';
-        content = '';
-        media = message;
-      } else if (msg.documentMessage) {
-        type = 'document';
-        content = msg.documentMessage.title || '';
-        media = message;
-      } else if (msg.stickerMessage) {
-        type = 'sticker';
-        content = '';
-        media = message;
-      } else {
-        // Debug unhandled message types
-        console.log(`[BaileysEvents:${this.eventBus?.instanceId || 'default'}] Unhandled message type:`, Object.keys(msg));
-        return null;
-      }
-      
-      // Clean the phone number (remove @s.whatsapp.net)
-      const cleanJid = jid.replace(/@s\.whatsapp\.net$/, '');
-      
-      // Create normalized message
-      return {
-        jid: jid,
-        from: cleanJid,
-        type: type,
-        content: content,
-        media: media,
-        messageObject: message,
-        timestamp: message.messageTimestamp || Date.now() / 1000
-      };
-    } catch (error) {
-      console.error(`[BaileysEvents:${this.eventBus?.instanceId || 'default'}] Error extracting message:`, error);
-      return null;
+  handleCall(calls) {
+    // Currently not handling calls
+  }
+  
+  /**
+   * Get human-readable disconnect reason
+   * @param {number} statusCode - Status code
+   * @returns {string} - Disconnect reason
+   */
+  getDisconnectReason(statusCode) {
+    let reason = 'Unknown Reason';
+    
+    switch (statusCode) {
+      case DisconnectReason.connectionClosed:
+        reason = 'Connection Closed';
+        break;
+      case DisconnectReason.connectionLost:
+        reason = 'Connection Lost';
+        break;
+      case DisconnectReason.connectionReplaced:
+        reason = 'Connection Replaced';
+        break;
+      case DisconnectReason.timedOut:
+        reason = 'Connection Timed Out';
+        break;
+      case DisconnectReason.loggedOut:
+        reason = 'Logged Out';
+        break;
+      case DisconnectReason.badSession:
+        reason = 'Bad Session';
+        break;
+      case DisconnectReason.restartRequired:
+        reason = 'Restart Required';
+        break;
+      case DisconnectReason.multideiceDeleted:
+      case DisconnectReason.multideviceDeleted:
+        reason = 'Multi-device Deleted';
+        break;
     }
+    
+    return reason;
   }
 }
 

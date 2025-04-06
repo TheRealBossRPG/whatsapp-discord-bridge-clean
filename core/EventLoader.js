@@ -1,4 +1,4 @@
-// core/EventLoader.js - Loads and registers all event handlers
+// core/EventLoader.js - Fixed for proper WhatsApp event handling
 const fs = require('fs');
 const path = require('path');
 
@@ -148,26 +148,35 @@ class EventLoader {
    * @param {Object} instance - WhatsApp instance
    */
   registerWhatsAppEvents(instance) {
-    if (!instance || !instance.clients || !instance.clients.whatsAppClient) {
-      console.error('Invalid WhatsApp instance for event registration');
-      return;
-    }
-    
-    console.log(`Registering WhatsApp event handlers for instance ${instance.instanceId}...`);
-    
     try {
+      // CRITICAL FIX: Check if we have a valid WhatsApp client
+      if (!instance || !instance.clients || !instance.clients.whatsAppClient) {
+        console.error('Invalid WhatsApp instance for event registration');
+        return;
+      }
+      
       const client = instance.clients.whatsAppClient;
       
+      // CRITICAL FIX: Make sure the client extends EventEmitter and has proper on method
+      if (typeof client.on !== 'function') {
+        console.error(`WhatsApp client doesn't have 'on' method. Make sure it extends EventEmitter.`);
+        return;
+      }
+      
+      console.log(`Registering WhatsApp event handlers for instance ${instance.instanceId}...`);
+      
+      // Register each WhatsApp event
       for (const [key, handler] of this.events.entries()) {
         if (!key.startsWith('whatsapp:')) continue;
         
         const eventName = handler.event;
         
+        // Register the event handler
         client.on(eventName, (...args) => handler.execute(instance, ...args));
         console.log(`Registered WhatsApp event handler: ${eventName} for instance ${instance.instanceId}`);
       }
     } catch (error) {
-      console.error(`Error registering WhatsApp event handlers for instance ${instance.instanceId}:`, error);
+      console.error(`Error registering WhatsApp event handlers for instance ${instance?.instanceId}:`, error);
     }
   }
   
