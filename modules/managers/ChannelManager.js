@@ -1,9 +1,9 @@
-// modules/managers/ChannelManager.js
+// modules/managers/ChannelManager.js - Fixed channel management
 const fs = require('fs');
 const path = require('path');
 
 /**
- * ChannelManager - Handles mapping between WhatsApp users and Discord channels
+ * Manages channel mappings between WhatsApp and Discord
  */
 class ChannelManager {
   /**
@@ -12,115 +12,61 @@ class ChannelManager {
    */
   constructor(instanceId = 'default') {
     this.instanceId = instanceId;
-    this.channelMap = new Map();
+    this.baseDir = path.join(__dirname, '../../instances', instanceId);
+    this.channelMapPath = path.join(this.baseDir, 'channel_map.json');
+    this.phoneToChannel = new Map();
+    this.channelToPhone = new Map();
     this.whatsAppClient = null;
     this.specialChannels = {};
     
-    // Set storage paths
-    this.baseDir = path.join(__dirname, '..', '..', 'instances', instanceId);
-    this.channelMapPath = path.join(this.baseDir, 'channel_map.json');
-    
-    // Ensure directory exists
+    // Create base directory if it doesn't exist
     if (!fs.existsSync(this.baseDir)) {
       fs.mkdirSync(this.baseDir, { recursive: true });
     }
     
-    // Load channel map from disk
+    // Load channel mappings
     this.loadChannelMap();
-    
-    console.log(`[ChannelManager:${instanceId}] Initialized with ${this.channelMap.size} channels`);
   }
   
   /**
    * Set WhatsApp client
-   * @param {Object} client - WhatsApp client
+   * @param {Object} whatsAppClient - WhatsApp client
    */
-  setWhatsAppClient(client) {
-    this.whatsAppClient = client;
+  setWhatsAppClient(whatsAppClient) {
+    this.whatsAppClient = whatsAppClient;
   }
   
   /**
-   * Get WhatsApp client
-   * @returns {Object} - WhatsApp client
-   */
-  getWhatsAppClient() {
-    return this.whatsAppClient;
-  }
-  
-  /**
-   * Set special channels map
-   * @param {Object} specialChannels - Special channels map
+   * Set special channels configuration
+   * @param {Object} specialChannels - Special channels object
    */
   setSpecialChannels(specialChannels) {
     this.specialChannels = specialChannels || {};
   }
   
   /**
-   * Get special channels map
-   * @returns {Object} - Special channels map
-   */
-  getSpecialChannels() {
-    return this.specialChannels;
-  }
-  
-  /**
-   * Clean phone number for consistent storage
-   * @param {string} phoneNumber - Raw phone number
-   * @returns {string} - Cleaned phone number
-   */
-  cleanPhoneNumber(phoneNumber) {
-    if (!phoneNumber) return 'unknown';
-    
-    // Convert to string first
-    let clean = String(phoneNumber);
-    
-    // Remove WhatsApp extensions (be thorough)
-    clean = clean.replace(/@s\.whatsapp\.net/g, '')
-                .replace(/@c\.us/g, '')
-                .replace(/@g\.us/g, '')
-                .replace(/@broadcast/g, '')
-                .replace(/@.*$/, '');
-    
-    // Remove any non-digit characters except possibly leading '+' sign
-    if (clean.startsWith('+')) {
-      clean = '+' + clean.substring(1).replace(/[^0-9]/g, '');
-    } else {
-      clean = clean.replace(/[^0-9]/g, '');
-    }
-    
-    return clean;
-  }
-  
-  /**
-   * Format phone number consistently
-   * @param {string} phoneNumber - Phone number
-   * @returns {string} - Formatted phone number
-   */
-  formatPhoneNumber(phoneNumber) {
-    const clean = this.cleanPhoneNumber(phoneNumber);
-    
-    // Make sure it has the WhatsApp suffix if not already present
-    if (!phoneNumber.includes('@')) {
-      return `${clean}@s.whatsapp.net`;
-    }
-    
-    return phoneNumber;
-  }
-  
-  /**
-   * Load channel map from disk
+   * Load channel mappings from file
    */
   loadChannelMap() {
     try {
       if (fs.existsSync(this.channelMapPath)) {
-        const mapData = JSON.parse(fs.readFileSync(this.channelMapPath, 'utf8'));
+        const data = fs.readFileSync(this.channelMapPath, 'utf8');
+        const mappings = JSON.parse(data);
         
-        // Convert to Map object
-        Object.entries(mapData).forEach(([phone, channelId]) => {
-          this.channelMap.set(this.formatPhoneNumber(phone), channelId);
-        });
+        // Clear existing maps
+        this.phoneToChannel.clear();
+        this.channelToPhone.clear();
         
-        console.log(`[ChannelManager:${this.instanceId}] Loaded ${this.channelMap.size} channels from ${this.channelMapPath}`);
+        // Load mappings into maps
+        for (const [phoneNumber, channelId] of Object.entries(mappings)) {
+          // Clean phone number (remove @s.whatsapp.net if present)
+          const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+          
+          this.phoneToChannel.set(cleanPhone, channelId);
+          this.channelToPhone.set(channelId, cleanPhone);
+        }
+        
+        console.log(`[ChannelManager:${this.instanceId}] Loaded ${this.phoneToChannel.size} channel mappings`);
       } else {
         console.log(`[ChannelManager:${this.instanceId}] No channel map file found at ${this.channelMapPath}`);
       }
@@ -130,155 +76,184 @@ class ChannelManager {
   }
   
   /**
-   * Save channel map to disk
+   * Save channel mappings to file
    */
   saveChannelMap() {
     try {
-      // Convert Map to regular object for JSON serialization
-      const mapData = {};
-      this.channelMap.forEach((channelId, phone) => {
-        mapData[phone] = channelId;
-      });
+      const mappings = {};
       
-      // Ensure directory exists
-      if (!fs.existsSync(this.baseDir)) {
-        fs.mkdirSync(this.baseDir, { recursive: true });
+      // Convert map to object
+      for (const [phoneNumber, channelId] of this.phoneToChannel.entries()) {
+        mappings[phoneNumber] = channelId;
       }
       
-      // Write to file
-      fs.writeFileSync(this.channelMapPath, JSON.stringify(mapData, null, 2), 'utf8');
-      
-      console.log(`[ChannelManager:${this.instanceId}] Saved ${this.channelMap.size} channels to ${this.channelMapPath}`);
+      // Save to file
+      fs.writeFileSync(this.channelMapPath, JSON.stringify(mappings, null, 2), 'utf8');
+      console.log(`[ChannelManager:${this.instanceId}] Saved ${this.phoneToChannel.size} channel mappings`);
     } catch (error) {
       console.error(`[ChannelManager:${this.instanceId}] Error saving channel map:`, error);
     }
   }
-
-  /**
- * Synchronize channel data with WhatsApp
- */
-syncWithWhatsApp() {
-  try {
-    console.log(`[ChannelManager:${this.instanceId}] Synchronizing channels with WhatsApp client`);
-    
-    // This is a stub function to prevent errors
-    // Implement with actual synchronization logic if needed
-    
-    // Basic implementation: just load existing channel map
-    this.loadChannelMap();
-    
-    console.log(`[ChannelManager:${this.instanceId}] Channel synchronization complete`);
-    return true;
-  } catch (error) {
-    console.error(`[ChannelManager:${this.instanceId}] Error synchronizing with WhatsApp:`, error);
-    return false;
-  }
-}
   
   /**
-   * Set channel for phone number
+   * Clean phone number (remove @s.whatsapp.net)
    * @param {string} phoneNumber - Phone number
+   * @returns {string} - Cleaned phone number
+   */
+  cleanPhoneNumber(phoneNumber) {
+    if (!phoneNumber) return '';
+    
+    // Remove WhatsApp suffix if present
+    return phoneNumber.replace('@s.whatsapp.net', '');
+  }
+  
+  /**
+   * Get Discord channel ID for a phone number
+   * @param {string} phoneNumber - WhatsApp phone number
+   * @returns {string|null} - Discord channel ID
+   */
+  getChannelId(phoneNumber) {
+    const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+    return this.phoneToChannel.get(cleanPhone) || null;
+  }
+  
+  /**
+   * Get phone number for a Discord channel
+   * @param {string} channelId - Discord channel ID
+   * @returns {string|null} - WhatsApp phone number
+   */
+  getPhoneNumberByChannel(channelId) {
+    return this.channelToPhone.get(channelId) || null;
+  }
+  
+  /**
+   * Set channel mapping
+   * @param {string} phoneNumber - WhatsApp phone number
    * @param {string} channelId - Discord channel ID
    */
   setChannel(phoneNumber, channelId) {
-    // Format phone number
-    const phone = this.formatPhoneNumber(phoneNumber);
+    const cleanPhone = this.cleanPhoneNumber(phoneNumber);
     
-    // Update map
-    this.channelMap.set(phone, channelId);
+    // Add to maps
+    this.phoneToChannel.set(cleanPhone, channelId);
+    this.channelToPhone.set(channelId, cleanPhone);
     
-    // Save to disk
+    // Save changes
     this.saveChannelMap();
     
-    console.log(`[ChannelManager:${this.instanceId}] Set channel ${channelId} for ${phone}`);
+    console.log(`[ChannelManager:${this.instanceId}] Set channel ${channelId} for ${cleanPhone}`);
   }
   
   /**
-   * Get channel ID for phone number
-   * @param {string} phoneNumber - Phone number
-   * @returns {string|null} - Discord channel ID or null if not found
-   */
-  getChannelId(phoneNumber) {
-    // Format phone number
-    const phone = this.formatPhoneNumber(phoneNumber);
-    
-    // Get from map
-    return this.channelMap.get(phone) || null;
-  }
-  
-  /**
-   * Check if channel exists for phone number
-   * @param {string} phoneNumber - Phone number
-   * @returns {boolean} - Whether channel exists
-   */
-  channelExists(phoneNumber) {
-    // Format phone number
-    const phone = this.formatPhoneNumber(phoneNumber);
-    
-    // Check if in map
-    return this.channelMap.has(phone);
-  }
-  
-  /**
-   * Get phone number from channel ID
-   * @param {string} channelId - Discord channel ID
-   * @returns {string|null} - Phone number or null if not found
-   */
-  getPhoneNumber(channelId) {
-    // Iterate through map to find matching channel ID
-    for (const [phone, id] of this.channelMap.entries()) {
-      if (id === channelId) {
-        return phone;
-      }
-    }
-    
-    return null;
-  }
-  
-  /**
-   * Remove channel for phone number
-   * @param {string} phoneNumber - Phone number
+   * Remove channel mapping
+   * @param {string} phoneNumber - WhatsApp phone number
    */
   removeChannel(phoneNumber) {
-    // Format phone number
-    const phone = this.formatPhoneNumber(phoneNumber);
+    const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+    const channelId = this.phoneToChannel.get(cleanPhone);
     
-    // Remove from map
-    this.channelMap.delete(phone);
-    
-    // Save to disk
-    this.saveChannelMap();
-    
-    console.log(`[ChannelManager:${this.instanceId}] Removed channel for ${phone}`);
+    if (channelId) {
+      // Remove from both maps
+      this.phoneToChannel.delete(cleanPhone);
+      this.channelToPhone.delete(channelId);
+      
+      // Save changes
+      this.saveChannelMap();
+      
+      console.log(`[ChannelManager:${this.instanceId}] Removed channel mapping for ${cleanPhone}`);
+    }
   }
   
   /**
-   * Get channel map size
-   * @returns {number} - Number of mapped channels
+   * Remove channel mapping by channel ID
+   * @param {string} channelId - Discord channel ID
+   */
+  removeChannelById(channelId) {
+    const phoneNumber = this.channelToPhone.get(channelId);
+    
+    if (phoneNumber) {
+      // Remove from both maps
+      this.channelToPhone.delete(channelId);
+      this.phoneToChannel.delete(phoneNumber);
+      
+      // Save changes
+      this.saveChannelMap();
+      
+      console.log(`[ChannelManager:${this.instanceId}] Removed channel mapping for ${channelId}`);
+    }
+  }
+  
+  /**
+   * Get the number of mapped channels
+   * @returns {number} - Number of channel mappings
    */
   getChannelMapSize() {
-    return this.channelMap.size;
+    return this.phoneToChannel.size;
   }
   
   /**
-   * Clear all channels
+   * Synchronize with WhatsApp client
+   * This should be called when WhatsApp client connects
    */
-  clearAllChannels() {
-    // Clear map
-    this.channelMap.clear();
+  syncWithWhatsApp() {
+    console.log(`[ChannelManager:${this.instanceId}] Synchronizing channels with WhatsApp client`);
     
-    // Save to disk
-    this.saveChannelMap();
+    // Reload channel map from disk
+    this.loadChannelMap();
     
-    console.log(`[ChannelManager:${this.instanceId}] Cleared all channels`);
+    console.log(`[ChannelManager:${this.instanceId}] Channel synchronization complete`);
   }
   
   /**
-   * Get all channels
-   * @returns {Map} - Map of phone numbers to channel IDs
+   * Check if a Discord channel mentioned references a special channel
+   * @param {string} messageText - Message text to check for channel mentions
+   * @returns {Array} - Array of special channel mentions
+   */
+  checkForSpecialChannelMentions(messageText) {
+    if (!messageText || !this.specialChannels || Object.keys(this.specialChannels).length === 0) {
+      return [];
+    }
+    
+    try {
+      const mentions = [];
+      
+      // Parse mentions (<#channelId>) from message
+      const mentionRegex = /<#(\d+)>/g;
+      let match;
+      
+      while ((match = mentionRegex.exec(messageText)) !== null) {
+        const channelId = match[1];
+        
+        // Check if this is a special channel
+        if (this.specialChannels[channelId]) {
+          mentions.push({
+            channelId,
+            message: this.specialChannels[channelId].message,
+            index: match.index,
+            length: match[0].length
+          });
+        }
+      }
+      
+      return mentions;
+    } catch (error) {
+      console.error(`[ChannelManager:${this.instanceId}] Error checking for special channels:`, error);
+      return [];
+    }
+  }
+  
+  /**
+   * Get all channel mappings
+   * @returns {Array} - Array of {phoneNumber, channelId} objects
    */
   getAllChannels() {
-    return new Map(this.channelMap);
+    const channels = [];
+    
+    for (const [phoneNumber, channelId] of this.phoneToChannel.entries()) {
+      channels.push({ phoneNumber, channelId });
+    }
+    
+    return channels;
   }
 }
 
