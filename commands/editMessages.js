@@ -12,7 +12,13 @@ class EditMessagesCommand extends Command {
   }
 
   async execute(interaction, instance) {
-    await interaction.deferReply({ ephemeral: true });
+    // The interaction should already be deferred by the InteractionHandler
+    // But let's ensure it's deferred to be safe
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true }).catch(err => {
+        console.error(`Error deferring edit-messages command: ${err.message}`);
+      });
+    }
 
     try {
       // Check if interaction has a valid guild

@@ -1,4 +1,4 @@
-// core/ButtonLoader.js - Fixed for enhanced reliability
+// core/ButtonLoader.js - Fixed for handling buttons properly
 const fs = require('fs');
 const path = require('path');
 
@@ -117,9 +117,19 @@ class ButtonLoader {
     }
     
     try {
+      // IMPROVED: Immediately defer the update to prevent timeout
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferUpdate().catch(err => {
+          console.error(`Error deferring button update: ${err.message}`);
+        });
+      }
+      
       // IMPROVED: Better error handling for interactions
       if (typeof handler.execute !== 'function') {
         console.error(`Button handler for ${interaction.customId} has no execute method`);
+        await interaction.editReply({ 
+          content: `Internal error: Button handler is misconfigured.`
+        });
         return false;
       }
       

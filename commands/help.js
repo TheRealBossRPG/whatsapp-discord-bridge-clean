@@ -10,6 +10,14 @@ class HelpCommand extends Command {
   }
 
   async execute(interaction, instance) {
+    // The interaction should already be deferred by the InteractionHandler
+    // But let's ensure it's deferred to be safe
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply().catch(err => {
+        console.error(`Error deferring help command: ${err.message}`);
+      });
+    }
+
     // Create help embed
     const embed = new EmbedBuilder()
       .setColor(0x4287f5)
@@ -55,7 +63,7 @@ class HelpCommand extends Command {
         text: "Admin permissions are required for setup and disconnect commands",
       });
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
   }
 }
 

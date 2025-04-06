@@ -11,7 +11,13 @@ class StatusCommand extends Command {
   }
 
   async execute(interaction, instance) {
-    await interaction.deferReply();
+    // The interaction should already be deferred by the InteractionHandler
+    // But let's ensure it's deferred to be safe
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply().catch(err => {
+        console.error(`Error deferring status command: ${err.message}`);
+      });
+    }
 
     try {
       // If no instance was provided, get it from the instance manager
@@ -42,7 +48,7 @@ class StatusCommand extends Command {
           { name: "Instance ID", value: status.instanceId, inline: true },
           {
             name: "Category",
-            value: interaction.guild.channels.cache.get(status.categoryId)?.name || "Unknown Category",
+            value: status.categoryId ? `<#${status.categoryId}>` : "Not set",
           },
           {
             name: "Transcript Channel",

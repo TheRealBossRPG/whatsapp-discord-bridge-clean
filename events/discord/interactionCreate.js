@@ -17,6 +17,16 @@ class InteractionCreateEvent extends EventHandler {
    */
   async execute(interaction) {
     try {
+      // Immediately defer commands to prevent timeouts
+      if (interaction.isCommand() && !interaction.deferred && !interaction.replied) {
+        try {
+          await interaction.deferReply();
+          console.log(`Deferred command: ${interaction.commandName}`);
+        } catch (deferError) {
+          console.error(`Error deferring command ${interaction.commandName}:`, deferError);
+        }
+      }
+      
       // Use the centralized interaction handler
       await InteractionHandler.handleInteraction(interaction);
     } catch (error) {

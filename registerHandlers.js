@@ -10,58 +10,78 @@ const path = require('path');
 function registerHandlers(client) {
   console.log('Registering all handlers with Discord client...');
   
-  // Load all modules
-  const ModuleLoader = require('./core/ModuleLoader');
-  const EventLoader = require('./core/EventLoader');
-  const ButtonLoader = require('./core/ButtonLoader');
-  const ModalLoader = require('./core/ModalLoader');
-  const SelectMenuLoader = require('./core/SelectMenuLoader');
-  const InteractionHandler = require('./core/interactionHandler');
-  
-  // Load event controller
-  const EventController = require('./controllers/EventController');
-  
-  // Load all event handlers
-  EventLoader.loadAllEvents();
-  
-  // Register Discord events with client
-  EventLoader.registerDiscordEvents(client);
-  
-  // Set up event listeners for interactions
-  client.on('interactionCreate', async (interaction) => {
-    try {
-      // Use the centralized interaction handler
-      await InteractionHandler.handleInteraction(interaction);
-    } catch (error) {
-      console.error(`Error handling interaction:`, error);
-    }
-  });
-  
-  // Set up event listener for messages
-  client.on('messageCreate', async (message) => {
-    try {
-      // Skip bot messages and DMs
-      if (message.author.bot || !message.guild) return;
-      
-      // Use the centralized message handler
-      await InteractionHandler.handleMessage(message);
-    } catch (error) {
-      console.error('Error handling message:', error);
-    }
-  });
-  
-  console.log('Event system and handlers initialized successfully');
-  
-  // Return handler objects for external use
-  return {
-    eventController: EventController,
-    eventLoader: EventLoader,
-    moduleLoader: ModuleLoader,
-    buttonLoader: ButtonLoader,
-    modalLoader: ModalLoader,
-    selectMenuLoader: SelectMenuLoader,
-    interactionHandler: InteractionHandler
-  };
+  try {
+    // Load all modules
+    const ModuleLoader = require('./core/ModuleLoader');
+    ModuleLoader.loadAll();
+    
+    // Load component handlers
+    const EventLoader = require('./core/EventLoader');
+    const ButtonLoader = require('./core/ButtonLoader');
+    const ModalLoader = require('./core/ModalLoader');
+    const SelectMenuLoader = require('./core/SelectMenuLoader');
+    const InteractionHandler = require('./core/interactionHandler');
+    
+    // Load event controller
+    const EventController = require('./controllers/EventController');
+    
+    // Load all event handlers
+    EventLoader.loadAllEvents();
+    
+    // Register Discord events with client
+    EventLoader.registerDiscordEvents(client);
+    
+    // Set up event listeners for interactions
+    client.on('interactionCreate', async (interaction) => {
+      try {
+        // Use the centralized interaction handler
+        await InteractionHandler.handleInteraction(interaction);
+      } catch (error) {
+        console.error(`Error handling interaction:`, error);
+        
+        // Try to respond with error message
+        try {
+          if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({
+              content: `An error occurred: ${error.message}`,
+              ephemeral: true
+            });
+          }
+        } catch (replyError) {
+          console.error('Error replying to interaction:', replyError);
+        }
+      }
+    });
+    
+    // Set up event listener for messages
+    client.on('messageCreate', async (message) => {
+      try {
+        // Skip bot messages and DMs
+        if (message.author.bot || !message.guild) return;
+        
+        // Use the centralized message handler
+        await InteractionHandler.handleMessage(message);
+      } catch (error) {
+        console.error('Error handling message:', error);
+      }
+    });
+    
+    console.log('Event system and handlers initialized successfully');
+    
+    // Return handler objects for external use
+    return {
+      eventController: EventController,
+      eventLoader: EventLoader,
+      moduleLoader: ModuleLoader,
+      buttonLoader: ButtonLoader, 
+      modalLoader: ModalLoader,
+      selectMenuLoader: SelectMenuLoader,
+      interactionHandler: InteractionHandler
+    };
+  } catch (error) {
+    console.error('Error registering handlers:', error);
+    throw error;
+  }
 }
 
 module.exports = registerHandlers;

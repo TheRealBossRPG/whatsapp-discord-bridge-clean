@@ -12,7 +12,13 @@ class SetupCommand extends Command {
   }
   
   async execute(interaction, instance) {
-    await interaction.deferReply({ ephemeral: true });
+    // The interaction should already be deferred by the InteractionHandler
+    // But let's ensure it's deferred to be safe
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true }).catch(err => {
+        console.error(`Error deferring setup command: ${err.message}`);
+      });
+    }
 
     try {
       // Check if interaction has a valid guild
@@ -55,75 +61,7 @@ class SetupCommand extends Command {
           components: [row],
         });
 
-        // Wait for button press
-        try {
-          const confirmation = await response.awaitMessageComponent({
-            filter: (i) => i.user.id === interaction.user.id,
-            time: 60000,
-          });
-
-          if (confirmation.customId === "cancel") {
-            await confirmation.update({
-              content: "Setup cancelled.",
-              components: [],
-            });
-            return;
-          }
-
-          if (confirmation.customId === "edit_settings") {
-            await confirmation.update({
-              content: "Loading current settings...",
-              components: [],
-            });
-            // Import and call editSettings
-            const editSettingsCommand = require('./editSettings');
-            return await editSettingsCommand.execute(interaction, existingInstance);
-          }
-
-          if (confirmation.customId === "reconnect") {
-            await confirmation.update({
-              content: "Reconnecting WhatsApp...",
-              components: [],
-            });
-
-            // Use existing configuration to generate a new QR code
-            const refreshedQR = await InstanceManager.generateQRCode({
-              guildId,
-              categoryId: existingInstance.categoryId,
-              transcriptChannelId: existingInstance.transcriptChannelId,
-              vouchChannelId:
-                existingInstance.vouchChannelId ||
-                existingInstance.transcriptChannelId,
-              customSettings: existingInstance.customSettings || {},
-              discordClient: interaction.client,
-            });
-
-            if (refreshedQR === null) {
-              await interaction.editReply({
-                content: "✅ WhatsApp is already connected!",
-              });
-              return;
-            }
-
-            if (refreshedQR === "TIMEOUT") {
-              await interaction.editReply({
-                content: "⚠️ QR code generation timed out. Please try again.",
-              });
-              return;
-            }
-
-            // Import and use the QR code display function
-            const { displayQRCode } = require('../utils/qrCodeUtils');
-            await displayQRCode(interaction, refreshedQR, guildId);
-            return;
-          }
-        } catch (e) {
-          await interaction.editReply({
-            content: "Confirmation timed out.",
-            components: [],
-          });
-          return;
-        }
+        return; // Let the button handlers take over from here
       }
 
       // New setup process

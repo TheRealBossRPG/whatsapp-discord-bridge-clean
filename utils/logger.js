@@ -1,9 +1,9 @@
-// utils/logger.js - Enhanced logging system
+// utils/logger.js - Enhanced logging system with filtering
 const fs = require('fs');
 const path = require('path');
 
 /**
- * Initialize the logging system with timestamped logs
+ * Initialize the logging system with improved filtering and formatting
  */
 function initializeLogger() {
   // Create logs directory if it doesn't exist
@@ -25,10 +25,62 @@ function initializeLogger() {
   console.oldInfo = console.info;
   console.oldDebug = console.debug;
 
-  // Override console.log
+  // Track repeat messages to prevent log spam
+  const messageCache = {
+    lastMessage: '',
+    repeatCount: 0,
+    lastTime: 0,
+    THROTTLE_TIME_MS: 1000, // Throttle identical messages within 1 second
+    QR_CODE_THROTTLE_MS: 5000, // Special throttle for QR code messages (5 seconds)
+  };
+
+  // Helper to check if a message should be throttled
+  const shouldThrottle = (message) => {
+    const now = Date.now();
+    
+    // Check for QR code related messages - special handling with longer throttle
+    if (message.includes('QR code') || message.includes('Received QR')) {
+      // If it's the first QR message or it's been longer than the QR throttle time, allow it
+      if (messageCache.lastMessage.includes('QR code') || messageCache.lastMessage.includes('Received QR')) {
+        if (now - messageCache.lastTime < messageCache.QR_CODE_THROTTLE_MS) {
+          messageCache.repeatCount++;
+          return true; // Throttle this QR message
+        }
+      }
+    }
+    // For regular message repeats
+    else if (message === messageCache.lastMessage) {
+      if (now - messageCache.lastTime < messageCache.THROTTLE_TIME_MS) {
+        messageCache.repeatCount++;
+        return true; // Throttle this repeat message
+      }
+    }
+    
+    // Message passes throttle check
+    if (message !== messageCache.lastMessage) {
+      // If we had repeated messages before this, show a summary
+      if (messageCache.repeatCount > 0) {
+        const repeatMsg = `Last message repeated ${messageCache.repeatCount} more times`;
+        logStream.write(`[${new Date().toISOString()}] [INFO] ${repeatMsg}\n`);
+        console.oldLog(`\x1b[90m${repeatMsg}\x1b[0m`); // Gray color
+      }
+      messageCache.repeatCount = 0;
+    }
+    
+    messageCache.lastMessage = message;
+    messageCache.lastTime = now;
+    return false;
+  };
+
+  // Override console.log with throttling for repetitive messages
   console.log = function(...args) {
     const timestamp = new Date().toISOString();
-    const line = `[${timestamp}] [INFO] ${args.join(' ')}`;
+    const message = args.join(' ');
+    
+    // Skip throttled messages
+    if (shouldThrottle(message)) return;
+    
+    const line = `[${timestamp}] [INFO] ${message}`;
     logStream.write(line + '\n');
     console.oldLog(line);
   };
@@ -36,15 +88,23 @@ function initializeLogger() {
   // Override console.error
   console.error = function(...args) {
     const timestamp = new Date().toISOString();
-    const line = `[${timestamp}] [ERROR] ${args.join(' ')}`;
+    const message = args.join(' ');
+    const line = `[${timestamp}] [ERROR] ${message}`;
+    
+    // Never throttle errors
     logStream.write(line + '\n');
-    console.oldError('\x1b[31m' + line + '\x1b[0m'); // Red
+    console.oldError('\x1b[41m\x1b[37m' + line + '\x1b[0m'); // White on red background
   };
 
   // Override console.warn
   console.warn = function(...args) {
     const timestamp = new Date().toISOString();
-    const line = `[${timestamp}] [WARN] ${args.join(' ')}`;
+    const message = args.join(' ');
+    
+    // Skip throttled messages
+    if (shouldThrottle(message)) return;
+    
+    const line = `[${timestamp}] [WARN] ${message}`;
     logStream.write(line + '\n');
     console.oldWarn('\x1b[33m' + line + '\x1b[0m'); // Yellow
   };
@@ -52,7 +112,12 @@ function initializeLogger() {
   // Override console.info
   console.info = function(...args) {
     const timestamp = new Date().toISOString();
-    const line = `[${timestamp}] [INFO] ${args.join(' ')}`;
+    const message = args.join(' ');
+    
+    // Skip throttled messages
+    if (shouldThrottle(message)) return;
+    
+    const line = `[${timestamp}] [INFO] ${message}`;
     logStream.write(line + '\n');
     console.oldInfo('\x1b[36m' + line + '\x1b[0m'); // Cyan
   };
@@ -62,7 +127,12 @@ function initializeLogger() {
     // Only log debug in development environment
     if (process.env.NODE_ENV === 'development') {
       const timestamp = new Date().toISOString();
-      const line = `[${timestamp}] [DEBUG] ${args.join(' ')}`;
+      const message = args.join(' ');
+      
+      // Skip throttled messages
+      if (shouldThrottle(message)) return;
+      
+      const line = `[${timestamp}] [DEBUG] ${message}`;
       logStream.write(line + '\n');
       console.oldDebug('\x1b[90m' + line + '\x1b[0m'); // Grey
     }
@@ -71,7 +141,8 @@ function initializeLogger() {
   // Add custom loggers
   console.success = function(...args) {
     const timestamp = new Date().toISOString();
-    const line = `[${timestamp}] [SUCCESS] ${args.join(' ')}`;
+    const message = args.join(' ');
+    const line = `[${timestamp}] [SUCCESS] ${message}`;
     logStream.write(line + '\n');
     console.oldLog('\x1b[32m' + line + '\x1b[0m'); // Green
   };
@@ -79,7 +150,8 @@ function initializeLogger() {
   // Add trace with stack
   console.trace = function(...args) {
     const timestamp = new Date().toISOString();
-    const line = `[${timestamp}] [TRACE] ${args.join(' ')}`;
+    const message = args.join(' ');
+    const line = `[${timestamp}] [TRACE] ${message}`;
     logStream.write(line + '\n');
     
     // Get stack trace

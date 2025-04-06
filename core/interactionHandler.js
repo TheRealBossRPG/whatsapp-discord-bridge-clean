@@ -1,4 +1,4 @@
-// core/interactionHandler.js - Streamlined with new structure and fixed for StringSelectMenu
+// core/interactionHandler.js - Fixed for timeouts and StringSelectMenu
 const ModuleLoader = require('./ModuleLoader');
 const InstanceManager = require('./InstanceManager');
 
@@ -52,6 +52,13 @@ class InteractionHandler {
    */
   async handleInteraction(interaction) {
     try {
+      // Immediately defer for slash commands to prevent timeouts
+      if (interaction.isCommand() && !interaction.deferred && !interaction.replied) {
+        await interaction.deferReply().catch(err => {
+          console.error(`Error deferring command ${interaction.commandName}: ${err.message}`);
+        });
+      }
+
       // Get the server instance for this interaction
       const instance = this.getInstanceForInteraction(interaction);
       
@@ -94,7 +101,13 @@ class InteractionHandler {
         }
       }
       
-      // No handler found
+      // No handler found - need to respond to prevent timeout
+      if (interaction.isCommand() && interaction.deferred && !interaction.replied) {
+        await interaction.editReply({
+          content: `Command '${interaction.commandName}' is still in development.`
+        });
+      }
+      
       console.log(`No handler found for interaction: ${interaction.customId || interaction.commandName || 'unknown'}`);
       return false;
     } catch (error) {

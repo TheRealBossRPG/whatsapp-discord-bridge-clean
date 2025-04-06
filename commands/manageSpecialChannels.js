@@ -12,7 +12,13 @@ class ManageSpecialChannelsCommand extends Command {
   }
   
   async execute(interaction, instance) {
-    await interaction.deferReply({ ephemeral: true });
+    // The interaction should already be deferred by the InteractionHandler
+    // But let's ensure it's deferred to be safe
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true }).catch(err => {
+        console.error(`Error deferring manage-special-channels command: ${err.message}`);
+      });
+    }
     
     try {
       // Get instance

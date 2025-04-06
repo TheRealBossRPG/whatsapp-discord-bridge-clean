@@ -96,7 +96,7 @@ class ModuleLoader {
     for (const file of commandFiles) {
       try {
         const command = require(path.join(commandsDir, file));
-        if (command.data && command.execute) {
+        if (command && command.execute) {
           const name = file.replace('.js', '');
           this.commands.set(name, command);
           console.log(`Loaded command module: ${name}`);
@@ -231,7 +231,7 @@ class ModuleLoader {
       }
     }
     
-    // Fixed for StringSelectMenu deprecation
+    // FIXED: Use isStringSelectMenu instead of isSelectMenu
     if (interaction.isStringSelectMenu()) {
       // Find select menu handler by customId or regex
       for (const handler of this.selectMenus.values()) {
