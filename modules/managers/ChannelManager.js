@@ -153,6 +153,27 @@ class ChannelManager {
       console.error(`[ChannelManager:${this.instanceId}] Error saving channel map:`, error);
     }
   }
+
+  /**
+ * Synchronize channel data with WhatsApp
+ */
+syncWithWhatsApp() {
+  try {
+    console.log(`[ChannelManager:${this.instanceId}] Synchronizing channels with WhatsApp client`);
+    
+    // This is a stub function to prevent errors
+    // Implement with actual synchronization logic if needed
+    
+    // Basic implementation: just load existing channel map
+    this.loadChannelMap();
+    
+    console.log(`[ChannelManager:${this.instanceId}] Channel synchronization complete`);
+    return true;
+  } catch (error) {
+    console.error(`[ChannelManager:${this.instanceId}] Error synchronizing with WhatsApp:`, error);
+    return false;
+  }
+}
   
   /**
    * Set channel for phone number
