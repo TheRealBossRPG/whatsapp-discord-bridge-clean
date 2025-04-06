@@ -1,4 +1,4 @@
-// core/ModuleLoader.js - Fixed for proper directory loading
+// core/ModuleLoader.js - Fixed for proper directory loading and StringSelectMenu
 const fs = require('fs');
 const path = require('path');
 
@@ -99,10 +99,10 @@ class ModuleLoader {
         if (command.data && command.execute) {
           const name = file.replace('.js', '');
           this.commands.set(name, command);
-          console.log(`Loaded module: ${name}`);
+          console.log(`Loaded command module: ${name}`);
         }
       } catch (error) {
-        console.error(`Error loading module ${file}:`, error);
+        console.error(`Error loading command module ${file}:`, error);
       }
     }
   }
@@ -161,10 +161,10 @@ class ModuleLoader {
         const name = file.replace('.js', '');
         if (selectMenu && (selectMenu.customId || selectMenu.regex || typeof selectMenu.matches === 'function')) {
           this.selectMenus.set(name, selectMenu);
-          console.log(`Loaded module: ${name}`);
+          console.log(`Loaded select menu module: ${name}`);
         }
       } catch (error) {
-        console.error(`Error loading module ${file}:`, error);
+        console.error(`Error loading select menu module ${file}:`, error);
       }
     }
   }
@@ -186,9 +186,9 @@ class ModuleLoader {
         const util = require(path.join(utilsDir, file));
         const name = file.replace('.js', '');
         this.utils.set(name, util);
-        console.log(`Loaded module: ${name}`);
+        console.log(`Loaded utility module: ${name}`);
       } catch (error) {
-        console.error(`Error loading module ${file}:`, error);
+        console.error(`Error loading utility module ${file}:`, error);
       }
     }
   }
@@ -231,6 +231,7 @@ class ModuleLoader {
       }
     }
     
+    // Fixed for StringSelectMenu deprecation
     if (interaction.isStringSelectMenu()) {
       // Find select menu handler by customId or regex
       for (const handler of this.selectMenus.values()) {

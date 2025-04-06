@@ -1,4 +1,4 @@
-// core/SelectMenuLoader.js
+// core/SelectMenuLoader.js - Fixed for StringSelectMenu
 const fs = require('fs');
 const path = require('path');
 
@@ -81,6 +81,7 @@ class SelectMenuLoader {
    * @returns {Promise<boolean>} - Whether the interaction was handled
    */
   async handleInteraction(interaction, instance) {
+    // Changed from isSelectMenu to isStringSelectMenu
     if (!interaction.isStringSelectMenu()) return false;
     
     const handler = this.getHandler(interaction.customId);

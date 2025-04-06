@@ -141,16 +141,35 @@ class Instance {
    * @private
    */
   async initializeClient() {
-    const BaileysClient = require("../modules/clients/BaileysClient");
-    this.clients.whatsAppClient = new BaileysClient({
-      authFolder: this.paths.auth,
-      baileysAuthFolder: this.paths.baileys_auth,
-      tempDir: this.paths.temp,
-      instanceId: this.instanceId,
-      maxRetries: 5,
-    });
-    
-    return true;
+    try {
+      // Import the client implementation
+      const BaileysClient = require('../modules/clients/BaileysClient');
+      
+      // Create the client instance
+      this.clients = this.clients || {};
+      
+      // Only create client if it doesn't exist
+      if (!this.clients.whatsAppClient) {
+        console.log(`[Instance:${this.instanceId}] Creating new WhatsApp client...`);
+        
+        this.clients.whatsAppClient = new BaileysClient({
+          instanceId: this.instanceId,
+          authFolder: this.paths.auth,
+          baileysAuthFolder: this.paths.baileys_auth,
+          tempDir: this.paths.temp,
+          maxRetries: 5,
+        });
+        
+        console.log(`[Instance:${this.instanceId}] WhatsApp client created successfully`);
+      } else {
+        console.log(`[Instance:${this.instanceId}] WhatsApp client already exists`);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error initializing WhatsApp client:`, error);
+      return false;
+    }
   }
   
   /**
@@ -281,68 +300,107 @@ class Instance {
   }
 
   /**
-   * Connect WhatsApp client
-   * @param {boolean} showQrCode - Whether to show QR code
-   * @returns {Promise<boolean>} - Connection success
-   */
-  async connect(showQrCode = false) {
-    try {
-      console.log(`[Instance:${this.instanceId}] Connecting WhatsApp...`);
+ * Connect WhatsApp client
+ * @param {boolean} showQrCode - Whether to show QR code
+ * @returns {Promise<boolean>} - Connection success
+ */
+async connect(showQrCode = false) {
+  try {
+    console.log(`[Instance:${this.instanceId}] Connecting WhatsApp...`);
+    
+    await this.loadSettings();
+
+    // Verify Discord client is available
+    if (!this.discordClient) {
+      throw new Error(`[Instance:${this.instanceId}] Discord client is required to connect WhatsApp`);
+    }
+    
+    // Make sure client is initialized
+    if (!this.clients || !this.clients.whatsAppClient) {
+      console.log(`[Instance:${this.instanceId}] WhatsApp client not initialized, initializing now...`);
       
-      await this.loadSettings();
+      // We'll initialize the client here if needed
+      const BaileysClient = require('../modules/clients/BaileysClient');
+      this.clients = this.clients || {};
+      this.clients.whatsAppClient = new BaileysClient({
+        instanceId: this.instanceId,
+        authFolder: this.paths.auth,
+        baileysAuthFolder: this.paths.baileys_auth,
+        tempDir: this.paths.temp,
+        maxRetries: 5,
+      });
+    }
 
-      // Verify Discord client is available
-      if (!this.discordClient) {
-        throw new Error(`[Instance:${this.instanceId}] Discord client is required to connect WhatsApp`);
-      }
+    // Set show QR code flag with proper null check
+    if (this.clients && this.clients.whatsAppClient && 
+        typeof this.clients.whatsAppClient.setShowQrCode === 'function') {
+      this.clients.whatsAppClient.setShowQrCode(showQrCode);
+    } else {
+      console.warn(`[Instance:${this.instanceId}] Cannot set showQrCode flag, whatsAppClient.setShowQrCode is not a function`);
+    }
 
-      // Set show QR code flag
-      if (typeof this.clients.whatsAppClient.setShowQrCode === 'function') {
-        this.clients.whatsAppClient.setShowQrCode(showQrCode);
-      }
+    // Clear any existing QR code timeout
+    if (this.qrCodeTimer) {
+      clearTimeout(this.qrCodeTimer);
+      this.qrCodeTimer = null;
+    }
 
-      // Clear any existing QR code timeout
-      if (this.qrCodeTimer) {
-        clearTimeout(this.qrCodeTimer);
-        this.qrCodeTimer = null;
-      }
-
-      // Initialize WhatsApp client
-      let success = false;
-      let retryCount = 0;
-      const maxRetries = 3;
-      
-      while (!success && retryCount < maxRetries) {
-        try {
-          console.log(`[Instance:${this.instanceId}] Initialization attempt ${retryCount + 1}/${maxRetries}`);
+    // Initialize WhatsApp client
+    let success = false;
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    while (!success && retryCount < maxRetries) {
+      try {
+        console.log(`[Instance:${this.instanceId}] Initialization attempt ${retryCount + 1}/${maxRetries}`);
+        
+        if (this.clients && this.clients.whatsAppClient && 
+            typeof this.clients.whatsAppClient.initialize === 'function') {
           success = await this.clients.whatsAppClient.initialize();
-          
-          if (success) {
-            console.log(`[Instance:${this.instanceId}] WhatsApp client initialized successfully`);
-            break;
-          } else {
-            console.log(`[Instance:${this.instanceId}] Initialization returned false, retrying...`);
-          }
-        } catch (initError) {
-          console.error(`[Instance:${this.instanceId}] Error during initialization attempt ${retryCount + 1}:`, initError);
+        } else {
+          console.error(`[Instance:${this.instanceId}] WhatsApp client not properly initialized or missing initialize method`);
+          break;
         }
         
-        retryCount++;
-        if (retryCount < maxRetries) {
-          // Add small delay before retry
-          await new Promise(resolve => setTimeout(resolve, 2000));
+        if (success) {
+          console.log(`[Instance:${this.instanceId}] WhatsApp client initialized successfully`);
+          break;
+        } else {
+          console.log(`[Instance:${this.instanceId}] Initialization returned false, retrying...`);
         }
+      } catch (initError) {
+        console.error(`[Instance:${this.instanceId}] Error during initialization attempt ${retryCount + 1}:`, initError);
       }
-
-      // Update connection state
-      this.connected = success && this.clients.whatsAppClient.isReady;
       
-      return success;
-    } catch (error) {
-      console.error(`[Instance:${this.instanceId}] Error connecting WhatsApp:`, error);
-      return false;
+      retryCount++;
+      if (retryCount < maxRetries) {
+        // Add small delay before retry
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     }
+
+    // Update connection state
+    if (this.clients && this.clients.whatsAppClient) {
+      // Check if client has isReady property or method
+      if (typeof this.clients.whatsAppClient.isReady === 'boolean') {
+        this.connected = this.clients.whatsAppClient.isReady;
+      } else if (typeof this.clients.whatsAppClient.isReady === 'function') {
+        this.connected = this.clients.whatsAppClient.isReady();
+      } else {
+        // Default to the success value from initialization
+        this.connected = success;
+      }
+    } else {
+      this.connected = false;
+    }
+    
+    return success;
+  } catch (error) {
+    console.error(`[Instance:${this.instanceId}] Error connecting WhatsApp:`, error);
+    this.connected = false;
+    return false;
   }
+}
 
   /**
    * Attempt to reconnect
@@ -729,15 +787,36 @@ class Instance {
   }
 
   /**
-   * Check if instance is connected
-   * @returns {boolean} - Connected status
-   */
+ * Check if instance is connected
+ * @returns {boolean} - Connected status
+ */
   isConnected() {
-    return (
-      this.connected &&
-      this.clients.whatsAppClient &&
-      this.clients.whatsAppClient.isReady
-    );
+    // Check instance state first
+    if (!this.connected) {
+      return false;
+    }
+    
+    // Check if WhatsApp client exists
+    if (!this.clients || !this.clients.whatsAppClient) {
+      return false;
+    }
+    
+    // Check the client's ready state
+    if (typeof this.clients.whatsAppClient.isReady === 'boolean') {
+      return this.clients.whatsAppClient.isReady;
+    }
+    
+    if (typeof this.clients.whatsAppClient.isReady === 'function') {
+      try {
+        return this.clients.whatsAppClient.isReady();
+      } catch (error) {
+        console.error(`[Instance:${this.instanceId}] Error checking client ready state:`, error);
+        return false;
+      }
+    }
+    
+    // If we can't determine the client state, fall back to the instance state
+    return this.connected;
   }
   
   /**

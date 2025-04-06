@@ -46,7 +46,7 @@ class ReconnectStatusButton extends Button {
       });
       
       // Check if already connected
-      if (instance.isConnected()) {
+      if (instance.isConnected && instance.isConnected()) {
         await interaction.editReply({
           content: '✅ WhatsApp is already connected! Loading current status...'
         });

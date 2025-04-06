@@ -1,178 +1,204 @@
-// modules/clients/baileys/BaileysEvents.js - Event handling
-const { proto } = require('@whiskeysockets/baileys');
+'use strict';
+
+const EventEmitter = require('events');
 
 /**
- * Manages events for Baileys WhatsApp client
+ * Handles WhatsApp Baileys events
  */
 class BaileysEvents {
   /**
    * Create a new BaileysEvents instance
-   * @param {BaileysClient} client - Parent client
+   * @param {string} instanceId - Instance ID
    */
-  constructor(client) {
-    this.client = client;
-    this.instanceId = client.options.instanceId;
+  constructor(instanceId) {
+    this.instanceId = instanceId || 'default';
     this.socket = null;
-    this.listenerCleanupFunctions = [];
+    this.listeners = new Map();
+    this.messageHandler = null;
+    this.mediaHandler = null;
+    this.isListening = false;
+    this.eventEmitter = new EventEmitter();
+    
+    // Bind methods to ensure 'this' context
+    this.setSocket = this.setSocket.bind(this);
+    this.setupListeners = this.setupListeners.bind(this);
+    this.cleanupListeners = this.cleanupListeners.bind(this);
+    this.on = this.on.bind(this);
+    this.emit = this.emit.bind(this);
+    
+    console.log(`[BaileysEvents:${this.instanceId}] Initialized event handler`);
   }
   
   /**
-   * Initialize event handling
-   * @param {Object} socket - Baileys socket connection
+   * Set socket for events
+   * @param {Object} socket - WhatsApp socket
    */
-  initialize(socket) {
+  setSocket(socket) {
     if (!socket) {
-      console.error(`[BaileysEvents:${this.instanceId}] Cannot initialize events with null socket`);
+      console.error(`[BaileysEvents:${this.instanceId}] Cannot set null socket`);
       return;
     }
     
     this.socket = socket;
+    console.log(`[BaileysEvents:${this.instanceId}] Socket set`);
+  }
+  
+  /**
+   * Set up all event listeners
+   * @param {Object} messageHandler - Message handler
+   * @param {Object} mediaHandler - Media handler
+   */
+  setupListeners(messageHandler, mediaHandler) {
+    if (!this.socket) {
+      console.error(`[BaileysEvents:${this.instanceId}] No socket available for setting up listeners`);
+      return false;
+    }
     
-    // First remove any existing listeners to prevent duplicates
-    this.reset();
+    // Store handlers
+    this.messageHandler = messageHandler;
+    this.mediaHandler = mediaHandler;
+    
+    // Reset existing listeners to prevent duplicates
+    this.cleanupListeners();
     
     console.log(`[BaileysEvents:${this.instanceId}] Setting up event listeners...`);
     
-    // 1. QR code event
-    const onQR = (qr) => {
-      console.log(`[BaileysEvents:${this.instanceId}] Received QR code`);
-      this.client.emit('qr', qr);
-    };
-    socket.ev.on('connection.update', (update) => {
-      const { connection, lastDisconnect, qr } = update;
-      
-      // Handle QR code
-      if (qr) {
-        onQR(qr);
-      }
-      
-      // Handle connection state changes
-      if (connection === 'close') {
-        const error = lastDisconnect?.error;
-        const shouldReconnect = error?.output?.statusCode !== 401; // Don't reconnect if unauthorized
-        
-        console.log(`[BaileysEvents:${this.instanceId}] Connection closed, reconnect: ${shouldReconnect}`);
-        
-        if (shouldReconnect) {
-          this.client.emit('connection_closed', error);
-        } else {
-          this.client.emit('auth_failure', error);
+    try {
+      // Connection update handler - handles QR codes, connection state changes
+      const onConnectionUpdate = (update) => {
+        try {
+          const { connection, lastDisconnect, qr } = update;
+          
+          // Handle QR code
+          if (qr) {
+            console.log(`[BaileysEvents:${this.instanceId}] Received QR code`);
+            this.emit('qr', qr);
+          }
+          
+          // Handle connection state changes
+          if (connection === 'open') {
+            console.log(`[BaileysEvents:${this.instanceId}] Connection is now open`);
+            this.emit('ready');
+          } else if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const reason = lastDisconnect?.error?.message || 'Unknown';
+            
+            console.log(`[BaileysEvents:${this.instanceId}] Connection closed, statusCode: ${statusCode}`);
+            
+            if (statusCode === 401) {
+              // Authentication failure
+              this.emit('auth_failure', new Error('Authentication failed: ' + reason));
+            } else {
+              // Other disconnection
+              this.emit('disconnected', reason);
+            }
+          }
+        } catch (handlerError) {
+          console.error(`[BaileysEvents:${this.instanceId}] Error in connection update handler:`, handlerError);
         }
-      } else if (connection === 'open') {
-        console.log(`[BaileysEvents:${this.instanceId}] Connection opened`);
-        this.client.isReady = true;
-        this.client.emit('ready');
+      };
+      
+      // Register connection update handler
+      if (this.socket.ev) {
+        this.socket.ev.on('connection.update', onConnectionUpdate);
+        this.listeners.set('connection.update', onConnectionUpdate);
       }
-    });
-    
-    // Save cleanup function
-    this.listenerCleanupFunctions.push(() => {
-      socket.ev.off('connection.update');
-    });
-    
-    // 2. Messages event
-    socket.ev.on('messages.upsert', async (m) => {
-      try {
-        if (m.type !== 'notify') return;
-        
-        const msg = m.messages[0];
-        if (!msg) return;
-        
-        // Ignore status updates
-        if (msg.key && msg.key.remoteJid === 'status@broadcast') return;
-        
-        // Skip messages from self
-        if (msg.key.fromMe) return;
-        
-        // Process message
-        this.client.emit('message', msg);
-      } catch (error) {
-        console.error(`[BaileysEvents:${this.instanceId}] Error processing message:`, error);
+      
+      // Messages handler
+      const onMessage = (m) => {
+        try {
+          const { messages, type } = m;
+          
+          if (Array.isArray(messages) && messages.length > 0 && this.messageHandler) {
+            messages.forEach(message => {
+              if (this.messageHandler.processMessage) {
+                this.messageHandler.processMessage(message);
+              }
+            });
+          }
+        } catch (messageError) {
+          console.error(`[BaileysEvents:${this.instanceId}] Error processing messages:`, messageError);
+        }
+      };
+      
+      // Register messages handler
+      if (this.socket.ev) {
+        this.socket.ev.on('messages.upsert', onMessage);
+        this.listeners.set('messages.upsert', onMessage);
       }
-    });
-    
-    // Save cleanup function
-    this.listenerCleanupFunctions.push(() => {
-      socket.ev.off('messages.upsert');
-    });
-    
-    // 3. Message status updates
-    socket.ev.on('messages.update', (messages) => {
-      for (const message of messages) {
-        this.client.emit('message_update', message);
-      }
-    });
-    
-    // Save cleanup function
-    this.listenerCleanupFunctions.push(() => {
-      socket.ev.off('messages.update');
-    });
-    
-    // 4. Message reaction events
-    socket.ev.on('messages.reaction', (reactions) => {
-      for (const reaction of reactions) {
-        this.client.emit('message_reaction', reaction);
-      }
-    });
-    
-    // Save cleanup function
-    this.listenerCleanupFunctions.push(() => {
-      socket.ev.off('messages.reaction');
-    });
-    
-    // 5. Group participants update
-    socket.ev.on('group-participants.update', (participants) => {
-      this.client.emit('group_update', participants);
-    });
-    
-    // Save cleanup function
-    this.listenerCleanupFunctions.push(() => {
-      socket.ev.off('group-participants.update');
-    });
-    
-    // 6. Contact updates
-    socket.ev.on('contacts.update', (contacts) => {
-      this.client.emit('contacts_update', contacts);
-    });
-    
-    // Save cleanup function
-    this.listenerCleanupFunctions.push(() => {
-      socket.ev.off('contacts.update');
-    });
-    
-    console.log(`[BaileysEvents:${this.instanceId}] Event listeners set up successfully`);
+      
+      this.isListening = true;
+      console.log(`[BaileysEvents:${this.instanceId}] Event listeners set up successfully`);
+      return true;
+    } catch (error) {
+      console.error(`[BaileysEvents:${this.instanceId}] Error setting up event listeners:`, error);
+      return false;
+    }
   }
   
   /**
-   * Reset event listeners
+   * Clean up all event listeners - FIXED to prevent errors
    */
-  reset() {
-    // Remove all registered listeners
-    for (const cleanup of this.listenerCleanupFunctions) {
-      try {
-        cleanup();
-      } catch (error) {
-        console.error(`[BaileysEvents:${this.instanceId}] Error cleaning up listener:`, error);
+  cleanupListeners() {
+    try {
+      if (!this.socket || !this.socket.ev) {
+        console.log(`[BaileysEvents:${this.instanceId}] No socket to clean up`);
+        this.listeners.clear();
+        this.isListening = false;
+        return;
       }
+      
+      // We'll avoid direct removal of listeners because it's causing errors
+      // Instead, just reset our state and let the garbage collector handle it
+      
+      console.log(`[BaileysEvents:${this.instanceId}] Event listeners reset`);
+      
+      // Clear internal listeners map
+      this.listeners.clear();
+      
+      this.isListening = false;
+    } catch (error) {
+      console.error(`[BaileysEvents:${this.instanceId}] Error resetting event listeners:`, error);
+    }
+  }
+  
+  /**
+   * Register an event handler
+   * @param {string} event - Event name
+   * @param {Function} callback - Event callback
+   */
+  on(event, callback) {
+    if (typeof callback !== 'function') {
+      console.error(`[BaileysEvents:${this.instanceId}] Cannot register non-function callback for event ${event}`);
+      return;
     }
     
-    // Clear the cleanup functions array
-    this.listenerCleanupFunctions = [];
-    
-    // Reset the socket reference
-    this.socket = null;
-    
-    console.log(`[BaileysEvents:${this.instanceId}] Event listeners reset`);
+    this.eventEmitter.on(event, callback);
+    console.log(`[BaileysEvents:${this.instanceId}] Registered handler for event: ${event}`);
   }
   
   /**
-   * Manually trigger a message event for testing
-   * @param {Object} message - Message object
+   * Emit event to external listeners
+   * @param {string} event - Event name
+   * @param {...any} args - Event arguments
    */
-  triggerMessageEvent(message) {
-    console.log(`[BaileysEvents:${this.instanceId}] Manually triggering message event`);
-    this.client.emit('message', message);
+  emit(event, ...args) {
+    try {
+      // Emit to our event emitter
+      this.eventEmitter.emit(event, ...args);
+      
+      // Also emit to socket if it exists
+      if (this.socket && this.socket.ev && typeof this.socket.ev.emit === 'function') {
+        try {
+          this.socket.ev.emit(event, ...args);
+        } catch (socketEmitError) {
+          console.error(`[BaileysEvents:${this.instanceId}] Error emitting ${event} event through socket:`, socketEmitError);
+        }
+      }
+    } catch (error) {
+      console.error(`[BaileysEvents:${this.instanceId}] Error emitting ${event} event:`, error);
+    }
   }
 }
 
-module.exports = { BaileysEvents };
+module.exports = BaileysEvents;

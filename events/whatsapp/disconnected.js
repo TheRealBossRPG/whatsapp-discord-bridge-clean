@@ -1,3 +1,4 @@
+// events/whatsapp/disconnected.js - Fixed with proper event handling
 const EventHandler = require('../../templates/EventHandler');
 
 /**
@@ -55,7 +56,10 @@ class DisconnectedEvent extends EventHandler {
             
             // Try to find a suitable channel to notify (system channel or first text channel)
             const channel = guild.systemChannel || 
-                          guild.channels.cache.find(c => c.type === 'GUILD_TEXT' && c.permissionsFor(guild.me).has('SEND_MESSAGES'));
+                          guild.channels.cache.find(c => 
+                            c.isTextBased() && // Fixed - Use isTextBased instead of type check
+                            c.permissionsFor(guild.members.me).has('SendMessages')
+                          );
             
             if (channel) {
               await channel.send({

@@ -42,15 +42,11 @@ class StatusCommand extends Command {
           { name: "Instance ID", value: status.instanceId, inline: true },
           {
             name: "Category",
-            value:
-              interaction.guild.channels.cache.get(status.categoryId)?.name ||
-              "Unknown Category",
+            value: interaction.guild.channels.cache.get(status.categoryId)?.name || "Unknown Category",
           },
           {
             name: "Transcript Channel",
-            value: status.transcriptChannel
-              ? `<#${status.transcriptChannel}>`
-              : "Not set",
+            value: status.transcriptChannel ? `<#${status.transcriptChannel}>` : "Not set",
           },
           {
             name: "Vouch Channel",

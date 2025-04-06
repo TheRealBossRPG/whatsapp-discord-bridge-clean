@@ -1,4 +1,4 @@
-// core/interactionHandler.js - Streamlined with new structure
+// core/interactionHandler.js - Streamlined with new structure and fixed for StringSelectMenu
 const ModuleLoader = require('./ModuleLoader');
 const InstanceManager = require('./InstanceManager');
 

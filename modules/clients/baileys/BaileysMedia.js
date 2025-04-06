@@ -1,261 +1,120 @@
-// modules/clients/baileys/BaileysMedia.js - Media handling
+'use strict';
+
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const mime = require('mime-types');
-const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+
+// Import baileys functions
+let downloadMediaMessage;
+try {
+  downloadMediaMessage = require('@whiskeysockets/baileys').downloadMediaMessage;
+} catch (error) {
+  console.error('Error importing Baileys downloadMediaMessage:', error);
+  // Fallback implementation if needed
+  downloadMediaMessage = async () => {
+    throw new Error('Baileys downloadMediaMessage not available');
+  };
+}
 
 /**
- * Manages media for Baileys WhatsApp client
+ * Handles WhatsApp media processing
  */
 class BaileysMedia {
   /**
-   * Create a new BaileysMedia instance
-   * @param {BaileysClient} client - Parent client
+   * Create a new media handler
+   * @param {string} instanceId - Instance ID
+   * @param {string} tempDir - Temporary directory for media
    */
-  constructor(client) {
-    this.client = client;
-    this.instanceId = client.options.instanceId;
+  constructor(instanceId, tempDir) {
+    this.instanceId = instanceId || 'default';
+    this.tempDir = tempDir || path.join(__dirname, '..', '..', '..', 'temp', this.instanceId);
     this.socket = null;
-    this.tempDir = client.options.tempDir;
     
-    // Ensure temp directory exists
-    this.ensureTempDir();
-  }
-  
-  /**
-   * Ensure temp directory exists
-   */
-  ensureTempDir() {
+    // Create temp directory if it doesn't exist
     if (!fs.existsSync(this.tempDir)) {
-      fs.mkdirSync(this.tempDir, { recursive: true });
-      console.log(`[BaileysMedia:${this.instanceId}] Created temp directory: ${this.tempDir}`);
+      try {
+        fs.mkdirSync(this.tempDir, { recursive: true });
+      } catch (mkdirError) {
+        console.error(`[BaileysMedia:${this.instanceId}] Error creating temp directory:`, mkdirError);
+      }
     }
+    
+    // Bind methods to preserve 'this' context
+    this.setSocket = this.setSocket.bind(this);
+    this.downloadMedia = this.downloadMedia.bind(this);
+    this.getMediaType = this.getMediaType.bind(this);
+    this.getFileExtension = this.getFileExtension.bind(this);
+    this.sendMedia = this.sendMedia.bind(this);
+    this.cleanupTempFiles = this.cleanupTempFiles.bind(this);
+    
+    console.log(`[BaileysMedia:${this.instanceId}] Media handler initialized with temp dir: ${this.tempDir}`);
   }
   
   /**
-   * Initialize with socket
-   * @param {Object} socket - Baileys socket connection
+   * Set socket for media operations
+   * @param {Object} socket - WhatsApp socket
    */
-  initialize(socket) {
+  setSocket(socket) {
+    if (!socket) {
+      console.error(`[BaileysMedia:${this.instanceId}] Cannot set null socket`);
+      return;
+    }
+    
     this.socket = socket;
-    console.log(`[BaileysMedia:${this.instanceId}] Media handler initialized`);
+    console.log(`[BaileysMedia:${this.instanceId}] Socket set successfully`);
   }
   
   /**
-   * Reset state
-   */
-  reset() {
-    this.socket = null;
-  }
-  
-  /**
-   * Generate a random filename with given extension
-   * @param {string} extension - File extension
-   * @returns {string} Random filename
-   */
-  generateRandomFilename(extension) {
-    const timestamp = Date.now();
-    const randomString = crypto.randomBytes(8).toString('hex');
-    return `${timestamp}-${randomString}.${extension}`;
-  }
-  
-  /**
-   * Get file extension from MIME type
-   * @param {string} mimeType - MIME type
-   * @returns {string} File extension
-   */
-  getExtensionFromMime(mimeType) {
-    const ext = mime.extension(mimeType);
-    return ext || 'bin'; // Default to .bin
-  }
-  
-  /**
-   * Process and send media to WhatsApp
-   * @param {string} to - Recipient phone number
-   * @param {Buffer|string} media - Media content or path
-   * @param {string} type - Media type (image, video, document, audio)
-   * @param {Object} options - Additional options
-   * @returns {Promise<Object>} Message info
-   */
-  async sendMedia(to, media, type, options = {}) {
-    try {
-      if (!this.socket) {
-        throw new Error(`[BaileysMedia:${this.instanceId}] Socket not initialized`);
-      }
-      
-      // Format the destination phone number
-      let formattedTo = to;
-      if (!to.includes('@')) {
-        formattedTo = `${to}@s.whatsapp.net`;
-      }
-      
-      // Prepare media content
-      let mediaContent;
-      
-      // If media is a string, treat it as a file path
-      if (typeof media === 'string') {
-        if (!fs.existsSync(media)) {
-          throw new Error(`[BaileysMedia:${this.instanceId}] File not found: ${media}`);
-        }
-        
-        // Read file as buffer
-        mediaContent = fs.readFileSync(media);
-      } else if (Buffer.isBuffer(media)) {
-        // Media is already a buffer
-        mediaContent = media;
-      } else {
-        throw new Error(`[BaileysMedia:${this.instanceId}] Media must be a file path or Buffer`);
-      }
-      
-      // Determine MIME type
-      let mimeType;
-      if (options.mimetype) {
-        mimeType = options.mimetype;
-      } else if (typeof media === 'string') {
-        mimeType = mime.lookup(media) || `${type}/unknown`;
-      } else {
-        // Default MIME types by type
-        const defaultMimes = {
-          image: 'image/jpeg',
-          video: 'video/mp4',
-          audio: 'audio/mp3',
-          document: 'application/pdf'
-        };
-        mimeType = defaultMimes[type] || 'application/octet-stream';
-      }
-      
-      // Determine filename
-      let filename;
-      if (options.filename) {
-        filename = options.filename;
-      } else if (typeof media === 'string') {
-        filename = path.basename(media);
-      } else {
-        // Generate a random filename
-        const extension = this.getExtensionFromMime(mimeType);
-        filename = this.generateRandomFilename(extension);
-      }
-      
-      // Prepare the message content based on media type
-      let content = {};
-      
-      switch (type) {
-        case 'image':
-          content = {
-            image: mediaContent,
-            caption: options.caption || '',
-            mimetype: mimeType
-          };
-          break;
-        
-        case 'video':
-          content = {
-            video: mediaContent,
-            caption: options.caption || '',
-            mimetype: mimeType,
-            gifPlayback: options.gifPlayback || false
-          };
-          break;
-        
-        case 'audio':
-          content = {
-            audio: mediaContent,
-            mimetype: mimeType,
-            ptt: options.ptt || false // Voice note mode
-          };
-          break;
-        
-        case 'document':
-          content = {
-            document: mediaContent,
-            caption: options.caption || '',
-            mimetype: mimeType,
-            fileName: filename
-          };
-          break;
-        
-        default:
-          throw new Error(`[BaileysMedia:${this.instanceId}] Unsupported media type: ${type}`);
-      }
-      
-      // Send the media message
-      console.log(`[BaileysMedia:${this.instanceId}] Sending ${type} to ${formattedTo}`);
-      const result = await this.socket.sendMessage(formattedTo, content);
-      
-      console.log(`[BaileysMedia:${this.instanceId}] ${type} sent successfully to ${formattedTo}`);
-      return result;
-    } catch (error) {
-      console.error(`[BaileysMedia:${this.instanceId}] Error sending media:`, error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Download media from a message
-   * @param {Object} message - WhatsApp message with media
-   * @returns {Promise<Object>} Downloaded media info
+   * Download media from message
+   * @param {Object} message - WhatsApp message
+   * @returns {Promise<string>} Path to downloaded file
    */
   async downloadMedia(message) {
     try {
-      // Ensure temp directory exists
-      this.ensureTempDir();
-      
-      // Determine media type and content
-      let mediaType, mediaContent;
-      
-      if (message.message.imageMessage) {
-        mediaType = 'image';
-        mediaContent = message.message.imageMessage;
-      } else if (message.message.videoMessage) {
-        mediaType = 'video';
-        mediaContent = message.message.videoMessage;
-      } else if (message.message.audioMessage) {
-        mediaType = 'audio';
-        mediaContent = message.message.audioMessage;
-      } else if (message.message.documentMessage) {
-        mediaType = 'document';
-        mediaContent = message.message.documentMessage;
-      } else if (message.message.stickerMessage) {
-        mediaType = 'sticker';
-        mediaContent = message.message.stickerMessage;
-      } else {
-        throw new Error(`[BaileysMedia:${this.instanceId}] No media found in message`);
+      if (!this.socket) {
+        throw new Error('Socket not initialized');
       }
       
-      // Get media details
-      const mimeType = mediaContent.mimetype || 'application/octet-stream';
-      let filename = mediaContent.fileName || '';
-      
-      // Generate filename if none exists
-      if (!filename) {
-        const extension = this.getExtensionFromMime(mimeType);
-        filename = this.generateRandomFilename(extension);
+      // Check if message contains media
+      if (!message || !message.message) {
+        throw new Error('Invalid message or no media in message');
       }
       
-      // Create full path
-      const filePath = path.join(this.tempDir, filename);
+      // Get media type and info
+      const mediaType = this.getMediaType(message.message);
+      if (!mediaType) {
+        throw new Error('No media found in message');
+      }
+      
+      // Generate filename based on message ID and type
+      const messageId = message.key?.id || crypto.randomBytes(6).toString('hex');
+      const fileExt = this.getFileExtension(mediaType, message.message);
+      const fileName = `${messageId}.${fileExt}`;
+      const filePath = path.join(this.tempDir, fileName);
       
       // Download the media
-      console.log(`[BaileysMedia:${this.instanceId}] Downloading ${mediaType} from message`);
+      console.log(`[BaileysMedia:${this.instanceId}] Downloading media ${mediaType} to ${filePath}`);
       
-      const stream = await downloadContentFromMessage(mediaContent, mediaType);
-      const buffer = await this.streamToBuffer(stream);
+      // Check if downloadMediaMessage function is available
+      if (!downloadMediaMessage) {
+        throw new Error('downloadMediaMessage function not available');
+      }
       
-      // Save the media to the temp directory
+      const buffer = await downloadMediaMessage(
+        message,
+        'buffer',
+        {},
+        { logger: console }
+      );
+      
+      if (!buffer) {
+        throw new Error('Failed to download media');
+      }
+      
+      // Write to file
       fs.writeFileSync(filePath, buffer);
       
-      console.log(`[BaileysMedia:${this.instanceId}] Media saved to ${filePath}`);
-      
-      return {
-        type: mediaType,
-        mimetype: mimeType,
-        filename,
-        filePath,
-        buffer,
-        size: buffer.length,
-        caption: mediaContent.caption || ''
-      };
+      return filePath;
     } catch (error) {
       console.error(`[BaileysMedia:${this.instanceId}] Error downloading media:`, error);
       throw error;
@@ -263,54 +122,225 @@ class BaileysMedia {
   }
   
   /**
-   * Convert a stream to a buffer
-   * @param {Stream} stream - Data stream
-   * @returns {Promise<Buffer>} Buffer containing all stream data
+   * Get media type from message
+   * @param {Object} message - WhatsApp message content
+   * @returns {string|null} Media type
    */
-  async streamToBuffer(stream) {
-    return new Promise((resolve, reject) => {
-      const chunks = [];
+  getMediaType(message) {
+    try {
+      if (!message) return null;
       
-      stream.on('data', (chunk) => {
-        chunks.push(chunk);
-      });
+      if (message.imageMessage) return 'image';
+      if (message.videoMessage) return 'video';
+      if (message.audioMessage) return 'audio';
+      if (message.documentMessage) return 'document';
+      if (message.stickerMessage) return 'sticker';
       
-      stream.on('end', () => {
-        resolve(Buffer.concat(chunks));
-      });
-      
-      stream.on('error', (error) => {
-        reject(error);
-      });
-    });
+      return null;
+    } catch (error) {
+      console.error(`[BaileysMedia:${this.instanceId}] Error getting media type:`, error);
+      return null;
+    }
   }
   
   /**
-   * Clean temporary files
-   * @param {number} maxAge - Maximum age in milliseconds (default: 1 hour)
+   * Get file extension for media type
+   * @param {string} mediaType - Media type
+   * @param {Object} message - WhatsApp message content
+   * @returns {string} File extension
    */
-  cleanTempFiles(maxAge = 3600000) {
+  getFileExtension(mediaType, message) {
     try {
-      console.log(`[BaileysMedia:${this.instanceId}] Cleaning temporary files...`);
+      if (!message) return 'bin';
       
-      if (!fs.existsSync(this.tempDir)) {
-        return;
+      switch (mediaType) {
+        case 'image':
+          if (message.imageMessage?.mimetype) {
+            const parts = message.imageMessage.mimetype.split('/');
+            return parts.length > 1 ? parts[1] : 'jpg';
+          }
+          return 'jpg';
+          
+        case 'video':
+          if (message.videoMessage?.mimetype) {
+            const parts = message.videoMessage.mimetype.split('/');
+            return parts.length > 1 ? parts[1] : 'mp4';
+          }
+          return 'mp4';
+          
+        case 'audio':
+          if (message.audioMessage?.mimetype) {
+            const parts = message.audioMessage.mimetype.split('/');
+            return parts.length > 1 ? parts[1] : 'mp3';
+          }
+          return 'mp3';
+          
+        case 'document':
+          // Extract extension from filename if available
+          if (message.documentMessage?.fileName) {
+            const fileNameParts = message.documentMessage.fileName.split('.');
+            if (fileNameParts.length > 1) {
+              return fileNameParts.pop();
+            }
+          }
+          // Fallback to mimetype
+          if (message.documentMessage?.mimetype) {
+            const parts = message.documentMessage.mimetype.split('/');
+            return parts.length > 1 ? parts[1] : 'bin';
+          }
+          return 'bin';
+          
+        case 'sticker':
+          return 'webp';
+          
+        default:
+          return 'bin';
+      }
+    } catch (error) {
+      console.error(`[BaileysMedia:${this.instanceId}] Error getting file extension:`, error);
+      return 'bin';
+    }
+  }
+  
+  /**
+   * Send media file
+   * @param {string} to - Recipient
+   * @param {string} filePath - Path to media file
+   * @param {string} caption - Optional caption
+   * @returns {Promise<Object>} Send result
+   */
+  async sendMedia(to, filePath, caption = '') {
+    try {
+      if (!this.socket) {
+        throw new Error('Socket not initialized');
       }
       
-      const files = fs.readdirSync(this.tempDir);
-      const now = Date.now();
+      // Check if file exists
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`File not found: ${filePath}`);
+      }
+      
+      // Read file
+      const buffer = fs.readFileSync(filePath);
+      
+      // Detect media type from extension
+      const ext = path.extname(filePath).toLowerCase().substring(1);
+      let mediaType;
+      
+      switch (ext) {
+        case 'jpg':
+        case 'jpeg':
+        case 'png':
+          mediaType = 'image';
+          break;
+        case 'mp4':
+        case 'mkv':
+        case 'avi':
+          mediaType = 'video';
+          break;
+        case 'mp3':
+        case 'ogg':
+        case 'wav':
+          mediaType = 'audio';
+          break;
+        case 'pdf':
+        case 'doc':
+        case 'docx':
+        case 'xlsx':
+        case 'txt':
+          mediaType = 'document';
+          break;
+        case 'webp':
+          mediaType = 'sticker';
+          break;
+        default:
+          mediaType = 'document';
+      }
+      
+      // Prepare media message
+      let content;
+      
+      switch (mediaType) {
+        case 'image':
+          content = {
+            image: buffer,
+            caption: caption
+          };
+          break;
+        case 'video':
+          content = {
+            video: buffer,
+            caption: caption
+          };
+          break;
+        case 'audio':
+          content = {
+            audio: buffer,
+            mimetype: 'audio/mp4'
+          };
+          break;
+        case 'document':
+          content = {
+            document: buffer,
+            mimetype: 'application/octet-stream',
+            fileName: path.basename(filePath),
+            caption: caption
+          };
+          break;
+        case 'sticker':
+          content = {
+            sticker: buffer
+          };
+          break;
+      }
+      
+      // Send the media
+      return await this.socket.sendMessage(to, content);
+    } catch (error) {
+      console.error(`[BaileysMedia:${this.instanceId}] Error sending media:`, error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Clean up temporary media files
+   * @param {number} maxAgeMinutes - Maximum age in minutes
+   * @returns {Promise<number>} Number of files deleted
+   */
+  async cleanupTempFiles(maxAgeMinutes = 60) {
+    try {
       let deletedCount = 0;
       
+      // Verify temp directory exists
+      if (!fs.existsSync(this.tempDir)) {
+        console.log(`[BaileysMedia:${this.instanceId}] Temp directory does not exist: ${this.tempDir}`);
+        return 0;
+      }
+      
+      // Get all files in temp directory
+      const files = fs.readdirSync(this.tempDir);
+      
+      // Current time
+      const now = Date.now();
+      
+      // Max age in milliseconds
+      const maxAge = maxAgeMinutes * 60 * 1000;
+      
+      // Check each file
       for (const file of files) {
+        // Skip QR code file
+        if (file === 'qrcode.png') continue;
+        
+        const filePath = path.join(this.tempDir, file);
+        
         try {
-          // Skip QR code file
-          if (file === 'qrcode.png') continue;
-          
-          const filePath = path.join(this.tempDir, file);
+          // Skip directories
           const stats = fs.statSync(filePath);
+          if (!stats.isFile()) continue;
           
-          // Check if file is older than maxAge
-          if (now - stats.mtime.getTime() > maxAge) {
+          // Check if file is older than max age
+          if (now - stats.mtimeMs > maxAge) {
+            // Delete file
             fs.unlinkSync(filePath);
             deletedCount++;
           }
@@ -320,10 +350,13 @@ class BaileysMedia {
       }
       
       console.log(`[BaileysMedia:${this.instanceId}] Deleted ${deletedCount} temporary files`);
+      
+      return deletedCount;
     } catch (error) {
-      console.error(`[BaileysMedia:${this.instanceId}] Error cleaning temporary files:`, error);
+      console.error(`[BaileysMedia:${this.instanceId}] Error cleaning up temp files:`, error);
+      return 0;
     }
   }
 }
 
-module.exports = { BaileysMedia };
+module.exports = BaileysMedia;
