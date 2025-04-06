@@ -1,6 +1,7 @@
-// utils/logger.js - Enhanced logging system with Baileys compatibility
+// utils/logger.js - Enhanced with proper Pino compatibility
 const fs = require('fs');
 const path = require('path');
+const pino = require('pino');
 
 /**
  * Initialize the logging system with improved filtering and formatting
@@ -165,58 +166,22 @@ function initializeLogger() {
     }
   };
 
-  // Add custom loggers
-  console.success = function(...args) {
-    const timestamp = new Date().toISOString();
-    const message = args.join(' ');
-    const line = `[${timestamp}] [SUCCESS] ${message}`;
-    logStream.write(line + '\n');
-    console.oldLog('\x1b[32m' + line + '\x1b[0m'); // Green
-  };
-
-  // Handle uncaught exceptions
-  process.on('uncaughtException', (error) => {
-    const timestamp = new Date().toISOString();
-    const message = `[${timestamp}] [FATAL] Uncaught Exception: ${error.message}`;
-    logStream.write(message + '\n');
-    if (error.stack) {
-      logStream.write(error.stack + '\n');
-    }
-    console.oldError('\x1b[41m\x1b[37m' + message + '\x1b[0m'); // White on red background
-    if (error.stack) {
-      console.oldError('\x1b[31m' + error.stack + '\x1b[0m');
+  // Create a proper Pino logger for Baileys
+  // CRITICAL FIX: This is available to other modules that need a Pino interface with child() method
+  global.pinoCompatLogger = pino({
+    level: process.env.LOG_LEVEL || 'warn',
+    transport: {
+      target: 'pino-pretty',
+      options: {
+        colorize: true
+      }
     }
   });
 
-  // Handle unhandled rejections
-  process.on('unhandledRejection', (reason, promise) => {
-    const timestamp = new Date().toISOString();
-    const message = `[${timestamp}] [FATAL] Unhandled Rejection at: ${promise}`;
-    logStream.write(message + '\n');
-    logStream.write(`Reason: ${reason}\n`);
-    if (reason && reason.stack) {
-      logStream.write(reason.stack + '\n');
-    }
-    console.oldError('\x1b[41m\x1b[37m' + message + '\x1b[0m'); // White on red background
-    console.oldError('\x1b[31mReason: ' + reason + '\x1b[0m');
-    if (reason && reason.stack) {
-      console.oldError('\x1b[31m' + reason.stack + '\x1b[0m');
-    }
-  });
-
-  // Create a pino-compatible logger object for Baileys
-  // This is available to other modules that need a Pino-like interface
-  global.pinoCompatLogger = {
-    info: (...args) => console.info(...args),
-    error: (...args) => console.error(...args),
-    warn: (...args) => console.warn(...args),
-    debug: (...args) => console.debug(...args),
-    trace: (...args) => console.trace(...args),
-    child: () => global.pinoCompatLogger  // Support child loggers
+  return {
+    logStream,
+    pinoLogger: global.pinoCompatLogger // Return the proper Pino logger
   };
-
-  // Return the log stream for future use
-  return logStream;
 }
 
 module.exports = initializeLogger;

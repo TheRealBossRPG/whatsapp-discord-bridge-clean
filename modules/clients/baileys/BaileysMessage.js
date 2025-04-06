@@ -1,199 +1,334 @@
 // modules/clients/baileys/BaileysMessage.js
-const { Browsers } = require('@whiskeysockets/baileys');
-const EventBus = require('../../../core/EventBus');
 
-/**
- * Handles WhatsApp message operations
- */
 class BaileysMessage {
-  /**
-   * Create a new Baileys message handler
-   * @param {string} instanceId - Instance ID 
-   */
-  constructor(instanceId) {
-    this.instanceId = instanceId;
-    this.socket = null;
-    this.events = new EventBus();
-    this.messageQueue = [];
-    this.processingQueue = false;
-    this.messageTimeout = 30000; // 30 seconds timeout for sending messages
-    
-    console.log(`[BaileysMessage:${this.instanceId}] Message handler initialized`);
-  }
-  
-  /**
-   * Initialize the message handler
-   * @param {Object} client - Baileys client instance
-   */
-  initialize(client) {
+  constructor(client) {
     this.client = client;
-    console.log(`[BaileysMessage:${this.instanceId}] Message handler initialized`);
+    this.messageStore = {};  // Store for recent messages
   }
   
-  /**
-   * Set the Baileys socket
-   * @param {Object} socket - Baileys socket
-   */
-  setSocket(socket) {
-    this.socket = socket;
-  }
-  
-  /**
-   * Register event handlers
-   * @param {Object} socket - Baileys socket
-   */
-  registerHandlers(socket) {
-    if (!socket) return;
+  // Store a message for future reference
+  storeMessage(msg) {
+    const msgId = msg.key.id;
+    const chatId = msg.key.remoteJid;
     
-    // Register message event handler
-    socket.ev.on('messages.upsert', async (messageUpdate) => {
+    // Initialize chat in message store if not exists
+    if (!this.messageStore[chatId]) {
+      this.messageStore[chatId] = {};
+    }
+    
+    // Store the message
+    this.messageStore[chatId][msgId] = msg;
+    
+    // Limit store to 100 messages per chat (keep most recent)
+    const keys = Object.keys(this.messageStore[chatId]);
+    if (keys.length > 100) {
+      delete this.messageStore[chatId][keys[0]];
+    }
+  }
+
+  // Get a stored message
+  getStoredMessage(chatId, msgId) {
+    if (this.messageStore[chatId] && this.messageStore[chatId][msgId]) {
+      return this.messageStore[chatId][msgId];
+    }
+    return null;
+  }
+  
+  // Format phone number to a valid JID
+  formatJid(number) {
+    // If it already includes @, it's already formatted
+    if (number.includes('@')) {
+      // Convert from @c.us to @s.whatsapp.net if needed
+      return number.replace('@c.us', '@s.whatsapp.net');
+    }
+    
+    // Remove any non-numeric characters
+    const cleanNumber = number.replace(/[^0-9]/g, '');
+    return `${cleanNumber}@s.whatsapp.net`;
+  }
+  
+  // Format incoming message to standardized format
+  formatIncomingMessage(msg) {
+    // Extract the basic message details
+    const formatted = {
+      id: msg.key.id,
+      from: msg.key.remoteJid,
+      fromMe: msg.key.fromMe,
+      timestamp: msg.messageTimestamp || Date.now(),
+      hasMedia: false,
+      type: 'text',
+      body: '',
+      hasAttachment: false
+    };
+    
+    // Extract participant info for group messages
+    if (msg.key.participant) {
+      formatted.participant = msg.key.participant;
+    }
+    
+    // Get the actual message content
+    const messageContent = msg.message || {};
+    
+    // Handle different types of messages
+    if (messageContent.conversation) {
+      // Simple text message
+      formatted.body = messageContent.conversation;
+      formatted.type = 'text';
+    } 
+    else if (messageContent.extendedTextMessage) {
+      // Extended text message (may include mentions or quoted messages)
+      formatted.body = messageContent.extendedTextMessage.text || '';
+      formatted.type = 'text';
+      
+      // Check for quoted message
+      if (messageContent.extendedTextMessage.contextInfo?.quotedMessage) {
+        formatted.quotedMessage = messageContent.extendedTextMessage.contextInfo.quotedMessage;
+        formatted.quotedMessageId = messageContent.extendedTextMessage.contextInfo.stanzaId;
+      }
+    }
+    // Image message
+    else if (messageContent.imageMessage) {
+      formatted.hasMedia = true;
+      formatted.type = 'image';
+      formatted.body = messageContent.imageMessage.caption || '';
+      formatted.mediaInfo = {
+        mimetype: messageContent.imageMessage.mimetype,
+        fileLength: messageContent.imageMessage.fileLength,
+        fileName: messageContent.imageMessage.fileName || `image.${messageContent.imageMessage.mimetype.split('/')[1]}`,
+        mediaKey: messageContent.imageMessage.mediaKey
+      };
+      formatted.hasAttachment = true;
+    }
+    // Video message
+    else if (messageContent.videoMessage) {
+      formatted.hasMedia = true;
+      formatted.type = 'video';
+      formatted.body = messageContent.videoMessage.caption || '';
+      formatted.mediaInfo = {
+        mimetype: messageContent.videoMessage.mimetype,
+        fileLength: messageContent.videoMessage.fileLength,
+        fileName: messageContent.videoMessage.fileName || `video.${messageContent.videoMessage.mimetype.split('/')[1]}`,
+        mediaKey: messageContent.videoMessage.mediaKey,
+        seconds: messageContent.videoMessage.seconds
+      };
+      formatted.hasAttachment = true;
+    }
+    // Audio message
+    else if (messageContent.audioMessage) {
+      formatted.hasMedia = true;
+      formatted.type = messageContent.audioMessage.ptt ? 'ptt' : 'audio';
+      formatted.mediaInfo = {
+        mimetype: messageContent.audioMessage.mimetype,
+        fileLength: messageContent.audioMessage.fileLength,
+        seconds: messageContent.audioMessage.seconds,
+        mediaKey: messageContent.audioMessage.mediaKey
+      };
+      formatted.hasAttachment = true;
+    }
+    // Document message
+    else if (messageContent.documentMessage) {
+      formatted.hasMedia = true;
+      formatted.type = 'document';
+      formatted.body = messageContent.documentMessage.caption || '';
+      formatted.mediaInfo = {
+        mimetype: messageContent.documentMessage.mimetype,
+        fileLength: messageContent.documentMessage.fileLength,
+        fileName: messageContent.documentMessage.fileName || 'document',
+        mediaKey: messageContent.documentMessage.mediaKey
+      };
+      formatted.hasAttachment = true;
+    }
+    // Sticker message
+    else if (messageContent.stickerMessage) {
+      formatted.hasMedia = true;
+      formatted.type = 'sticker';
+      formatted.mediaInfo = {
+        mimetype: messageContent.stickerMessage.mimetype,
+        fileLength: messageContent.stickerMessage.fileLength,
+        isAnimated: messageContent.stickerMessage.isAnimated || false,
+        mediaKey: messageContent.stickerMessage.mediaKey
+      };
+      formatted.hasAttachment = true;
+    }
+    // Location message
+    else if (messageContent.locationMessage) {
+      formatted.type = 'location';
+      formatted.body = messageContent.locationMessage.name || 'Location';
+      formatted.location = {
+        degreesLatitude: messageContent.locationMessage.degreesLatitude,
+        degreesLongitude: messageContent.locationMessage.degreesLongitude,
+        address: messageContent.locationMessage.address
+      };
+    }
+    // Contact card message
+    else if (messageContent.contactMessage || messageContent.contactsArrayMessage) {
+      formatted.type = 'contact';
+      formatted.body = 'Contact card';
+      formatted.contacts = messageContent.contactMessage ? 
+        [messageContent.contactMessage] : 
+        messageContent.contactsArrayMessage.contacts;
+    }
+    // Button response
+    else if (messageContent.buttonsResponseMessage) {
+      formatted.type = 'buttons_response';
+      formatted.body = messageContent.buttonsResponseMessage.selectedDisplayText || '';
+      formatted.selectedButtonId = messageContent.buttonsResponseMessage.selectedButtonId;
+    }
+    // List response
+    else if (messageContent.listResponseMessage) {
+      formatted.type = 'list_response';
+      formatted.body = messageContent.listResponseMessage.title || '';
+      formatted.selectedRowId = messageContent.listResponseMessage.singleSelectReply.selectedRowId;
+    }
+    // Other types of messages
+    else {
+      // Unknown message type
+      formatted.type = 'unknown';
+      formatted.rawMessage = msg.message;
+      formatted.body = 'Unsupported message type';
+    }
+    
+    // Add original message to allow access to all properties
+    formatted.originalMessage = msg;
+    
+    // Add convenience methods for interacting with the message
+    this.addConvenienceMethods(formatted);
+    
+    return formatted;
+  }
+  
+  // Add convenience methods to the message object
+  addConvenienceMethods(formatted) {
+    // Get contact information
+    formatted.getContact = async () => {
       try {
-        if (messageUpdate.type !== 'notify') return;
+        // Get the JID's contact info from Baileys
+        const formattedJid = this.formatJid(formatted.from);
+        const jid = formattedJid.split('@')[0];
         
-        for (const message of messageUpdate.messages) {
-          if (message.key.fromMe) continue;
-          
-          // Emit message event
-          this.events.emit('message', message);
-          
-          // Forward to client
-          if (this.client && this.client.events) {
-            this.client.events.emit('message', message);
+        // Try to get contact using store
+        if (this.client.auth.sock && this.client.auth.sock.store && this.client.auth.sock.store.contacts) {
+          const contact = this.client.auth.sock.store.contacts[formattedJid];
+          if (contact) {
+            return {
+              pushname: contact.notify || contact.name || jid,
+              id: formattedJid
+            };
           }
         }
+        
+        // Fallback to basic info
+        return {
+          pushname: jid,
+          id: formattedJid,
+          name: jid
+        };
       } catch (error) {
-        console.error(`[BaileysMessage:${this.instanceId}] Error handling incoming message:`, error);
+        console.error(`[BaileysMessage:${this.client.instanceId}] Error getting contact:`, error);
+        const jid = formatted.from.split('@')[0];
+        return { 
+          pushname: jid, 
+          id: formatted.from,
+          name: jid
+        };
       }
-    });
-  }
-  
-  /**
-   * Process message queue
-   */
-  async processMessageQueue() {
-    if (this.processingQueue || this.messageQueue.length === 0) return;
+    };
     
-    this.processingQueue = true;
-    console.log(`[BaileysMessage:${this.instanceId}] Processing message queue: ${this.messageQueue.length} messages`);
-    
-    while (this.messageQueue.length > 0) {
-      const { to, content, options, resolve, reject, timeout } = this.messageQueue.shift();
-      
-      try {
-        console.log(`[BaileysMessage:${this.instanceId}] Sending message to ${to}`);
-        
-        if (!this.socket) {
-          throw new Error('Socket not initialized');
-        }
-        
-        // Convert message content to proper format
-        const formattedContent = this.formatMessageContent(content);
-        
-        // Send the message
-        const result = await this.socket.sendMessage(to, formattedContent, { ...options });
-        resolve(result);
-      } catch (error) {
-        console.error(`[BaileysMessage:${this.instanceId}] Error sending message to ${to}:`, error);
-        reject(error);
-      } finally {
-        if (timeout) {
-          clearTimeout(timeout);
-        }
+    // Download media
+    formatted.downloadMedia = async () => {
+      if (formatted.hasMedia) {
+        return await this.client.downloadMedia(formatted.from, formatted.id, formatted.originalMessage);
       }
-    }
-    
-    this.processingQueue = false;
-    console.log(`[BaileysMessage:${this.instanceId}] Message queue processing completed`);
+      return null;
+    };
   }
   
-  /**
-   * Format message content for sending
-   * @param {string|Object} content - Message content
-   * @returns {Object} - Formatted message content
-   */
-  formatMessageContent(content) {
-    // If content is already an object, return it
-    if (typeof content === 'object' && content !== null) {
-      return content;
-    }
-    
-    // If content is a string, convert it to a text message object
-    if (typeof content === 'string') {
-      return { text: content };
-    }
-    
-    // Default empty message
-    return { text: '' };
-  }
-  
-  /**
-   * Send a message to a WhatsApp user
-   * @param {string} to - User's phone number or JID
-   * @param {string|Object} content - Message content
-   * @param {Object} options - Message options
-   * @returns {Promise<Object>} - Send result
-   */
+  // Send a message
   async sendMessage(to, content, options = {}) {
-    // Format receiver
-    const receiver = this.formatReceiver(to);
-    
-    return new Promise((resolve, reject) => {
-      // Set up timeout
-      const timeout = setTimeout(() => {
-        reject(new Error(`Message sending timed out for ${receiver}`));
-      }, this.messageTimeout);
+    // Queue message if not connected yet
+    if (!this.client.isReady) {
+      console.log(`[BaileysMessage:${this.client.instanceId}] Client not ready, queueing message`);
+      this.client.messageQueue.push({ to, content, options });
       
-      // Add to queue
-      this.messageQueue.push({
-        to: receiver,
-        content,
-        options,
-        resolve,
-        reject,
-        timeout
-      });
-      
-      // Process queue
-      this.processMessageQueue();
-    });
-  }
-  
-  /**
-   * Format receiver phone number or JID
-   * @param {string} receiver - Receiver phone number or JID
-   * @returns {string} - Formatted receiver
-   */
-  formatReceiver(receiver) {
-    if (!receiver) {
-      throw new Error('Receiver is required');
+      if (!this.client.isInitializing) {
+        await this.client.initialize();
+      }
+      return null;
     }
     
-    // If already contains @, assume it's already formatted
-    if (receiver.includes('@')) {
-      return receiver;
+    try {
+      // Format the recipient JID
+      const jid = this.formatJid(to);
+      
+      // Check content type and prepare message
+      let messageContent;
+      
+      if (typeof content === 'string') {
+        // Simple text message
+        messageContent = { text: content };
+      } else if (content.mimetype) {
+        // Media from downloadMedia or MessageMedia
+        if (content.mimetype.startsWith('image/')) {
+          // Image
+          messageContent = {
+            image: content.data ? Buffer.from(content.data, 'base64') : content,
+            caption: options.caption || '',
+            mimetype: content.mimetype
+          };
+        } else if (content.mimetype.startsWith('video/')) {
+          // Video
+          messageContent = {
+            video: content.data ? Buffer.from(content.data, 'base64') : content,
+            caption: options.caption || '',
+            gifPlayback: options.sendVideoAsGif === true,
+            mimetype: content.mimetype
+          };
+        } else if (content.mimetype.startsWith('audio/')) {
+          // Audio
+          messageContent = {
+            audio: content.data ? Buffer.from(content.data, 'base64') : content,
+            mimetype: content.mimetype,
+            ptt: options.sendAudioAsPtt === true
+          };
+        } else if (content.mimetype.includes('pdf') || 
+                  content.mimetype.includes('document') ||
+                  content.mimetype.includes('application/')) {
+          // Document
+          messageContent = {
+            document: content.data ? Buffer.from(content.data, 'base64') : content,
+            mimetype: content.mimetype,
+            fileName: content.filename || 'document',
+            caption: options.caption || ''
+          };
+        } else {
+          // Generic file
+          messageContent = {
+            document: content.data ? Buffer.from(content.data, 'base64') : content,
+            mimetype: content.mimetype,
+            fileName: content.filename || 'file',
+            caption: options.caption || ''
+          };
+        }
+      } else if (options.sendMediaAsSticker) {
+        // Sticker
+        const stickerOptions = {
+          sticker: content.data ? Buffer.from(content.data, 'base64') : content,
+          author: options.stickerAuthor || 'WhatsApp-Discord-Bridge',
+          packname: options.stickerName || 'Stickers',
+          categories: options.stickerCategories || []
+        };
+        messageContent = stickerOptions;
+      } else {
+        // Default to text if content type is unknown
+        messageContent = { text: JSON.stringify(content) };
+      }
+      
+      // Send the message through the socket
+      return await this.client.auth.sock.sendMessage(jid, messageContent);
+    } catch (error) {
+      console.error(`[BaileysMessage:${this.client.instanceId}] Error sending message:`, error);
+      throw error;
     }
-    
-    // Strip any non-digit characters
-    const cleaned = receiver.replace(/\D/g, '');
-    
-    // Add WhatsApp suffix
-    return `${cleaned}@s.whatsapp.net`;
-  }
-  
-  /**
-   * Register a callback for message events
-   * @param {function} callback - Message callback
-   */
-  onMessage(callback) {
-    this.events.on('message', callback);
-  }
-  
-  /**
-   * Remove a message callback
-   * @param {function} callback - Message callback to remove
-   */
-  offMessage(callback) {
-    this.events.off('message', callback);
   }
 }
 

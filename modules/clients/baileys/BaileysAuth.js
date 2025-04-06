@@ -1,134 +1,190 @@
-// modules/clients/baileys/BaileysAuth.js - Authentication helper
+// modules/clients/baileys/BaileysAuth.js
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
 const fs = require('fs');
 const path = require('path');
 
-/**
- * Helper for Baileys authentication
- */
 class BaileysAuth {
-  /**
-   * Create new auth helper
-   * @param {string} instanceId - Instance ID
-   * @param {string} authFolder - Auth folder path
-   * @param {string} baileysAuthFolder - Baileys-specific auth folder
-   */
-  constructor(instanceId, authFolder, baileysAuthFolder) {
-    this.instanceId = instanceId;
-    this.authFolder = authFolder;
-    this.baileysAuthFolder = baileysAuthFolder;
-    
-    // Ensure folders exist
-    this.ensureFolders();
+  constructor(client) {
+    this.client = client;
+    this.sock = null;
+    this.connectionPromises = [];
   }
   
-  /**
-   * Ensure auth folders exist
-   */
-  ensureFolders() {
+  // Connect to WhatsApp
+  async connect() {
     try {
-      // Create auth folder if it doesn't exist
-      if (!fs.existsSync(this.authFolder)) {
-        fs.mkdirSync(this.authFolder, { recursive: true });
+      if (this.client.isReady) return true;
+      if (this.client.isInitializing) {
+        return new Promise((resolve) => {
+          this.connectionPromises.push(resolve);
+        });
       }
       
-      // Create Baileys auth folder if it doesn't exist
-      if (!fs.existsSync(this.baileysAuthFolder)) {
-        fs.mkdirSync(this.baileysAuthFolder, { recursive: true });
-      }
+      this.client.isInitializing = true;
       
-      return true;
-    } catch (error) {
-      console.error(`[BaileysAuth:${this.instanceId}] Error creating auth folders:`, error);
-      return false;
-    }
-  }
-  
-  /**
-   * Check if auth credentials exist
-   * @returns {Promise<boolean>} - Whether credentials exist
-   */
-  async checkAuth() {
-    try {
-      // Check for creds.json in Baileys auth folder
-      const credsPath = path.join(this.baileysAuthFolder, 'creds.json');
-      if (fs.existsSync(credsPath)) {
-        try {
-          // Try to read and parse creds.json
-          const credsData = fs.readFileSync(credsPath, 'utf8');
-          const creds = JSON.parse(credsData);
-          
-          // Check if creds contains the me object
-          if (creds && creds.me && creds.me.id) {
-            return true;
+      console.log(`[BaileysAuth:${this.client.instanceId}] Initializing WhatsApp connection...`);
+      console.log(`[BaileysAuth:${this.client.instanceId}] Using auth folder: ${this.client.authFolder}`);
+      
+      // Get authentication state
+      const { state, saveCreds } = await useMultiFileAuthState(this.client.authFolder);
+      
+      // Fetch the latest version to ensure compatibility
+      const { version, isLatest } = await fetchLatestBaileysVersion();
+      console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
+      
+      // Create socket with extended timeouts
+      this.sock = makeWASocket({
+        version,
+        auth: state,
+        printQRInTerminal: this.client.showQrCode,
+        logger: this.client.logger, // Pass the proper Pino logger
+        defaultQueryTimeoutMs: 60000,
+        connectTimeoutMs: 60000,
+        keepAliveIntervalMs: 10000,
+        browser: ['WhatsApp-Discord-Bridge', 'Chrome', '10.0'],
+        markOnlineOnConnect: true,
+        retryRequestDelayMs: 500
+      });
+      
+      // Save credentials when updated
+      this.sock.ev.on('creds.update', saveCreds);
+      
+      // Set up event handlers
+      await this.client.events.setupEvents(this.sock);
+      
+      // Wait for connection or timeout
+      const result = await new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          if (!this.client.isReady) {
+            console.log('Baileys connection timed out after 60 seconds');
+            this.client.isInitializing = false;
+            resolve(false);
           }
-        } catch (readError) {
-          console.error(`[BaileysAuth:${this.instanceId}] Error reading creds.json:`, readError);
-        }
-      }
-      
-      // Check for auth_info.json in old auth folder
-      const authInfoPath = path.join(this.authFolder, 'auth_info.json');
-      if (fs.existsSync(authInfoPath)) {
-        try {
-          // Try to read and parse auth_info.json
-          const authInfoData = fs.readFileSync(authInfoPath, 'utf8');
-          const authInfo = JSON.parse(authInfoData);
-          
-          if (authInfo && authInfo.credentials) {
-            return true;
-          }
-        } catch (readError) {
-          console.error(`[BaileysAuth:${this.instanceId}] Error reading auth_info.json:`, readError);
-        }
-      }
-      
-      // Check for auth files in the Baileys auth folder
-      const files = fs.readdirSync(this.baileysAuthFolder);
-      // For multi-file auth, there should be multiple files
-      if (files.length > 1) {
-        // Look for key files that should exist in a valid auth state
-        const hasAuthFiles = files.some(file => 
-          file === 'creds.json' || file.endsWith('.key') || file.includes('app-state')
-        );
+        }, 60000); // 60 second timeout
         
-        if (hasAuthFiles) {
-          return true;
-        }
-      }
+        this.connectionPromises.push((success) => {
+          clearTimeout(timeout);
+          resolve(success);
+        });
+      });
       
-      return false;
+      return result;
     } catch (error) {
-      console.error(`[BaileysAuth:${this.instanceId}] Error checking auth:`, error);
+      console.error(`[BaileysAuth:${this.client.instanceId}] Error initializing WhatsApp:`, error);
+      this.client.isInitializing = false;
       return false;
     }
   }
   
-  /**
-   * Clear auth credentials
-   * @returns {Promise<boolean>} - Whether clearing was successful
-   */
-  async clearAuth() {
+  // Check if authenticated
+  async isAuthenticated() {
     try {
-      // Clean Baileys auth folder
-      if (fs.existsSync(this.baileysAuthFolder)) {
-        const files = fs.readdirSync(this.baileysAuthFolder);
-        for (const file of files) {
-          fs.unlinkSync(path.join(this.baileysAuthFolder, file));
+      // Check if auth files exist
+      const credsPath = path.join(this.client.authFolder, 'creds.json');
+      return fs.existsSync(credsPath);
+    } catch (error) {
+      console.error(`[BaileysAuth:${this.client.instanceId}] Error checking authentication:`, error);
+      return false;
+    }
+  }
+  
+  // Restore session if credentials exist
+  async restoreSession() {
+    try {
+      // Check if auth files exist
+      const authenticated = await this.isAuthenticated();
+      if (!authenticated) {
+        console.log(`[BaileysAuth:${this.client.instanceId}] No authentication credentials found`);
+        return false;
+      }
+      
+      // Try to initialize (which will use existing credentials)
+      return await this.client.initialize(false);
+    } catch (error) {
+      console.error(`[BaileysAuth:${this.client.instanceId}] Error restoring session:`, error);
+      return false;
+    }
+  }
+  
+  // Check if a number exists on WhatsApp
+  async isRegisteredUser(number) {
+    try {
+      if (!this.sock) return false;
+      
+      const jid = this.client.message.formatJid(number);
+      const [result] = await this.sock.onWhatsApp(jid.split('@')[0]);
+      return result ? result.exists : false;
+    } catch (error) {
+      console.error(`[BaileysAuth:${this.client.instanceId}] Error checking user registration:`, error);
+      return false;
+    }
+  }
+  
+  // Disconnect the client
+  async disconnect(logOut = false) {
+    try {
+      console.log(`[BaileysAuth:${this.client.instanceId}] Disconnecting WhatsApp... ${logOut ? '(with logout)' : ''}`);
+      
+      if (!this.sock) {
+        console.log(`[BaileysAuth:${this.client.instanceId}] No active socket to disconnect`);
+        return;
+      }
+      
+      // Reset client state
+      this.client.isReady = false;
+      this.client.isInitializing = false;
+      
+      // Resolve any pending promises
+      this.connectionPromises.forEach(resolve => resolve(false));
+      this.connectionPromises = [];
+      
+      // Clean up event listeners
+      await this.client.events.removeAllListeners();
+      
+      // Handle logout if requested
+      if (logOut) {
+        // Delete auth files
+        try {
+          const credsPath = path.join(this.client.authFolder, 'creds.json');
+          if (fs.existsSync(credsPath)) {
+            fs.unlinkSync(credsPath);
+            console.log(`Removed authentication credentials: ${credsPath}`);
+          }
+          
+          // Also clear the entire baileys auth folder
+          if (fs.existsSync(this.client.authFolder)) {
+            const files = fs.readdirSync(this.client.authFolder);
+            for (const file of files) {
+              try {
+                fs.unlinkSync(path.join(this.client.authFolder, file));
+              } catch (error) {
+                console.warn(`Could not delete auth file ${file}: ${error.message}`);
+              }
+            }
+            console.log(`Cleared authentication folder: ${this.client.authFolder}`);
+          }
+        } catch (error) {
+          console.error(`Error removing auth files: ${error.message}`);
         }
       }
       
-      // Clean old auth folder
-      if (fs.existsSync(this.authFolder)) {
-        const files = fs.readdirSync(this.authFolder);
-        for (const file of files) {
-          fs.unlinkSync(path.join(this.authFolder, file));
-        }
-      }
+      // Clear the socket reference
+      this.sock = null;
       
-      console.log(`[BaileysAuth:${this.instanceId}] Auth data cleared successfully`);
+      // Emit disconnected event
+      this.client.emit('disconnected', logOut ? 'logout' : 'user_disconnected');
       return true;
     } catch (error) {
-      console.error(`[BaileysAuth:${this.instanceId}] Error clearing auth:`, error);
+      console.error(`[BaileysAuth:${this.client.instanceId}] Error disconnecting:`, error);
+      
+      // Ensure client state is reset even on error
+      this.client.isReady = false;
+      this.client.isInitializing = false;
+      this.sock = null;
+      
+      // Emit event with error
+      this.client.emit('disconnected', `error: ${error.message}`);
       return false;
     }
   }
