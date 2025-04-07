@@ -1,5 +1,6 @@
 const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
+const InteractionTracker = require('../../utils/InteractionTracker');
 
 class UseTranscriptChannelButton extends Button {
   constructor() {
@@ -10,7 +11,7 @@ class UseTranscriptChannelButton extends Button {
   
   async execute(interaction, instance) {
     try {
-      await interaction.deferUpdate();
+      // Use the tracker to mark the interaction (no need to defer update)
       
       // Get all text channels in the guild
       const textChannels = interaction.guild.channels.cache.filter(
@@ -18,7 +19,7 @@ class UseTranscriptChannelButton extends Button {
       );
       
       if (textChannels.size === 0) {
-        await interaction.editReply({
+        await InteractionTracker.safeReply(interaction, {
           content: "❌ No text channels found in this server. Please create a text channel first.",
           components: [],
         });
@@ -46,15 +47,19 @@ class UseTranscriptChannelButton extends Button {
       const guildId = interaction.guild.id;
       const setupParams = global.setupStorage.getSetupParams(guildId);
       
-      await interaction.editReply({
+      // Use the tracker to safely update the reply
+      await InteractionTracker.safeEdit(interaction, {
         content: `Category selected: <#${setupParams.categoryId}>\nNow select a channel for ticket transcripts:`,
         components: [transcriptSelectRow],
       });
     } catch (error) {
       console.error("Error handling transcript channel option:", error);
-      await interaction.editReply({
+      
+      // Use the tracker to safely send an error response
+      await InteractionTracker.safeReply(interaction, {
         content: "Error: " + error.message,
         components: [],
+        ephemeral: true
       });
     }
   }

@@ -1,6 +1,7 @@
 const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const Command = require('../templates/Command');
 const { PermissionFlagsBits } = require('discord.js');
+const InteractionTracker = require('../utils/InteractionTracker');
 
 class SetupCommand extends Command {
   constructor() {
@@ -12,20 +13,12 @@ class SetupCommand extends Command {
   }
   
   async execute(interaction, instance) {
-    // The interaction should already be deferred by the InteractionHandler
-    // But let's ensure it's deferred to be safe
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ ephemeral: true }).catch(err => {
-        console.error(`Error deferring setup command: ${err.message}`);
-      });
-    }
-
     try {
       // Check if interaction has a valid guild
       if (!interaction.guild) {
-        await interaction.editReply({
+        await InteractionTracker.safeReply(interaction, {
           content: "❌ This command can only be used in a server, not in DMs.",
-          components: [],
+          ephemeral: true
         });
         return;
       }
@@ -55,9 +48,8 @@ class SetupCommand extends Command {
             .setStyle(ButtonStyle.Secondary)
         );
 
-        const response = await interaction.editReply({
-          content:
-            "WhatsApp is already configured for this server. What would you like to do?",
+        await InteractionTracker.safeEdit(interaction, {
+          content: "WhatsApp is already configured for this server. What would you like to do?",
           components: [row],
         });
 
@@ -71,9 +63,8 @@ class SetupCommand extends Command {
       );
 
       if (categories.size === 0) {
-        await interaction.editReply({
-          content:
-            "❌ No categories found in this server. Please create a category first.",
+        await InteractionTracker.safeEdit(interaction, {
+          content: "❌ No categories found in this server. Please create a category first.",
           components: [],
         });
         return;
@@ -98,15 +89,18 @@ class SetupCommand extends Command {
           .addOptions(options)
       );
 
-      await interaction.editReply({
+      // Use the tracker for safe editing
+      await InteractionTracker.safeEdit(interaction, {
         content: "Please select a category for WhatsApp support tickets:",
         components: [categorySelectRow],
       });
     } catch (error) {
       console.error("Error in setup command:", error);
-      await interaction.editReply({
+      
+      // Use the tracker for error responses
+      await InteractionTracker.safeReply(interaction, {
         content: `❌ Error setting up WhatsApp bridge: ${error.message}`,
-        components: [],
+        ephemeral: true
       });
     }
   }

@@ -1,4 +1,6 @@
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const SelectMenu = require('../templates/SelectMenu');
+const InteractionTracker = require('../utils/InteractionTracker');
 
 class TranscriptSelectMenu extends SelectMenu {
   constructor() {
@@ -9,8 +11,6 @@ class TranscriptSelectMenu extends SelectMenu {
   
   async execute(interaction, instance) {
     try {
-      await interaction.deferUpdate();
-      
       // Get the selected channel ID
       const transcriptChannelId = interaction.values[0];
       
@@ -25,15 +25,15 @@ class TranscriptSelectMenu extends SelectMenu {
       // Verify channel exists
       const selectedChannel = interaction.guild.channels.cache.get(transcriptChannelId);
       if (!selectedChannel) {
-        await interaction.editReply({
+        await InteractionTracker.safeReply(interaction, {
           content: "❌ Selected channel not found. Please try again.",
           components: [],
+          ephemeral: true
         });
         return;
       }
       
       // CHANGED: Ask if they want a vouch channel
-      const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
       const vouchOptionsRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("use_vouch_channel")
@@ -45,15 +45,19 @@ class TranscriptSelectMenu extends SelectMenu {
           .setStyle(ButtonStyle.Secondary)
       );
       
-      await interaction.editReply({
+      // Use the tracker to safely update the reply
+      await InteractionTracker.safeEdit(interaction, {
         content: `Category: <#${setupParams.categoryId}>\nTranscript channel: <#${transcriptChannelId}>\n\nDo you want to enable the vouching system?`,
         components: [vouchOptionsRow],
       });
     } catch (error) {
       console.error("Error in transcript channel selection:", error);
-      await interaction.editReply({
+      
+      // Use the tracker to safely send an error response
+      await InteractionTracker.safeReply(interaction, {
         content: "Channel selection failed: " + error.message,
         components: [],
+        ephemeral: true
       });
     }
   }

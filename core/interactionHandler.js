@@ -1,6 +1,7 @@
-// core/interactionHandler.js - Fixed for timeouts and StringSelectMenu
+// core/interactionHandler.js - FIXED for StringSelectMenu handling
 const ModuleLoader = require('./ModuleLoader');
 const InstanceManager = require('./InstanceManager');
+const InteractionTracker = require('../utils/InteractionTracker');
 
 /**
  * Main Discord interaction handler
@@ -52,17 +53,49 @@ class InteractionHandler {
    */
   async handleInteraction(interaction) {
     try {
-      // Immediately defer for slash commands to prevent timeouts
-      if (interaction.isCommand() && !interaction.deferred && !interaction.replied) {
-        await interaction.deferReply().catch(err => {
-          console.error(`Error deferring command ${interaction.commandName}: ${err.message}`);
-        });
-      }
-
       // Get the server instance for this interaction
       const instance = this.getInstanceForInteraction(interaction);
       
-      // Try to find a handler using the module loader
+      // CRITICAL FIX: For StringSelectMenu interactions, handle them specially
+      // This check needs to account for Discord.js API differences
+      if ((interaction.isStringSelectMenu && interaction.isStringSelectMenu()) ||
+          (interaction.isSelectMenu && interaction.isSelectMenu())) {
+        
+        console.log(`Processing select menu interaction: ${interaction.customId}`);
+        
+        // Get the select menu handler
+        const handler = this.findSelectMenuHandler(interaction);
+        
+        if (handler && typeof handler.execute === 'function') {
+          try {
+            // Try to defer the update if not already deferred
+            if (!interaction.deferred && !interaction.replied) {
+              try {
+                await interaction.deferUpdate();
+                console.log(`Deferred select menu update: ${interaction.customId}`);
+              } catch (deferError) {
+                console.error(`Error deferring select menu:`, deferError);
+                // Continue even if deferring fails
+              }
+            }
+            
+            // Execute the handler
+            await handler.execute(interaction, instance);
+            return true;
+          } catch (error) {
+            console.error(`Error in select menu handler ${interaction.customId}:`, error);
+            await this.safeReply(interaction, {
+              content: `Error processing selection: ${error.message}`,
+              ephemeral: true
+            });
+            return false;
+          }
+        } else {
+          console.log(`No handler found for select menu: ${interaction.customId}`);
+        }
+      }
+      
+      // Try to find a handler using the module loader for other interaction types
       const handler = this.moduleLoader.findHandler(interaction);
       
       if (handler && typeof handler.execute === 'function') {
@@ -73,8 +106,8 @@ class InteractionHandler {
         } catch (handlerError) {
           console.error(`Error in handler for ${interaction.customId || interaction.commandName}:`, handlerError);
           
-          // Try to reply with error
-          await this.safeReply(interaction, {
+          // Try to reply with error using the tracker's safe reply
+          await InteractionTracker.safeReply(interaction, {
             content: `Error processing your request: ${handlerError.message}`,
             ephemeral: true
           });
@@ -91,8 +124,8 @@ class InteractionHandler {
         } catch (instanceError) {
           console.error('Error in instance discordHandler:', instanceError);
           
-          // Try to reply with error
-          await this.safeReply(interaction, {
+          // Try to reply with error using the tracker
+          await InteractionTracker.safeReply(interaction, {
             content: `Error processing your request: ${instanceError.message}`,
             ephemeral: true
           });
@@ -102,8 +135,9 @@ class InteractionHandler {
       }
       
       // No handler found - need to respond to prevent timeout
-      if (interaction.isCommand() && interaction.deferred && !interaction.replied) {
-        await interaction.editReply({
+      if (interaction.isCommand() && !interaction.replied) {
+        // Use the tracker to safely reply
+        await InteractionTracker.safeReply(interaction, {
           content: `Command '${interaction.commandName}' is still in development.`
         });
       }
@@ -113,9 +147,9 @@ class InteractionHandler {
     } catch (error) {
       console.error("Error in interaction handler:", error);
       
-      // Try to send an error message
+      // Try to send an error message using the tracker
       try {
-        await this.safeReply(interaction, {
+        await InteractionTracker.safeReply(interaction, {
           content: `An error occurred processing your request: ${error.message}`,
           ephemeral: true
         });
@@ -125,6 +159,31 @@ class InteractionHandler {
       
       return false;
     }
+  }
+
+  /**
+   * Find a select menu handler
+   * @param {Interaction} interaction - Discord interaction
+   * @returns {Object|null} - Handler or null if not found
+   */
+  findSelectMenuHandler(interaction) {
+    const customId = interaction.customId;
+    
+    // Look for direct handler match
+    for (const [key, handler] of this.moduleLoader.selectMenus.entries()) {
+      if (key === customId) {
+        return handler;
+      }
+    }
+    
+    // Look for regex match
+    for (const [key, handler] of this.moduleLoader.selectMenus.entries()) {
+      if (typeof handler.matches === 'function' && handler.matches(customId)) {
+        return handler;
+      }
+    }
+    
+    return null;
   }
   
   /**
@@ -194,18 +253,27 @@ class InteractionHandler {
    */
   async safeReply(interaction, content, ephemeral = false) {
     try {
+      // If interaction doesn't exist or is already handled, do nothing
+      if (!interaction || !interaction.id) return;
+      
       const options = typeof content === 'string' 
         ? { content, ephemeral } 
         : { ...content, ephemeral: content.ephemeral ?? ephemeral };
       
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply(options);
+        await interaction.reply(options).catch(err => 
+          console.error(`Error in safeReply (reply):`, err)
+        );
       } else if (interaction.deferred && !interaction.replied) {
         // Can't set ephemeral after deferring
         const { ephemeral, ...rest } = options;
-        await interaction.editReply(rest);
+        await interaction.editReply(rest).catch(err => 
+          console.error(`Error in safeReply (editReply):`, err)
+        );
       } else {
-        await interaction.followUp(options);
+        await interaction.followUp(options).catch(err => 
+          console.error(`Error in safeReply (followUp):`, err)
+        );
       }
     } catch (error) {
       console.error("Error sending safe reply:", error);

@@ -1,6 +1,7 @@
-// registerHandlers.js - Fixed for proper dependency loading
+// registerHandlers.js - Updated with InteractionTracker
 const fs = require('fs');
 const path = require('path');
+const InteractionTracker = require('./utils/InteractionTracker');
 
 /**
  * Register all handlers with the Discord client
@@ -31,40 +32,9 @@ function registerHandlers(client) {
     // Register Discord events with client
     EventLoader.registerDiscordEvents(client);
     
-    // Set up event listeners for interactions
-    client.on('interactionCreate', async (interaction) => {
-      try {
-        // Use the centralized interaction handler
-        await InteractionHandler.handleInteraction(interaction);
-      } catch (error) {
-        console.error(`Error handling interaction:`, error);
-        
-        // Try to respond with error message
-        try {
-          if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({
-              content: `An error occurred: ${error.message}`,
-              ephemeral: true
-            });
-          }
-        } catch (replyError) {
-          console.error('Error replying to interaction:', replyError);
-        }
-      }
-    });
-    
-    // Set up event listener for messages
-    client.on('messageCreate', async (message) => {
-      try {
-        // Skip bot messages and DMs
-        if (message.author.bot || !message.guild) return;
-        
-        // Use the centralized message handler
-        await InteractionHandler.handleMessage(message);
-      } catch (error) {
-        console.error('Error handling message:', error);
-      }
-    });
+    // Let the event system handle interaction events
+    // We don't need to add extra event listeners here
+    // as the InteractionCreateEvent will use the centralized InteractionTracker
     
     console.log('Event system and handlers initialized successfully');
     
@@ -76,7 +46,8 @@ function registerHandlers(client) {
       buttonLoader: ButtonLoader, 
       modalLoader: ModalLoader,
       selectMenuLoader: SelectMenuLoader,
-      interactionHandler: InteractionHandler
+      interactionHandler: InteractionHandler,
+      interactionTracker: InteractionTracker
     };
   } catch (error) {
     console.error('Error registering handlers:', error);

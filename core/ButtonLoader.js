@@ -1,6 +1,7 @@
-// core/ButtonLoader.js - Fixed for handling buttons properly
+// core/ButtonLoader.js - Fixed for integration with tracker
 const fs = require('fs');
 const path = require('path');
+const InteractionTracker = require('../utils/InteractionTracker');
 
 /**
  * Button handler registry
@@ -117,18 +118,14 @@ class ButtonLoader {
     }
     
     try {
-      // IMPROVED: Immediately defer the update to prevent timeout
-      if (!interaction.deferred && !interaction.replied) {
-        await interaction.deferUpdate().catch(err => {
-          console.error(`Error deferring button update: ${err.message}`);
-        });
-      }
+      // IMPROVED: No need to defer update - the tracker handles this
       
       // IMPROVED: Better error handling for interactions
       if (typeof handler.execute !== 'function') {
         console.error(`Button handler for ${interaction.customId} has no execute method`);
-        await interaction.editReply({ 
-          content: `Internal error: Button handler is misconfigured.`
+        await InteractionTracker.safeReply(interaction, { 
+          content: `Internal error: Button handler is misconfigured.`,
+          ephemeral: true
         });
         return false;
       }
@@ -138,17 +135,12 @@ class ButtonLoader {
     } catch (error) {
       console.error(`Error executing button handler for ${interaction.customId}:`, error);
       
-      // Try to reply with error
+      // Try to reply with error using the tracker
       try {
-        const content = `Error processing button: ${error.message}`;
-        
-        if (interaction.replied) {
-          await interaction.followUp({ content, ephemeral: true });
-        } else if (interaction.deferred) {
-          await interaction.editReply({ content });
-        } else {
-          await interaction.reply({ content, ephemeral: true });
-        }
+        await InteractionTracker.safeReply(interaction, {
+          content: `Error processing button: ${error.message}`,
+          ephemeral: true
+        });
       } catch (replyError) {
         console.error('Error sending error message:', replyError);
       }

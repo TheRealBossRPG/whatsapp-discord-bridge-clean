@@ -1,6 +1,7 @@
-// core/SelectMenuLoader.js - Fixed for StringSelectMenu
+// core/SelectMenuLoader.js - Fixed for StringSelectMenu and integrated with tracker
 const fs = require('fs');
 const path = require('path');
+const InteractionTracker = require('../utils/InteractionTracker');
 
 /**
  * Select menu handler registry
@@ -101,17 +102,12 @@ class SelectMenuLoader {
     } catch (error) {
       console.error(`Error executing select menu handler for ${interaction.customId}:`, error);
       
-      // Try to reply with error
+      // Try to reply with error using the tracker
       try {
-        const content = `Error processing selection: ${error.message}`;
-        
-        if (interaction.replied) {
-          await interaction.followUp({ content, ephemeral: true });
-        } else if (interaction.deferred) {
-          await interaction.editReply({ content });
-        } else {
-          await interaction.reply({ content, ephemeral: true });
-        }
+        await InteractionTracker.safeReply(interaction, {
+          content: `Error processing selection: ${error.message}`,
+          ephemeral: true
+        });
       } catch (replyError) {
         console.error('Error sending error message:', replyError);
       }
