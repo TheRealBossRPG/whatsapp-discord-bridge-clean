@@ -1,22 +1,22 @@
 // modules/handlers/DiscordHandler.js
+const { PermissionsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
-const { EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
 /**
- * Handles Discord interactions and messages
+ * Handles Discord events and interactions
  */
 class DiscordHandler {
   /**
-   * Create a new Discord handler
+   * Create Discord handler
    * @param {Object} discordClient - Discord client
-   * @param {string} categoryId - Category ID for tickets
+   * @param {string} categoryId - Category ID
    * @param {Object} channelManager - Channel manager
    * @param {Object} userCardManager - User card manager
    * @param {Object} ticketManager - Ticket manager
    * @param {Object} transcriptManager - Transcript manager
    * @param {Object} whatsAppClient - WhatsApp client
-   * @param {Object} options - Additional options
+   * @param {Object} options - Options
    */
   constructor(discordClient, categoryId, channelManager, userCardManager, ticketManager, transcriptManager, whatsAppClient, options = {}) {
     this.discordClient = discordClient;
@@ -26,72 +26,283 @@ class DiscordHandler {
     this.ticketManager = ticketManager;
     this.transcriptManager = transcriptManager;
     this.whatsAppClient = whatsAppClient;
+    this.vouchHandler = null; // Set externally
+    this.customCloseMessage = null;
     
     this.instanceId = options.instanceId || 'default';
-    this.tempDir = options.tempDir || path.join(__dirname, '..', '..', 'instances', this.instanceId, 'temp');
-    this.assetsDir = options.assetsDir || path.join(__dirname, '..', '..', 'instances', this.instanceId, 'assets');
+    this.tempDir = options.tempDir || path.join(__dirname, '..', '..', 'temp');
+    this.assetsDir = options.assetsDir || path.join(__dirname, '..', '..', 'assets');
     
-    // Optional vouch handler reference
-    this.vouchHandler = null;
-    
-    // Custom close message
-    this.customCloseMessage = "Thank you for contacting support. Your ticket is now being closed and a transcript will be saved.";
-    
-    // Create directories if they don't exist
-    for (const dir of [this.tempDir, this.assetsDir]) {
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
+    // Create temp directory if it doesn't exist
+    if (!fs.existsSync(this.tempDir)) {
+      fs.mkdirSync(this.tempDir, { recursive: true });
     }
     
     console.log(`[DiscordHandler:${this.instanceId}] Initialized for category ${this.categoryId}`);
   }
   
   /**
-   * Handle Discord interaction
+   * Handle Discord message
+   * @param {Object} message - Discord message
+   * @returns {Promise<boolean>} - Success
+   */
+  async handleDiscordMessage(message) {
+    try {
+      // Ignore bot messages
+      if (message.author.bot) return false;
+      
+      // Check if this is in a category we're monitoring
+      const categoryId = message.channel.parentId;
+      if (!categoryId || categoryId !== this.categoryId) {
+        return false;
+      }
+      
+      // Check for commands first
+      if (message.content.startsWith('!')) {
+        return await this.handleCommand(message);
+      }
+      
+      // Get phone number for this channel
+      const phoneNumber = this.channelManager.getPhoneNumberByChannelId(message.channel.id);
+      
+      if (!phoneNumber) {
+        console.log(`[DiscordHandler:${this.instanceId}] No phone number found for channel ${message.channel.id}`);
+        await message.react('❌');
+        return false;
+      }
+      
+      // Format the message content
+      let content = message.content;
+      
+      // Check if content is empty but there are attachments
+      if (!content && message.attachments.size > 0) {
+        content = "Image: ";
+      }
+      
+      // Add agent prefix
+      const agentName = message.member?.nickname || message.author.username;
+      content = `*${agentName}*: ${content}`;
+      
+      // Send text message first
+      if (content) {
+        try {
+          await this.whatsAppClient.sendTextMessage(phoneNumber, content);
+        } catch (textError) {
+          console.error(`[DiscordHandler:${this.instanceId}] Error sending text message:`, textError);
+          await message.react('⚠️');
+          return false;
+        }
+      }
+      
+      // Process attachments
+      if (message.attachments.size > 0) {
+        for (const [attachmentId, attachment] of message.attachments) {
+          try {
+            const result = await this.whatsAppClient.sendMediaFromUrl(
+              phoneNumber,
+              attachment.url,
+              attachment.name,
+              attachment.name
+            );
+            
+            if (!result) {
+              await message.react('⚠️');
+              return false;
+            }
+          } catch (mediaError) {
+            console.error(`[DiscordHandler:${this.instanceId}] Error sending media:`, mediaError);
+            await message.react('⚠️');
+            return false;
+          }
+        }
+      }
+      
+      // React with success emoji
+      await message.react('✅');
+      return true;
+    } catch (error) {
+      console.error(`[DiscordHandler:${this.instanceId}] Error handling Discord message:`, error);
+      
+      // Try to react with error emoji
+      try {
+        await message.react('❌');
+      } catch (reactError) {
+        console.error(`[DiscordHandler:${this.instanceId}] Error reacting to message:`, reactError);
+      }
+      
+      return false;
+    }
+  }
+  
+  /**
+   * Handle Discord command
+   * @param {Object} message - Discord message
+   * @returns {Promise<boolean>} - Success
+   */
+  async handleCommand(message) {
+    const command = message.content.split(' ')[0].toLowerCase();
+    
+    switch (command) {
+      case '!close':
+        return await this.handleCloseCommand(message);
+      case '!vouch':
+        return await this.handleVouchCommand(message);
+      case '!help':
+        return await this.handleHelpCommand(message);
+      default:
+        return false;
+    }
+  }
+  
+  /**
+   * Handle close command
+   * @param {Object} message - Discord message
+   * @returns {Promise<boolean>} - Success
+   */
+  async handleCloseCommand(message) {
+    try {
+      // Get channel ID
+      const channelId = message.channel.id;
+      
+      // Try to close the ticket
+      const success = await this.ticketManager.closeTicket(channelId, this.customCloseMessage !== false);
+      
+      if (!success) {
+        await message.reply('❌ Failed to close ticket. Please try again or check logs.');
+        return false;
+      }
+      
+      return true;
+    } catch (error) {
+      console.error(`[DiscordHandler:${this.instanceId}] Error handling close command:`, error);
+      await message.reply(`❌ Error: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Handle vouch command
+   * @param {Object} message - Discord message
+   * @returns {Promise<boolean>} - Success
+   */
+  async handleVouchCommand(message) {
+    try {
+      // Check if vouch handler is available
+      if (!this.vouchHandler) {
+        await message.reply('❌ Vouch system is not available.');
+        return false;
+      }
+      
+      if (this.vouchHandler.isDisabled) {
+        await message.reply('❌ Vouch system is disabled.');
+        return false;
+      }
+      
+      // Get phone number from channel
+      const phoneNumber = this.channelManager.getPhoneNumberByChannelId(message.channel.id);
+      if (!phoneNumber) {
+        await message.reply('❌ Could not find phone number for this channel.');
+        return false;
+      }
+      
+      // Get user info
+      const userCard = await this.userCardManager.getUserCard(phoneNumber);
+      if (!userCard) {
+        await message.reply('❌ Could not find user information.');
+        return false;
+      }
+      
+      // Send vouch instructions
+      const success = await this.vouchHandler.sendVouchInstructions(phoneNumber, userCard.name);
+      
+      if (success) {
+        await message.reply('✅ Vouch instructions sent successfully!');
+        return true;
+      } else {
+        await message.reply('❌ Failed to send vouch instructions.');
+        return false;
+      }
+    } catch (error) {
+      console.error(`[DiscordHandler:${this.instanceId}] Error handling vouch command:`, error);
+      await message.reply(`❌ Error: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Handle help command
+   * @param {Object} message - Discord message
+   * @returns {Promise<boolean>} - Success
+   */
+  async handleHelpCommand(message) {
+    try {
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('Help: Available Commands')
+        .setDescription('Here are the commands you can use in this channel:')
+        .addFields(
+          { name: '!close', value: 'Close this ticket and save a transcript', inline: false },
+          { name: '!vouch', value: 'Send vouch instructions to the customer', inline: false },
+          { name: '!help', value: 'Show this help message', inline: false }
+        )
+        .setFooter({ text: `WhatsApp Bridge | ${this.instanceId}` });
+      
+      await message.reply({ embeds: [embed] });
+      return true;
+    } catch (error) {
+      console.error(`[DiscordHandler:${this.instanceId}] Error handling help command:`, error);
+      await message.reply(`❌ Error: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Handle interaction create event
    * @param {Object} interaction - Discord interaction
-   * @returns {Promise<boolean>} - Success status
+   * @returns {Promise<boolean>} - Success
    */
   async handleInteraction(interaction) {
     try {
       // Handle button interactions
       if (interaction.isButton()) {
-        return await this.handleButtonInteraction(interaction);
+        switch (interaction.customId) {
+          case 'close_ticket':
+            return await this.handleCloseTicketButton(interaction);
+          case 'send_vouch_instructions':
+            return await this.handleVouchInstructionsButton(interaction);
+          default:
+            if (interaction.customId.startsWith('edit_ticket_info_')) {
+              return await this.handleEditTicketButton(interaction);
+            }
+            break;
+        }
       }
       
       // Handle modal submissions
       if (interaction.isModalSubmit()) {
-        return await this.handleModalSubmit(interaction);
-      }
-      
-      // Handle command interactions
-      if (interaction.isCommand()) {
-        return await this.handleCommandInteraction(interaction);
+        if (interaction.customId.startsWith('edit_ticket_modal_')) {
+          return await this.handleEditTicketModal(interaction);
+        }
       }
       
       return false;
     } catch (error) {
       console.error(`[DiscordHandler:${this.instanceId}] Error handling interaction:`, error);
       
-      // Try to reply with error
       try {
-        if (!interaction.replied && !interaction.deferred) {
-          await interaction.reply({
-            content: `Error processing interaction: ${error.message}`,
-            ephemeral: true
-          });
-        } else if (interaction.deferred) {
-          await interaction.editReply({
-            content: `Error processing interaction: ${error.message}`
+        if (!interaction.replied) {
+          await interaction.reply({ 
+            content: `❌ Error: ${error.message}`, 
+            ephemeral: true 
           });
         } else {
-          await interaction.followUp({
-            content: `Error processing interaction: ${error.message}`,
-            ephemeral: true
+          await interaction.followUp({ 
+            content: `❌ Error: ${error.message}`, 
+            ephemeral: true 
           });
         }
       } catch (replyError) {
-        console.error(`[DiscordHandler:${this.instanceId}] Error sending error reply:`, replyError);
+        console.error(`[DiscordHandler:${this.instanceId}] Error sending error message:`, replyError);
       }
       
       return false;
@@ -99,274 +310,248 @@ class DiscordHandler {
   }
   
   /**
-   * Handle button interactions
-   * @param {Object} interaction - Button interaction
-   * @returns {Promise<boolean>} - Success status
+   * Handle close ticket button
+   * @param {Object} interaction - Discord interaction
+   * @returns {Promise<boolean>} - Success
    */
-  async handleButtonInteraction(interaction) {
+  async handleCloseTicketButton(interaction) {
     try {
-      const { customId } = interaction;
+      await interaction.deferReply({ ephemeral: true });
       
-      // Handle close ticket buttons
-      if (customId.startsWith('close_ticket_')) {
-        // Extract phone number from custom ID
-        const phoneNumber = customId.replace('close_ticket_', '');
-        
-        // Acknowledge interaction
-        await interaction.deferUpdate();
-        
-        // Close the ticket
-        await this.ticketManager.closeTicket(
-          interaction.channelId,
-          interaction.user.username
-        );
-        
-        return true;
+      // Get channel ID
+      const channelId = interaction.channel.id;
+      
+      // Try to close the ticket
+      const success = await this.ticketManager.closeTicket(channelId, this.customCloseMessage !== false);
+      
+      if (!success) {
+        await interaction.editReply('❌ Failed to close ticket. Please try again or check logs.');
+        return false;
       }
       
-      // Handle vouch buttons
-      if (customId.startsWith('vouch_')) {
-        // Extract phone number from custom ID
-        const phoneNumber = customId.replace('vouch_', '');
-        
-        // Acknowledge interaction
-        await interaction.deferUpdate();
-        
-        // Use the vouch handler if available
-        if (this.vouchHandler) {
-          // Get user info
-          const userCard = this.userCardManager.getUserCard(phoneNumber);
-          
-          // Try to send vouch instructions
-          await this.vouchHandler.sendVouchInstructions(phoneNumber, userCard);
-          
-          // Notify discord
-          await interaction.channel.send({
-            content: `✅ Vouch instructions sent to ${userCard?.name || 'user'}`
-          });
-        } else {
-          await interaction.channel.send({
-            content: `❌ Vouch handler not available`
-          });
-        }
-        
-        return true;
-      }
-      
-      return false;
+      await interaction.editReply('✅ Ticket closed successfully!');
+      return true;
     } catch (error) {
-      console.error(`[DiscordHandler:${this.instanceId}] Error handling button interaction:`, error);
+      console.error(`[DiscordHandler:${this.instanceId}] Error handling close ticket button:`, error);
+      await interaction.editReply(`❌ Error: ${error.message}`);
       return false;
     }
   }
   
   /**
-   * Handle modal submissions
-   * @param {Object} interaction - Modal interaction
-   * @returns {Promise<boolean>} - Success status
+   * Handle vouch instructions button
+   * @param {Object} interaction - Discord interaction
+   * @returns {Promise<boolean>} - Success
    */
-  async handleModalSubmit(interaction) {
+  async handleVouchInstructionsButton(interaction) {
     try {
-      // Implement any modal handling here if needed
-      return false;
-    } catch (error) {
-      console.error(`[DiscordHandler:${this.instanceId}] Error handling modal submit:`, error);
-      return false;
-    }
-  }
-  
-  /**
-   * Handle command interactions
-   * @param {Object} interaction - Command interaction
-   * @returns {Promise<boolean>} - Success status
-   */
-  async handleCommandInteraction(interaction) {
-    try {
-      const { commandName } = interaction;
+      await interaction.deferReply({ ephemeral: true });
       
-      // Handle close command
-      if (commandName === 'close') {
-        // Defer reply
-        await interaction.deferReply();
-        
-        // Check if this is a ticket channel
-        if (!this.channelManager.isChannelMapped(interaction.channelId)) {
-          await interaction.editReply({
-            content: '❌ This is not a WhatsApp ticket channel'
-          });
-          return true;
+      // Check if vouch handler is available
+      if (!this.vouchHandler) {
+        await interaction.editReply('❌ Vouch system is not available.');
+        return false;
+      }
+      
+      if (this.vouchHandler.isDisabled) {
+        await interaction.editReply('❌ Vouch system is disabled.');
+        return false;
+      }
+      
+      // Get phone number from channel
+      const phoneNumber = this.channelManager.getPhoneNumberByChannelId(interaction.channel.id);
+      if (!phoneNumber) {
+        await interaction.editReply('❌ Could not find phone number for this channel.');
+        return false;
+      }
+      
+      // Get user info
+      const userCard = await this.userCardManager.getUserCard(phoneNumber);
+      if (!userCard) {
+        await interaction.editReply('❌ Could not find user information.');
+        return false;
+      }
+      
+      // Send vouch instructions
+      const success = await this.vouchHandler.sendVouchInstructions(phoneNumber, userCard.name);
+      
+      if (success) {
+        await interaction.editReply('✅ Vouch instructions sent successfully!');
+        return true;
+      } else {
+        await interaction.editReply('❌ Failed to send vouch instructions.');
+        return false;
+      }
+    } catch (error) {
+      console.error(`[DiscordHandler:${this.instanceId}] Error handling vouch instructions button:`, error);
+      await interaction.editReply(`❌ Error: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Handle edit ticket button
+   * @param {Object} interaction - Discord interaction
+   * @returns {Promise<boolean>} - Success
+   */
+  async handleEditTicketButton(interaction) {
+    try {
+      // Get phone number from button ID
+      const phoneNumber = interaction.customId.replace('edit_ticket_info_', '');
+      
+      // Get user info
+      const userCard = await this.userCardManager.getUserCard(phoneNumber);
+      const username = userCard ? userCard.name : 'Unknown User';
+      
+      // Find the embed message to get current info
+      const messages = await interaction.channel.messages.fetch({ limit: 10 });
+      const embedMessage = messages.find(
+        m => m.embeds.length > 0 && 
+        m.embeds[0].title === 'Ticket Information'
+      );
+      
+      let currentNotes = 'No notes provided yet.';
+      if (embedMessage && embedMessage.embeds[0]) {
+        const description = embedMessage.embeds[0].description;
+        if (description) {
+          // Extract notes from the code block
+          const notesMatch = description.match(/Notes\n(.*?)(\n|$)/);
+          if (notesMatch && notesMatch[1]) {
+            currentNotes = notesMatch[1];
+            if (currentNotes === 'No notes provided yet. Use the Edit button to add details.') {
+              currentNotes = '';
+            }
+          }
         }
+      }
+      
+      // Create modal      
+      const modal = new ModalBuilder()
+        .setCustomId(`edit_ticket_modal_${phoneNumber}`)
+        .setTitle('Edit Ticket Information');
+      
+      // Username input
+      const usernameInput = new TextInputBuilder()
+        .setCustomId('ticket_username')
+        .setLabel('Username')
+        .setStyle(TextInputStyle.Short)
+        .setValue(username)
+        .setRequired(true);
+      
+      // Notes input
+      const notesInput = new TextInputBuilder()
+        .setCustomId('ticket_notes')
+        .setLabel('Notes')
+        .setStyle(TextInputStyle.Paragraph)
+        .setValue(currentNotes)
+        .setPlaceholder('Add notes about this support ticket here');
+      
+      const firstRow = new ActionRowBuilder().addComponents(usernameInput);
+      const secondRow = new ActionRowBuilder().addComponents(notesInput);
+      
+      modal.addComponents(firstRow, secondRow);
+      
+      await interaction.showModal(modal);
+      return true;
+    } catch (error) {
+      console.error(`[DiscordHandler:${this.instanceId}] Error handling edit ticket button:`, error);
+      
+      try {
+        await interaction.reply({
+          content: `❌ Error: ${error.message}`,
+          ephemeral: true
+        });
+      } catch (replyError) {
+        console.error(`[DiscordHandler:${this.instanceId}] Error replying with error:`, replyError);
+      }
+      
+      return false;
+    }
+  }
+  
+  /**
+   * Handle edit ticket modal
+   * @param {Object} interaction - Discord interaction
+   * @returns {Promise<boolean>} - Success
+   */
+  async handleEditTicketModal(interaction) {
+    try {
+      await interaction.deferReply({ ephemeral: true });
+      
+      // Get phoneNumber from modal ID
+      const phoneNumber = interaction.customId.replace('edit_ticket_modal_', '');
+      
+      // Get updated data
+      const newUsername = interaction.fields.getTextInputValue('ticket_username');
+      const newNotes = interaction.fields.getTextInputValue('ticket_notes') || 'No notes provided.';
+      
+      // Handle username change
+      if (newUsername && phoneNumber) {
+        // Update user card
+        if (this.userCardManager) {
+          const oldUserCard = await this.userCardManager.getUserCard(phoneNumber);
+          const oldUsername = oldUserCard ? oldUserCard.name : '';
+          
+          if (oldUsername !== newUsername) {
+            await this.userCardManager.updateUserCard(phoneNumber, { name: newUsername });
+            
+            // Update channel name
+            const channelId = this.channelManager.getChannelId(phoneNumber);
+            if (channelId) {
+              const channel = this.discordClient.channels.cache.get(channelId);
+              if (channel) {
+                // Format new channel name
+                const formattedUsername = newUsername.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').substring(0, 25);
+                const newChannelName = `📋-${formattedUsername}`;
+                
+                if (channel.name !== newChannelName) {
+                  await channel.setName(newChannelName, 'Updated username');
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // Update the embed
+      const messages = await interaction.channel.messages.fetch({ limit: 10 });
+      const embedMessage = messages.find(
+        m => m.embeds.length > 0 && 
+        m.embeds[0].title === 'Ticket Information'
+      );
+      
+      if (embedMessage) {
+        const originalEmbed = embedMessage.embeds[0];
         
-        // Close the ticket
-        await this.ticketManager.closeTicket(
-          interaction.channelId,
-          interaction.user.username
-        );
+        // Create a new description with updated information
+        const formattedTime = new Date().toLocaleTimeString();
+        const newDescription = '```\nUsername        Phone Number\n' + 
+                          `${newUsername.padEnd(15)} ${phoneNumber.replace(/@.*$/, '')}\n\n` +
+                          'Notes\n' +
+                          `${newNotes}\n` +
+                          `Opened Ticket • Today at ${formattedTime}\n` +
+                          '```';
         
-        await interaction.editReply({
-          content: '✅ Ticket closed and user notified'
+        // Create updated embed
+        const updatedEmbed = EmbedBuilder.from(originalEmbed)
+          .setDescription(newDescription);
+        
+        // Update the embed message
+        await embedMessage.edit({
+          embeds: [updatedEmbed],
+          components: embedMessage.components
         });
         
-        return true;
+        await interaction.editReply('✅ Ticket information updated successfully!');
+      } else {
+        await interaction.editReply('❌ Could not find ticket information message to update.');
+        return false;
       }
       
-      // Handle vouch command
-      if (commandName === 'vouch') {
-        // Defer reply
-        await interaction.deferReply();
-        
-        // Check if this is a ticket channel
-        if (!this.channelManager.isChannelMapped(interaction.channelId)) {
-          await interaction.editReply({
-            content: '❌ This is not a WhatsApp ticket channel'
-          });
-          return true;
-        }
-        
-        // Get phone number from channel
-        const phoneNumber = this.channelManager.getJidForChannelId(interaction.channelId);
-        
-        // Use the vouch handler if available
-        if (this.vouchHandler) {
-          // Get user info
-          const userCard = this.userCardManager.getUserCard(phoneNumber);
-          
-          // Try to send vouch instructions
-          await this.vouchHandler.sendVouchInstructions(phoneNumber, userCard);
-          
-          await interaction.editReply({
-            content: `✅ Vouch instructions sent to ${userCard?.name || 'user'}`
-          });
-        } else {
-          await interaction.editReply({
-            content: `❌ Vouch handler not available`
-          });
-        }
-        
-        return true;
-      }
-      
-      return false;
+      return true;
     } catch (error) {
-      console.error(`[DiscordHandler:${this.instanceId}] Error handling command interaction:`, error);
-      return false;
-    }
-  }
-  
-  /**
-   * Handle Discord message
-   * @param {Object} message - Discord message
-   * @returns {Promise<boolean>} - Success status
-   */
-  async handleDiscordMessage(message) {
-    try {
-      // Skip if not in a ticket channel or from a bot (except our own for commands)
-      if (message.author.bot && message.author.id !== this.discordClient.user.id) {
-        return false;
-      }
-      
-      // Check if this is a category channel
-      if (message.channel.parentId !== this.categoryId) {
-        return false;
-      }
-      
-      // Handle bot commands
-      if (message.content.startsWith('!') && message.author.id !== this.discordClient.user.id) {
-        return await this.handleBotCommand(message);
-      }
-      
-      // Skip system messages
-      if (message.system) {
-        return false;
-      }
-      
-      // Skip messages from our bot
-      if (message.author.id === this.discordClient.user.id) {
-        return false;
-      }
-      
-      // Check if this channel is mapped to a WhatsApp chat
-      if (!this.channelManager.isChannelMapped(message.channelId)) {
-        return false;
-      }
-      
-      // Forward message to WhatsApp
-      return await this.ticketManager.sendWhatsAppMessageFromDiscord(
-        message.channelId,
-        message.content,
-        message.author,
-        message.attachments
-      );
-    } catch (error) {
-      console.error(`[DiscordHandler:${this.instanceId}] Error handling Discord message:`, error);
-      return false;
-    }
-  }
-  
-  /**
-   * Handle bot commands
-   * @param {Object} message - Discord message
-   * @returns {Promise<boolean>} - Success status
-   */
-  async handleBotCommand(message) {
-    try {
-      const command = message.content.split(' ')[0].substring(1).toLowerCase();
-      
-      // Handle close command
-      if (command === 'close') {
-        // Check if this is a ticket channel
-        if (!this.channelManager.isChannelMapped(message.channelId)) {
-          await message.reply({
-            content: '❌ This is not a WhatsApp ticket channel'
-          });
-          return true;
-        }
-        
-        // Close the ticket
-        await this.ticketManager.closeTicket(
-          message.channelId,
-          message.author.username
-        );
-        
-        return true;
-      }
-      
-      // Handle vouch command
-      if (command === 'vouch') {
-        // Check if this is a ticket channel
-        if (!this.channelManager.isChannelMapped(message.channelId)) {
-          await message.reply({
-            content: '❌ This is not a WhatsApp ticket channel'
-          });
-          return true;
-        }
-        
-        // Get phone number from channel
-        const phoneNumber = this.channelManager.getJidForChannelId(message.channelId);
-        
-        // Use the vouch handler if available
-        if (this.vouchHandler) {
-          // Get user info
-          const userCard = this.userCardManager.getUserCard(phoneNumber);
-          
-          // Try to send vouch instructions
-          await this.vouchHandler.sendVouchInstructions(phoneNumber, userCard);
-          
-          await message.reply({
-            content: `✅ Vouch instructions sent to ${userCard?.name || 'user'}`
-          });
-        } else {
-          await message.reply({
-            content: `❌ Vouch handler not available`
-          });
-        }
-        
-        return true;
-      }
-      
-      return false;
-    } catch (error) {
-      console.error(`[DiscordHandler:${this.instanceId}] Error handling bot command:`, error);
+      console.error(`[DiscordHandler:${this.instanceId}] Error handling edit ticket modal:`, error);
+      await interaction.editReply(`❌ Error: ${error.message}`);
       return false;
     }
   }
