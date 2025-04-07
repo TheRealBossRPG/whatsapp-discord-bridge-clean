@@ -1,4 +1,4 @@
-// core/interactionHandler.js - FIXED for StringSelectMenu handling
+// core/interactionHandler.js - FIXED for button handling
 const ModuleLoader = require('./ModuleLoader');
 const InstanceManager = require('./InstanceManager');
 const InteractionTracker = require('../utils/InteractionTracker');
@@ -56,11 +56,20 @@ class InteractionHandler {
       // Get the server instance for this interaction
       const instance = this.getInstanceForInteraction(interaction);
       
-      // CRITICAL FIX: For StringSelectMenu interactions, handle them specially
-      // This check needs to account for Discord.js API differences
-      if ((interaction.isStringSelectMenu && interaction.isStringSelectMenu()) ||
-          (interaction.isSelectMenu && interaction.isSelectMenu())) {
+      // FIXED: Special handling for buttons to make sure we handle them properly
+      if (interaction.isButton()) {
+        // Special direct handling for buttons to ensure they work reliably
+        const handler = this.findButtonHandler(interaction);
         
+        if (handler && typeof handler.execute === 'function') {
+          // Execute the button handler
+          await handler.execute(interaction, instance);
+          return true;
+        }
+      }
+      
+      // FIXED: Only use isStringSelectMenu() - no deprecated methods
+      if (interaction.isStringSelectMenu()) {
         console.log(`Processing select menu interaction: ${interaction.customId}`);
         
         // Get the select menu handler
@@ -159,6 +168,31 @@ class InteractionHandler {
       
       return false;
     }
+  }
+
+  /**
+   * Find a button handler
+   * @param {Interaction} interaction - Discord interaction
+   * @returns {Object|null} - Handler or null if not found
+   */
+  findButtonHandler(interaction) {
+    const customId = interaction.customId;
+    
+    // Look through all loaded buttons
+    for (const [_, handler] of this.moduleLoader.buttons) {
+      // Direct match by customId
+      if (handler.customId === customId) {
+        return handler;
+      }
+      
+      // Match via regex or matches function
+      if ((handler.regex && handler.regex.test(customId)) ||
+          (typeof handler.matches === 'function' && handler.matches(customId))) {
+        return handler;
+      }
+    }
+    
+    return null;
   }
 
   /**

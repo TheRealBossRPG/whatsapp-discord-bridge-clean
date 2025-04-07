@@ -1,9 +1,4 @@
-// utils/InteractionTracker.js - Central tracking for interactions to prevent duplicate handling
-
-/**
- * InteractionTracker - Handles global tracking of Discord interactions
- * to prevent duplicate handling and race conditions
- */
+// utils/InteractionTracker.js - Improved interaction tracking and safety
 class InteractionTracker {
   constructor() {
     // Set to track handled interactions by ID
@@ -116,12 +111,11 @@ class InteractionTracker {
   shouldDefer(interaction) {
     if (!interaction || !interaction.id) return false;
     
+    // FIXED: Rely directly on Discord.js properties rather than tracking state
     // If already deferred or replied, don't defer again
     if (interaction.deferred || interaction.replied) return false;
     
-    // Check tracked state
-    const state = this.getState(interaction.id);
-    return state === this.STATES.RECEIVED || state === null;
+    return true;
   }
   
   /**
@@ -145,11 +139,16 @@ class InteractionTracker {
   async safeDefer(interaction, options = {}) {
     if (!interaction || !interaction.id) return false;
     
-    // If we shouldn't defer, don't
-    if (!this.shouldDefer(interaction)) return false;
+    // IMPROVED: Check directly with Discord.js
+    if (interaction.deferred || interaction.replied) return false;
     
     try {
-      await interaction.deferReply(options);
+      if (interaction.isCommand()) {
+        await interaction.deferReply(options);
+      } else {
+        await interaction.deferUpdate(options);
+      }
+      
       this.markDeferred(interaction);
       console.log(`Deferred interaction: ${interaction.id} ${interaction.isCommand() ? `(${interaction.commandName})` : ''}`);
       return true;
@@ -169,13 +168,14 @@ class InteractionTracker {
     if (!interaction || !interaction.id) return false;
     
     try {
-      if (interaction.deferred && !interaction.replied) {
-        await interaction.editReply(options);
-        return true;
-      } else if (interaction.replied) {
+      // FIXED: Simplified, just check if we can edit
+      if (interaction.deferred || interaction.replied) {
         await interaction.editReply(options);
         return true;
       }
+      
+      // If not deferred/replied, we can't edit
+      console.error("Cannot edit non-deferred/replied interaction");
       return false;
     } catch (error) {
       console.error(`Error editing interaction reply: ${error.message}`);
@@ -193,6 +193,7 @@ class InteractionTracker {
     if (!interaction || !interaction.id) return false;
     
     try {
+      // IMPROVED: Simplified, more straightforward approach
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply(options);
         this.markReplied(interaction);
@@ -208,6 +209,20 @@ class InteractionTracker {
       return false;
     } catch (error) {
       console.error(`Error replying to interaction: ${error.message}`);
+      
+      // IMPROVED: Try alternative methods if the main approach fails
+      try {
+        if (!interaction.replied) {
+          await interaction.followUp({
+            content: typeof options === 'string' ? options : options.content || "An error occurred",
+            ephemeral: true
+          });
+          return true;
+        }
+      } catch (followupError) {
+        console.error(`Failed to send followup error message: ${followupError.message}`);
+      }
+      
       return false;
     }
   }

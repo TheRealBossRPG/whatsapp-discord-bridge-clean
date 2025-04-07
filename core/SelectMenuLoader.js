@@ -1,4 +1,4 @@
-// core/SelectMenuLoader.js - Fixed for StringSelectMenu and integrated with tracker
+// core/SelectMenuLoader.js - Fixed to use only isStringSelectMenu()
 const fs = require('fs');
 const path = require('path');
 const InteractionTracker = require('../utils/InteractionTracker');
@@ -82,12 +82,8 @@ class SelectMenuLoader {
    * @returns {Promise<boolean>} - Whether the interaction was handled
    */
   async handleInteraction(interaction, instance) {
-    // Check for both old and new methods for backward compatibility
-    const isSelectMenu = interaction.isStringSelectMenu ? 
-      interaction.isStringSelectMenu() : 
-      (interaction.isSelectMenu ? interaction.isSelectMenu() : false);
-      
-    if (!isSelectMenu) return false;
+    // FIXED: Only use isStringSelectMenu (non-deprecated method)
+    if (!interaction.isStringSelectMenu()) return false;
     
     const handler = this.getHandler(interaction.customId);
     

@@ -231,7 +231,7 @@ class ModuleLoader {
       }
     }
     
-    // FIXED: Use isStringSelectMenu instead of isSelectMenu
+    // FIXED: Only use isStringSelectMenu
     if (interaction.isStringSelectMenu()) {
       // Find select menu handler by customId or regex
       for (const handler of this.selectMenus.values()) {

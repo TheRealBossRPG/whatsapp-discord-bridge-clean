@@ -1,6 +1,5 @@
 const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
-const InteractionTracker = require('../../utils/InteractionTracker');
 
 class UseTranscriptChannelButton extends Button {
   constructor() {
@@ -11,7 +10,10 @@ class UseTranscriptChannelButton extends Button {
   
   async execute(interaction, instance) {
     try {
-      // Use the tracker to mark the interaction (no need to defer update)
+      // FIXED: Properly defer the interaction to prevent timeout
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferUpdate();
+      }
       
       // Get all text channels in the guild
       const textChannels = interaction.guild.channels.cache.filter(
@@ -19,7 +21,7 @@ class UseTranscriptChannelButton extends Button {
       );
       
       if (textChannels.size === 0) {
-        await InteractionTracker.safeReply(interaction, {
+        await interaction.editReply({
           content: "❌ No text channels found in this server. Please create a text channel first.",
           components: [],
         });
@@ -47,20 +49,31 @@ class UseTranscriptChannelButton extends Button {
       const guildId = interaction.guild.id;
       const setupParams = global.setupStorage.getSetupParams(guildId);
       
-      // Use the tracker to safely update the reply
-      await InteractionTracker.safeEdit(interaction, {
+      // Update the reply directly without using the tracker
+      await interaction.editReply({
         content: `Category selected: <#${setupParams.categoryId}>\nNow select a channel for ticket transcripts:`,
         components: [transcriptSelectRow],
       });
     } catch (error) {
       console.error("Error handling transcript channel option:", error);
       
-      // Use the tracker to safely send an error response
-      await InteractionTracker.safeReply(interaction, {
-        content: "Error: " + error.message,
-        components: [],
-        ephemeral: true
-      });
+      // Try different error handling approaches
+      try {
+        await interaction.editReply({
+          content: "Error: " + error.message,
+          components: [],
+        });
+      } catch (replyError) {
+        console.error("Error sending error response:", replyError);
+        try {
+          await interaction.followUp({
+            content: "Error: " + error.message,
+            ephemeral: true
+          });
+        } catch (finalError) {
+          console.error("Final error attempt failed:", finalError);
+        }
+      }
     }
   }
 }
