@@ -1,10 +1,9 @@
-// modules/handlers/WhatsAppHandler.js - Comprehensive enhancement with robust message handling
+// modules/handlers/WhatsAppHandler.js
 const fs = require('fs');
 const path = require('path');
-const util = require('util');
 
 /**
- * Handles incoming WhatsApp messages and routes them to Discord
+ * Handler for WhatsApp messages and interactions
  */
 class WhatsAppHandler {
   /**
@@ -17,620 +16,486 @@ class WhatsAppHandler {
    * @param {Object} vouchHandler - Vouch handler (optional)
    * @param {Object} options - Additional options
    */
-  constructor(
-    whatsAppClient,
-    userCardManager,
-    channelManager,
-    ticketManager,
-    transcriptManager,
-    vouchHandler = null,
-    options = {}
-  ) {
+  constructor(whatsAppClient, userCardManager, channelManager, ticketManager, transcriptManager, vouchHandler, options = {}) {
     this.whatsAppClient = whatsAppClient;
     this.userCardManager = userCardManager;
     this.channelManager = channelManager;
     this.ticketManager = ticketManager;
     this.transcriptManager = transcriptManager;
     this.vouchHandler = vouchHandler;
-
-    // Set options with defaults
+    
     this.instanceId = options.instanceId || 'default';
-    this.tempDir = options.tempDir || path.join(__dirname, '../../temp');
-    this.logLevel = options.logLevel || 'normal'; // 'minimal', 'normal', 'verbose'
+    this.tempDir = options.tempDir || path.join(__dirname, '..', '..', 'instances', this.instanceId, 'temp');
+    
+    // Welcome message template
+    this.welcomeMessage = "Welcome to Support! 😊 We're here to help. What's your name so we can get you connected?";
+    
+    // Introduction message template (after name is provided)
+    this.introMessage = "Nice to meet you, {name}! 😊 I'm setting up your support ticket right now. Our team will be with you soon to help with your request!";
+    
+    // Message when reopening a ticket
+    this.reopenTicketMessage = "Welcome back, {name}! 👋 Our team will continue assisting you with your request.";
     
     // Create temp directory if it doesn't exist
     if (!fs.existsSync(this.tempDir)) {
       fs.mkdirSync(this.tempDir, { recursive: true });
     }
-
-    // Default messages
-    this.welcomeMessage = "Welcome to Support! 😊 We're here to help. What's your name so we can get you connected?";
-    this.introMessage = "Nice to meet you, {name}! 😊 I'm setting up your support ticket right now. Our team will be with you soon to help with your request!";
-    this.reopenTicketMessage = "Welcome back, {name}! 👋 Our team will continue assisting you with your request.";
-
-    // Process queue
-    this.processingQueue = new Map();
-    this.messageQueue = [];
-    this.isProcessing = false;
-
-    // Media extensions mapping
-    this.mimeToExt = {
-      'image/jpeg': 'jpg',
-      'image/png': 'png',
-      'image/gif': 'gif',
-      'image/webp': 'webp',
-      'video/mp4': 'mp4',
-      'video/quicktime': 'mov',
-      'audio/ogg': 'ogg',
-      'audio/mp4': 'm4a',
-      'audio/mpeg': 'mp3',
-      'application/pdf': 'pdf',
-      'application/vnd.ms-excel': 'xls',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
-      'application/msword': 'doc',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
-      'application/zip': 'zip'
-    };
-
-    this.log('info', `Initialized`);
+    
+    console.log(`[WhatsAppHandler:${this.instanceId}] Initialized`);
   }
-
-  /**
-   * Log message with appropriate level
-   * @param {string} level - Log level (debug, info, warn, error)
-   * @param {string} message - Message to log
-   */
-  log(level, message) {
-    const prefix = `[WhatsAppHandler:${this.instanceId}]`;
-    
-    // Honor logging level
-    if (this.logLevel === 'minimal' && level !== 'error' && level !== 'warn') {
-      return;
-    }
-    
-    // Don't log debug messages unless verbose
-    if (level === 'debug' && this.logLevel !== 'verbose') {
-      return;
-    }
-    
-    // Use appropriate console method
-    switch (level) {
-      case 'error':
-        console.error(`${prefix} ${message}`);
-        break;
-      case 'warn':
-        console.warn(`${prefix} ${message}`);
-        break;
-      case 'debug':
-        console.debug(`${prefix} ${message}`);
-        break;
-      default:
-        console.log(`${prefix} ${message}`);
-    }
-  }
-
+  
   /**
    * Handle an incoming WhatsApp message
-   * @param {Object} message - WhatsApp message object
+   * @param {Object} message - WhatsApp message
    */
   async handleMessage(message) {
     try {
-      // Add to queue for processing
-      this.messageQueue.push(message);
-      
-      // Start processing if not already
-      if (!this.isProcessing) {
-        await this.processMessageQueue();
-      }
-    } catch (error) {
-      this.log('error', `Error queuing message: ${error.message}`);
-    }
-  }
-
-  /**
-   * Process message queue to prevent race conditions
-   */
-  async processMessageQueue() {
-    if (this.isProcessing || this.messageQueue.length === 0) {
-      return;
-    }
-
-    this.isProcessing = true;
-
-    try {
-      while (this.messageQueue.length > 0) {
-        const message = this.messageQueue.shift();
-        await this.processMessage(message);
-      }
-    } catch (error) {
-      this.log('error', `Error processing message queue: ${error.message}`);
-    } finally {
-      this.isProcessing = false;
-    }
-  }
-
-  /**
-   * Process a single WhatsApp message
-   * @param {Object} message - WhatsApp message object
-   */
-  async processMessage(message) {
-    try {
-      // CRITICAL FIX: Properly extract message details with null checks
-      // Get the phone number (jid) of the sender
-      const jid = message?.key?.remoteJid;
-      if (!jid) {
-        this.log('error', `Message has no remoteJid`);
+      // Basic message validation
+      if (!message || !message.key || !message.key.remoteJid) {
+        console.error(`[WhatsAppHandler:${this.instanceId}] Invalid message format`);
         return;
       }
 
-      // Skip messages from groups or status broadcasts
-      if (jid.includes('@g.us') || jid.includes('status@broadcast')) {
-        return;
-      }
-
-      // Extract message content - Baileys wraps it in different objects based on type
-      const messageContent = message?.message;
+      // Extract key information
+      const { remoteJid } = message.key;
       
-      // Debug verbose logging only when needed (log to file)
-      if (this.logLevel === 'verbose') {
-        this.log('debug', `Raw message: ${JSON.stringify(message, null, 2).substring(0, 500)}...`);
-      }
-      
-      // Skip processing if message is empty (typing notifications, etc.)
-      if (!messageContent) {
-        return;
-      }
-
-      // Get the message text content with fallbacks for different message types
-      const messageData = this.extractMessageData(message);
-      const { messageText, hasMedia, mediaType, mediaInfo } = messageData;
-
-      // Get sender information
-      const senderName = this.whatsAppClient.getContactName(jid);
-      const phoneNumber = jid.split('@')[0];
-      
-      // Log message in a standardized format
-      if (messageText && messageText.length > 0) {
-        // Truncate long messages in logs
-        const truncatedText = messageText.length > 50 
-          ? `${messageText.substring(0, 50)}...` 
-          : messageText;
-        
-        this.log('info', `Message from ${phoneNumber}: ${truncatedText}`);
-      } else if (hasMedia) {
-        this.log('info', `Media message (${mediaType}) from ${phoneNumber}`);
-      }
-
-      // Step 1: Check if the user has a channel
-      const channelId = this.channelManager.getChannelId(phoneNumber);
-      
-      // Download media if present
-      let fileBuffer = null;
-      if (hasMedia) {
-        try {
-          fileBuffer = await this.whatsAppClient.downloadMedia(message);
-          
-          if (!fileBuffer) {
-            this.log('warn', `Could not download media from ${phoneNumber}`);
-          } else {
-            this.log('debug', `Downloaded ${mediaType} media, size: ${fileBuffer.length} bytes`);
-          }
-        } catch (mediaError) {
-          this.log('error', `Error downloading media: ${mediaError.message}`);
-        }
-      }
-
-      // Step 2: Process based on channel existence
-      if (channelId) {
-        // User already has a channel, forward the message
-        await this.processExistingUser(phoneNumber, senderName, messageText, channelId, {
-          hasMedia,
-          mediaType,
-          fileBuffer,
-          ...mediaInfo
-        });
-      } else {
-        // New user flow
-        await this.processNewUser(phoneNumber, senderName, messageText);
-      }
-    } catch (error) {
-      this.log('error', `Error processing message: ${error.message}`);
-    }
-  }
-
-  /**
-   * Extract message data from different message types
-   * @param {Object} message - WhatsApp message
-   * @returns {Object} - Extracted message data
-   */
-  extractMessageData(message) {
-    try {
-      const messageContent = message.message;
-      
-      // Default values
-      let messageText = '';
-      let hasMedia = false;
-      let mediaType = '';
-      let mediaInfo = {};
-      
-      // Handle different message types
-      if (messageContent.conversation) {
-        // Simple text message
-        messageText = messageContent.conversation;
-      } 
-      else if (messageContent.extendedTextMessage) {
-        // Extended text (often with formatting or links)
-        messageText = messageContent.extendedTextMessage.text || '';
-        
-        // Check for contextInfo which may have quoted messages
-        if (messageContent.extendedTextMessage.contextInfo?.quotedMessage) {
-          mediaInfo.quotedMessage = messageContent.extendedTextMessage.contextInfo.quotedMessage;
-        }
-      } 
-      else if (messageContent.imageMessage) {
-        // Image with optional caption
-        hasMedia = true;
-        mediaType = 'image';
-        messageText = messageContent.imageMessage.caption || '';
-        mediaInfo = {
-          caption: messageText,
-          mimetype: messageContent.imageMessage.mimetype || 'image/jpeg',
-          fileName: `image-${Date.now()}.${this.getExtensionFromMime(messageContent.imageMessage.mimetype)}`
-        };
-      } 
-      else if (messageContent.videoMessage) {
-        // Video with optional caption
-        hasMedia = true;
-        mediaType = 'video';
-        messageText = messageContent.videoMessage.caption || '';
-        mediaInfo = {
-          caption: messageText,
-          mimetype: messageContent.videoMessage.mimetype || 'video/mp4',
-          fileName: `video-${Date.now()}.mp4`
-        };
-      } 
-      else if (messageContent.audioMessage) {
-        // Audio message or voice note
-        hasMedia = true;
-        mediaType = 'audio';
-        const isVoiceNote = messageContent.audioMessage.ptt || false;
-        messageText = isVoiceNote ? '[Voice Note]' : '[Audio]';
-        mediaInfo = {
-          isVoiceNote,
-          mimetype: messageContent.audioMessage.mimetype || 'audio/mp4',
-          fileName: `audio-${Date.now()}.${isVoiceNote ? 'ogg' : 'mp3'}`
-        };
-      } 
-      else if (messageContent.documentMessage) {
-        // Document/file
-        hasMedia = true;
-        mediaType = 'document';
-        const fileName = messageContent.documentMessage.fileName || `document-${Date.now()}`;
-        messageText = `[Document: ${fileName}]`;
-        mediaInfo = {
-          fileName,
-          mimetype: messageContent.documentMessage.mimetype || 'application/octet-stream'
-        };
-      } 
-      else if (messageContent.stickerMessage) {
-        // Sticker
-        hasMedia = true;
-        mediaType = 'sticker';
-        messageText = '[Sticker]';
-        mediaInfo = {
-          mimetype: messageContent.stickerMessage.mimetype || 'image/webp',
-          fileName: `sticker-${Date.now()}.webp`
-        };
-      } 
-      else if (messageContent.contactMessage) {
-        // Contact card
-        messageText = `[Contact: ${messageContent.contactMessage.displayName || 'Unknown'}]`;
-        mediaInfo = {
-          contactName: messageContent.contactMessage.displayName || 'Unknown',
-          contactVCard: messageContent.contactMessage.vcard || ''
-        };
-      } 
-      else if (messageContent.locationMessage) {
-        // Location
-        const lat = messageContent.locationMessage.degreesLatitude;
-        const lng = messageContent.locationMessage.degreesLongitude;
-        messageText = `[Location: ${lat},${lng}]`;
-        mediaInfo = {
-          latitude: lat,
-          longitude: lng,
-          locationName: messageContent.locationMessage.name || ''
-        };
-      } 
-      else if (messageContent.buttonsResponseMessage) {
-        // Button response
-        messageText = messageContent.buttonsResponseMessage.selectedDisplayText || 
-                     `[Button: ${messageContent.buttonsResponseMessage.selectedButtonId || 'Unknown'}]`;
-      } 
-      else if (messageContent.listResponseMessage) {
-        // List response
-        messageText = messageContent.listResponseMessage.title || 
-                     messageContent.listResponseMessage.selectedDisplayText || 
-                     `[List Selection: ${messageContent.listResponseMessage.singleSelectReply?.selectedRowId || 'Unknown'}]`;
-      } 
-      else if (messageContent.reactionMessage) {
-        // Reaction to a message - we can ignore these
-        messageText = '';
-      } 
-      else {
-        // Check several possible container types
-        const textContainers = [
-          messageContent.buttonsMessage?.contentText,
-          messageContent.listMessage?.description,
-          messageContent.templateMessage?.hydratedTemplate?.hydratedContentText
-        ];
-        
-        for (const container of textContainers) {
-          if (container) {
-            messageText = container;
-            break;
-          }
-        }
-        
-        // If we still don't have a message, log the content types for debugging
-        if (!messageText) {
-          const contentTypes = Object.keys(messageContent);
-          this.log('debug', `Unknown message type with keys: ${contentTypes.join(', ')}`);
-          messageText = '[Unknown Message Type]';
-        }
-      }
-      
-      return {
-        messageText,
-        hasMedia,
-        mediaType,
-        mediaInfo
-      };
-    } catch (error) {
-      this.log('error', `Error extracting message data: ${error.message}`);
-      return {
-        messageText: '[Error Processing Message]',
-        hasMedia: false,
-        mediaType: '',
-        mediaInfo: {}
-      };
-    }
-  }
-
-  /**
-   * Get file extension from MIME type
-   * @param {string} mimetype - MIME type
-   * @returns {string} - File extension
-   */
-  getExtensionFromMime(mimetype) {
-    return this.mimeToExt[mimetype] || 'bin';
-  }
-
-  /**
-   * Process message from an existing user
-   * @param {string} phoneNumber - User's phone number
-   * @param {string} senderName - Sender's name
-   * @param {string} messageText - Message text
-   * @param {string} channelId - Discord channel ID
-   * @param {Object} mediaInfo - Media information
-   */
-  async processExistingUser(phoneNumber, senderName, messageText, channelId, mediaInfo) {
-    try {
-      // Get user card to check status
-      const userCard = this.userCardManager.getUserCard(phoneNumber);
-      
-      if (!userCard) {
-        this.log('info', `No user card found for ${phoneNumber} despite having channel ${channelId}`);
-        
-        // Create user card
-        const newUserCard = {
-          phoneNumber,
-          name: senderName || phoneNumber,
-          status: 'active',
-          channelId,
-          created: Date.now(),
-          lastActivity: Date.now()
-        };
-        
-        this.userCardManager.setUserCard(phoneNumber, newUserCard);
-        this.log('info', `Created new user card for ${phoneNumber}`);
-      } else {
-        // Update last activity
-        userCard.lastActivity = Date.now();
-        this.userCardManager.updateUserCard(phoneNumber, userCard);
-      }
-      
-      // Check if channel exists
-      this.ticketManager.checkChannelExists(channelId, async (exists) => {
-        if (!exists) {
-          this.log('info', `Channel ${channelId} for ${phoneNumber} no longer exists`);
-          
-          // Clear channel mapping
-          this.channelManager.removeChannel(phoneNumber);
-          
-          // Create new ticket
-          await this.createNewTicket(phoneNumber, senderName, messageText, mediaInfo);
-          return;
-        }
-        
-        // Process message normally
-        this.continueProcessingMessage(phoneNumber, senderName, messageText, channelId, mediaInfo);
-      });
-    } catch (error) {
-      this.log('error', `Error processing existing user: ${error.message}`);
-    }
-  }
-
-  /**
-   * Continue processing message after channel check
-   * @param {string} phoneNumber - User's phone number
-   * @param {string} senderName - Sender's name
-   * @param {string} messageText - Message text
-   * @param {string} channelId - Discord channel ID
-   * @param {Object} mediaInfo - Media information
-   */
-  async continueProcessingMessage(phoneNumber, senderName, messageText, channelId, mediaInfo) {
-    try {
-      // Process vouch command
-      if (this.vouchHandler && !this.vouchHandler.isDisabled && 
-          messageText && messageText.toLowerCase().startsWith('vouch!')) {
-        await this.vouchHandler.processVouch(phoneNumber, senderName, messageText, mediaInfo);
+      // Skip non-private chats and status messages
+      if (remoteJid === 'status@broadcast' || remoteJid.endsWith('@g.us')) {
         return;
       }
       
-      // Special channel detection
-      const specialChannelMentions = this.channelManager.checkForSpecialChannelMentions(messageText);
+      // Extract message content
+      const messageContent = this.extractMessageContent(message);
+      if (!messageContent) return;
       
-      // Handle special channel mentions
-      if (specialChannelMentions.length > 0) {
-        this.log('info', `Detected ${specialChannelMentions.length} special channel mentions`);
-        
-        // Send special channel messages
-        for (const mention of specialChannelMentions) {
-          try {
-            await this.whatsAppClient.sendMessage(
-              phoneNumber, 
-              mention.message || 'Here is the channel you asked about.'
-            );
-          } catch (mentionError) {
-            this.log('error', `Error sending special channel mention: ${mentionError.message}`);
-          }
-        }
-      }
-      
-      // Forward message to Discord
-      await this.ticketManager.sendMessageToChannel(channelId, phoneNumber, senderName, messageText, mediaInfo);
-    } catch (error) {
-      this.log('error', `Error forwarding message: ${error.message}`);
-    }
-  }
-
-  /**
-   * Process message from a new user
-   * @param {string} phoneNumber - User's phone number
-   * @param {string} senderName - Sender's name
-   * @param {string} messageText - Message text
-   */
-  async processNewUser(phoneNumber, senderName, messageText) {
-    try {
-      // Get or create user card
+      // Get the phone number and user data
+      const phoneNumber = remoteJid.split('@')[0];
       let userCard = this.userCardManager.getUserCard(phoneNumber);
       
-      // If user doesn't have a card, send welcome message
+      // Check if we need to create a new user or if this is an existing conversation
       if (!userCard) {
-        // Send welcome message
-        await this.whatsAppClient.sendMessage(phoneNumber, this.welcomeMessage);
-        
-        // Create user card
-        userCard = {
-          phoneNumber,
-          name: '',
-          status: 'new',
-          created: Date.now(),
-          lastActivity: Date.now()
-        };
-        
-        this.userCardManager.setUserCard(phoneNumber, userCard);
-        this.log('info', `Sent welcome message to new user ${phoneNumber}`);
-        return;
+        // New user - ask for name
+        await this.handleNewUser(phoneNumber, messageContent, message);
+      } else if (!userCard.name || userCard.name === 'Unknown') {
+        // User exists but no name - this might be the response to our name request
+        await this.handleNameResponse(phoneNumber, messageContent, userCard, message);
+      } else {
+        // Existing user with name - normal message handling
+        await this.handleExistingUser(phoneNumber, messageContent, userCard, message);
       }
-      
-      // If user is in 'new' status, treat their message as their name
-      if (userCard.status === 'new') {
-        // Save their name
-        userCard.name = messageText.trim();
-        userCard.status = 'active';
-        this.userCardManager.updateUserCard(phoneNumber, userCard);
-        
-        // Send intro message with name
-        const customIntro = this.introMessage.replace(/{name}/g, userCard.name);
-        await this.whatsAppClient.sendMessage(phoneNumber, customIntro);
-        
-        // Create ticket
-        await this.createNewTicket(phoneNumber, userCard.name, '', null, true);
-        
-        this.log('info', `Created ticket for ${userCard.name} (${phoneNumber})`);
-        return;
-      }
-      
-      // If we reach here, the user was in active status but had no channel
-      // Create a new ticket for them
-      await this.createNewTicket(phoneNumber, userCard.name || senderName, messageText);
     } catch (error) {
-      this.log('error', `Error processing new user: ${error.message}`);
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error processing message:`, error);
     }
   }
-
+  
   /**
-   * Create a new ticket for a user
+   * Handle a message from a new user
    * @param {string} phoneNumber - User's phone number
-   * @param {string} userName - User's name
-   * @param {string} message - Initial message
-   * @param {Object} mediaInfo - Media information (optional)
-   * @param {boolean} isNewUser - Whether this is a new user
+   * @param {Object} messageContent - Extracted message content
+   * @param {Object} originalMessage - Original WhatsApp message
    */
-  async createNewTicket(phoneNumber, userName, message, mediaInfo = null, isNewUser = false) {
+  async handleNewUser(phoneNumber, messageContent, originalMessage) {
     try {
-      // Create ticket
-      const channel = await this.ticketManager.createTicket(phoneNumber, userName);
+      // Create a new user card with unknown name
+      const userCard = this.userCardManager.createUserCard(phoneNumber);
       
-      if (!channel) {
-        this.log('error', `Failed to create ticket for ${phoneNumber}`);
+      // Send welcome message asking for name
+      await this.whatsAppClient.sendMessage(
+        `${phoneNumber}@s.whatsapp.net`,
+        { text: this.welcomeMessage }
+      );
+      
+      // Save the first message to show when ticket is created
+      userCard.queuedMessages = [this.formatMessage(phoneNumber, 'incoming', messageContent, originalMessage)];
+      this.userCardManager.saveUserCards();
+      
+      console.log(`[WhatsAppHandler:${this.instanceId}] New user ${phoneNumber} greeted and asked for name`);
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error handling new user:`, error);
+    }
+  }
+  
+  /**
+   * Handle a name response from a user
+   * @param {string} phoneNumber - User's phone number
+   * @param {Object} messageContent - Extracted message content
+   * @param {Object} userCard - User's card
+   * @param {Object} originalMessage - Original WhatsApp message
+   */
+  async handleNameResponse(phoneNumber, messageContent, userCard, originalMessage) {
+    try {
+      // Set the name from user response
+      const name = messageContent.text ? messageContent.text.trim() : "Unknown User";
+      
+      // Validate the name - must be at least 2 characters and not too long
+      if (name.length < 2 || name.length > 50) {
+        await this.whatsAppClient.sendMessage(
+          `${phoneNumber}@s.whatsapp.net`,
+          { text: "Please provide a valid name (between 2-50 characters)." }
+        );
         return;
       }
       
-      // Save channel ID
-      this.channelManager.setChannel(phoneNumber, channel.id);
+      // Update the user card with the name
+      userCard.name = name;
       
-      // Update user card
-      const userCard = this.userCardManager.getUserCard(phoneNumber) || {
-        phoneNumber,
-        name: userName,
-        status: 'active',
-        created: Date.now(),
-        lastActivity: Date.now()
-      };
-      
-      userCard.channelId = channel.id;
-      userCard.status = 'active';
-      userCard.lastActivity = Date.now();
-      this.userCardManager.updateUserCard(phoneNumber, userCard);
-      
-      // Save the channel to the mediaManager for transcripts
-      if (this.transcriptManager && !this.transcriptManager.isDisabled) {
-        this.transcriptManager.setPhoneToUsername(phoneNumber, userName);
+      // Initialize queued messages if not existing
+      if (!userCard.queuedMessages) {
+        userCard.queuedMessages = [];
       }
       
-      // If this is a reopened ticket, send reopening message
-      if (!isNewUser) {
-        const reopenMessage = this.reopenTicketMessage.replace(/{name}/g, userName);
-        await this.whatsAppClient.sendMessage(phoneNumber, reopenMessage);
+      // Save the user card
+      this.userCardManager.saveUserCards();
+      
+      // Get clean JID
+      const jid = `${phoneNumber}@s.whatsapp.net`;
+      
+      // Send intro message
+      const introMsg = this.introMessage.replace(/{name}/g, name).replace(/{phoneNumber}/g, phoneNumber);
+      await this.whatsAppClient.sendMessage(jid, { text: introMsg });
+      
+      // Add this message to the queue
+      userCard.queuedMessages.push(this.formatMessage(phoneNumber, 'incoming', messageContent, originalMessage));
+      this.userCardManager.saveUserCards();
+      
+      // Create discord ticket for this user
+      await this.createDiscordTicket(phoneNumber, name, userCard);
+      
+      console.log(`[WhatsAppHandler:${this.instanceId}] User ${phoneNumber} provided name: ${name}, ticket created`);
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error handling name response:`, error);
+    }
+  }
+  
+  /**
+   * Handle messages from existing users
+   * @param {string} phoneNumber - User's phone number
+   * @param {Object} messageContent - Extracted message content
+   * @param {Object} userCard - User's card
+   * @param {Object} originalMessage - Original WhatsApp message
+   */
+  async handleExistingUser(phoneNumber, messageContent, userCard, originalMessage) {
+    try {
+      // Check if we have a channel for this user
+      const channelId = this.channelManager.getChannelIdForJid(phoneNumber);
+      
+      // Format the message for forwarding
+      const formattedMessage = this.formatMessage(phoneNumber, 'incoming', messageContent, originalMessage);
+      
+      if (!channelId) {
+        // No channel yet - perhaps old user reconnecting
+        // Queue the message
+        userCard.queuedMessages = userCard.queuedMessages || [];
+        userCard.queuedMessages.push(formattedMessage);
+        this.userCardManager.saveUserCards();
+        
+        // Send reopen message
+        const reopenMsg = this.reopenTicketMessage.replace(/{name}/g, userCard.name).replace(/{phoneNumber}/g, phoneNumber);
+        await this.whatsAppClient.sendMessage(
+          `${phoneNumber}@s.whatsapp.net`,
+          { text: reopenMsg }
+        );
+        
+        // Create a new ticket
+        await this.createDiscordTicket(phoneNumber, userCard.name, userCard);
+      } else {
+        // We have a channel - forward the message directly
+        await this.sendMessageToDiscord(channelId, formattedMessage, userCard);
+        
+        // Check for vouch command if enabled
+        if (messageContent.text && 
+            messageContent.text.toLowerCase().startsWith('vouch!') && 
+            this.vouchHandler && 
+            !this.vouchHandler.isDisabled) {
+          await this.vouchHandler.handleVouch(phoneNumber, messageContent, userCard, originalMessage);
+        }
+      }
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error handling existing user message:`, error);
+    }
+  }
+  
+  /**
+   * Get contact name for a JID
+   * @param {string} jid - JID to get name for
+   * @returns {Promise<string>} - Contact name
+   */
+  async getContactName(jid) {
+    try {
+      // Remove any suffix from the JID
+      const cleanJid = jid.split('@')[0];
+      
+      // Try to get from user card manager first
+      if (this.userCardManager) {
+        const userCard = this.userCardManager.getUserCard(cleanJid);
+        if (userCard && userCard.name && userCard.name !== 'Unknown') {
+          return userCard.name;
+        }
       }
       
-      // If initial message exists, forward it
-      if (message && message.trim() !== '') {
-        await this.ticketManager.sendMessageToChannel(channel.id, phoneNumber, userName, message, mediaInfo);
+      // Fall back to just using the phone number
+      return cleanJid;
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error getting contact name:`, error);
+      return jid.split('@')[0];
+    }
+  }
+  
+  /**
+   * Create a Discord ticket for a user
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} name - User's name
+   * @param {Object} userCard - User's card
+   * @returns {Promise<Object>} - Created channel
+   */
+  async createDiscordTicket(phoneNumber, name, userCard) {
+    try {
+      // Create the ticket using ticket manager
+      const channel = await this.ticketManager.createTicket(name, phoneNumber);
+      
+      if (!channel) {
+        console.error(`[WhatsAppHandler:${this.instanceId}] Failed to create ticket for ${name} (${phoneNumber})`);
+        return null;
       }
       
-      this.log('info', `Created ${isNewUser ? 'new' : 'reopened'} ticket for ${userName} (${phoneNumber})`);
+      // Register the channel in channel manager
+      this.channelManager.addChannel(phoneNumber, channel.id);
+      this.channelManager.saveChannelMap();
+      
+      // Process any queued messages
+      if (userCard.queuedMessages && userCard.queuedMessages.length > 0) {
+        for (const message of userCard.queuedMessages) {
+          await this.sendMessageToDiscord(channel.id, message, userCard);
+        }
+        
+        // Clear the queue
+        userCard.queuedMessages = [];
+        this.userCardManager.saveUserCards();
+      }
+      
+      console.log(`[WhatsAppHandler:${this.instanceId}] Created ticket ${channel.id} for ${name} (${phoneNumber})`);
       return channel;
     } catch (error) {
-      this.log('error', `Error creating ticket: ${error.message}`);
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error creating Discord ticket:`, error);
       return null;
     }
   }
   
   /**
-   * Set logging level
-   * @param {string} level - Log level (minimal, normal, verbose)
+   * Send a message to Discord
+   * @param {string} channelId - Channel ID to send to
+   * @param {Object} message - Formatted message
+   * @param {Object} userCard - User's card
    */
-  setLogLevel(level) {
-    if (['minimal', 'normal', 'verbose'].includes(level)) {
-      this.logLevel = level;
-      this.log('info', `Log level set to: ${level}`);
-    } else {
-      this.log('warn', `Invalid log level: ${level}. Using 'normal'.`);
-      this.logLevel = 'normal';
+  async sendMessageToDiscord(channelId, message, userCard) {
+    try {
+      // Make sure the ticket manager has the sendWhatsAppMessage method
+      if (!this.ticketManager || typeof this.ticketManager.sendWhatsAppMessage !== 'function') {
+        console.error(`[WhatsAppHandler:${this.instanceId}] Ticket manager missing or lacking sendWhatsAppMessage method`);
+        return;
+      }
+      
+      // Extract info from message
+      const { phoneNumber, content } = message;
+      
+      // Get display name
+      const displayName = userCard && userCard.name ? userCard.name : await this.getContactName(phoneNumber);
+      
+      // Process media if present
+      let mediaUrl = null;
+      if (content.type && content.type !== 'text') {
+        // Download media
+        const mediaBuffer = await this.downloadMedia(message.originalMessage);
+        
+        if (mediaBuffer) {
+          // Save to temp dir
+          const mediaPath = path.join(this.tempDir, content.fileName || `media_${Date.now()}`);
+          fs.writeFileSync(mediaPath, mediaBuffer);
+          mediaUrl = mediaPath;
+        }
+      }
+      
+      // Send to Discord
+      await this.ticketManager.sendWhatsAppMessage(
+        channelId, 
+        content.text || '', 
+        displayName, 
+        phoneNumber,
+        mediaUrl
+      );
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error sending message to Discord:`, error);
     }
+  }
+  
+  /**
+   * Download media from a message
+   * @param {Object} message - WhatsApp message with media
+   * @returns {Promise<Buffer>} - Media buffer
+   */
+  async downloadMedia(message) {
+    try {
+      if (!this.whatsAppClient || typeof this.whatsAppClient.downloadMedia !== 'function') {
+        console.error(`[WhatsAppHandler:${this.instanceId}] WhatsApp client missing or lacking downloadMedia method`);
+        return null;
+      }
+      
+      return await this.whatsAppClient.downloadMedia(message);
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error downloading media:`, error);
+      return null;
+    }
+  }
+  
+  /**
+   * Send a message from Discord to WhatsApp
+   * @param {string} phoneNumber - Phone number to send to
+   * @param {string} message - Message to send
+   * @param {string} attachment - Attachment path (optional)
+   * @returns {Promise<boolean>} - Success status
+   */
+  async sendMessageToWhatsApp(phoneNumber, message, attachment = null) {
+    try {
+      if (!this.whatsAppClient) {
+        console.error(`[WhatsAppHandler:${this.instanceId}] WhatsApp client not initialized`);
+        return false;
+      }
+      
+      // Format the JID
+      const jid = phoneNumber.includes('@') ? phoneNumber : `${phoneNumber}@s.whatsapp.net`;
+      
+      // Send text or media message
+      if (attachment) {
+        // Read the attachment
+        const buffer = fs.readFileSync(attachment);
+        const mimetype = this.getMimeType(attachment);
+        
+        // Send as media message
+        await this.whatsAppClient.sendMessage(jid, {
+          caption: message,
+          mimetype,
+          buffer
+        });
+      } else {
+        // Send as text message
+        await this.whatsAppClient.sendMessage(jid, { text: message });
+      }
+      
+      return true;
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error sending message to WhatsApp:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Extract message content from WhatsApp message
+   * @param {Object} message - WhatsApp message
+   * @returns {Object|null} - Extracted content or null
+   */
+  extractMessageContent(message) {
+    try {
+      // Check if message is valid
+      if (!message.message) {
+        return null;
+      }
+      
+      // Check for text message types
+      if (message.message.conversation) {
+        return {
+          type: 'text',
+          text: message.message.conversation
+        };
+      }
+      
+      if (message.message.extendedTextMessage) {
+        return {
+          type: 'text',
+          text: message.message.extendedTextMessage.text
+        };
+      }
+      
+      // Check for media types
+      const mediaTypes = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage'];
+      
+      for (const type of mediaTypes) {
+        if (message.message[type]) {
+          return {
+            type,
+            text: message.message[type].caption || '',
+            fileName: message.message[type].fileName || `${type.replace('Message', '')}.${this.getExtensionFromMimetype(message.message[type].mimetype)}`,
+            mimetype: message.message[type].mimetype
+          };
+        }
+      }
+      
+      // Return null if no supported content found
+      return null;
+    } catch (error) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error extracting message content:`, error);
+      return null;
+    }
+  }
+  
+  /**
+   * Format a message for forwarding
+   * @param {string} phoneNumber - Phone number
+   * @param {string} direction - Message direction (incoming/outgoing)
+   * @param {Object} content - Message content
+   * @param {Object} originalMessage - Original WhatsApp message
+   * @returns {Object} - Formatted message
+   */
+  formatMessage(phoneNumber, direction, content, originalMessage) {
+    return {
+      phoneNumber,
+      direction,
+      content,
+      timestamp: new Date().toISOString(),
+      originalMessage
+    };
+  }
+  
+  /**
+   * Get file extension from MIME type
+   * @param {string} mimetype - MIME type
+   * @returns {string} - File extension
+   */
+  getExtensionFromMimetype(mimetype) {
+    if (!mimetype) return 'bin';
+    
+    const mimeMap = {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/gif': 'gif',
+      'video/mp4': 'mp4',
+      'audio/mpeg': 'mp3',
+      'audio/ogg': 'ogg',
+      'application/pdf': 'pdf'
+    };
+    
+    return mimeMap[mimetype] || 'bin';
+  }
+  
+  /**
+   * Get MIME type from file path
+   * @param {string} filePath - File path
+   * @returns {string} - MIME type
+   */
+  getMimeType(filePath) {
+    const ext = path.extname(filePath).toLowerCase().replace('.', '');
+    
+    const mimeMap = {
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'mp4': 'video/mp4',
+      'mp3': 'audio/mpeg',
+      'ogg': 'audio/ogg',
+      'pdf': 'application/pdf'
+    };
+    
+    return mimeMap[ext] || 'application/octet-stream';
   }
 }
 

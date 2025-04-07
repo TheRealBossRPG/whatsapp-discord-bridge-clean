@@ -3,306 +3,196 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Manages user profile information and WhatsApp contact details
+ * Manages user information cards
  */
 class UserCardManager {
   /**
    * Create a new user card manager
    * @param {string} instanceId - Instance ID
    */
-  constructor(instanceId = 'default') {
+  constructor(instanceId) {
     this.instanceId = instanceId;
     this.userCards = new Map();
+    this.whatsAppClient = null;
     
-    // Set storage paths
-    this.baseDir = path.join(__dirname, '..', '..', 'instances', instanceId);
-    this.userCardsPath = path.join(this.baseDir, 'user_cards.json');
+    // Path to user cards storage
+    this.filePath = path.join(__dirname, '..', '..', 'instances', this.instanceId, 'user_cards.json');
     
-    // Ensure directory exists
-    if (!fs.existsSync(this.baseDir)) {
-      fs.mkdirSync(this.baseDir, { recursive: true });
-    }
-    
-    // Load user cards from disk
+    // Load stored user cards
     this.loadUserCards();
-    
-    console.log(`[UserCardManager:${instanceId}] Initialized with ${this.userCards.size} user cards`);
   }
   
   /**
-   * Clean phone number for consistent storage
-   * @param {string} phoneNumber - Raw phone number
-   * @returns {string} - Cleaned phone number
+   * Set WhatsApp client reference
+   * @param {Object} client - WhatsApp client
    */
-  cleanPhoneNumber(phoneNumber) {
-    if (!phoneNumber) return 'unknown';
-    
-    // Convert to string first
-    let clean = String(phoneNumber);
-    
-    // Remove WhatsApp extensions (be thorough)
-    clean = clean.replace(/@s\.whatsapp\.net/g, '')
-                .replace(/@c\.us/g, '')
-                .replace(/@g\.us/g, '')
-                .replace(/@broadcast/g, '')
-                .replace(/@.*$/, '');
-    
-    // Remove any non-digit characters except possibly leading '+' sign
-    if (clean.startsWith('+')) {
-      clean = '+' + clean.substring(1).replace(/[^0-9]/g, '');
-    } else {
-      clean = clean.replace(/[^0-9]/g, '');
-    }
-    
-    return clean;
+  setWhatsAppClient(client) {
+    this.whatsAppClient = client;
   }
   
   /**
-   * Format phone number consistently
-   * @param {string} phoneNumber - Phone number
-   * @returns {string} - Formatted phone number
-   */
-  formatPhoneNumber(phoneNumber) {
-    const clean = this.cleanPhoneNumber(phoneNumber);
-    
-    // Make sure it has the WhatsApp suffix if not already present
-    if (!phoneNumber.includes('@')) {
-      return `${clean}@s.whatsapp.net`;
-    }
-    
-    return phoneNumber;
-  }
-  
-  /**
-   * Load user cards from disk
+   * Load user cards from storage
    */
   loadUserCards() {
     try {
-      if (fs.existsSync(this.userCardsPath)) {
-        const cardsData = JSON.parse(fs.readFileSync(this.userCardsPath, 'utf8'));
+      if (fs.existsSync(this.filePath)) {
+        const data = fs.readFileSync(this.filePath, 'utf8');
+        const parsed = JSON.parse(data);
         
-        // Convert to Map object
-        Object.entries(cardsData).forEach(([phone, userCard]) => {
-          this.userCards.set(this.formatPhoneNumber(phone), userCard);
-        });
+        // Convert to Map
+        for (const [jid, card] of Object.entries(parsed)) {
+          this.userCards.set(jid, card);
+        }
         
-        console.log(`[UserCardManager:${this.instanceId}] Loaded ${this.userCards.size} user cards from ${this.userCardsPath}`);
+        console.log(`[UserCardManager:${this.instanceId}] Loaded ${this.userCards.size} user cards`);
       } else {
-        console.log(`[UserCardManager:${this.instanceId}] No user cards file found at ${this.userCardsPath}`);
+        console.log(`[UserCardManager:${this.instanceId}] No user cards file found at ${this.filePath}`);
+        this.userCards = new Map();
       }
     } catch (error) {
       console.error(`[UserCardManager:${this.instanceId}] Error loading user cards:`, error);
+      this.userCards = new Map();
     }
+    
+    console.log(`[UserCardManager:${this.instanceId}] Initialized with ${this.userCards.size} user cards`);
   }
   
   /**
-   * Save user cards to disk
+   * Save user cards to storage
    */
   saveUserCards() {
     try {
-      // Convert Map to regular object for JSON serialization
-      const cardsData = {};
-      this.userCards.forEach((userCard, phone) => {
-        cardsData[phone] = userCard;
-      });
+      // Create directory if it doesn't exist
+      const directory = path.dirname(this.filePath);
+      if (!fs.existsSync(directory)) {
+        fs.mkdirSync(directory, { recursive: true });
+      }
       
-      // Ensure directory exists
-      if (!fs.existsSync(this.baseDir)) {
-        fs.mkdirSync(this.baseDir, { recursive: true });
+      // Convert Map to object
+      const data = {};
+      for (const [jid, card] of this.userCards.entries()) {
+        data[jid] = card;
       }
       
       // Write to file
-      fs.writeFileSync(this.userCardsPath, JSON.stringify(cardsData, null, 2), 'utf8');
-      
-      console.log(`[UserCardManager:${this.instanceId}] Saved ${this.userCards.size} user cards to ${this.userCardsPath}`);
+      fs.writeFileSync(this.filePath, JSON.stringify(data, null, 2), 'utf8');
     } catch (error) {
       console.error(`[UserCardManager:${this.instanceId}] Error saving user cards:`, error);
     }
   }
   
   /**
+   * Get user card for a JID
+   * @param {string} jid - JID to get user card for
+   * @returns {Object|null} - User card or null
+   */
+  getUserCard(jid) {
+    // Clean JID
+    const cleanJid = this.cleanJid(jid);
+    return this.userCards.get(cleanJid) || null;
+  }
+  
+  /**
    * Create a new user card
-   * @param {string} phoneNumber - User's phone number
-   * @param {string} name - User's name
-   * @param {Object} additionalInfo - Additional user information
+   * @param {string} jid - JID to create user card for
+   * @param {string} name - User name (optional)
    * @returns {Object} - Created user card
    */
-  async createUserCard(phoneNumber, name, additionalInfo = {}) {
-    try {
-      // Format phone number
-      const phone = this.formatPhoneNumber(phoneNumber);
-      
-      // Check if user card already exists
-      if (this.userCards.has(phone)) {
-        // Update existing card
-        const existingCard = this.userCards.get(phone);
-        
-        // Only update name if it's significantly different (not just case, spacing, etc.)
-        if (name && existingCard.name.toLowerCase().replace(/\s+/g, '') !== name.toLowerCase().replace(/\s+/g, '')) {
-          existingCard.name = name;
-          existingCard.updatedAt = Date.now();
-        }
-        
-        // Merge additional info
-        Object.assign(existingCard, additionalInfo);
-        
-        // Save to disk
-        this.saveUserCards();
-        
-        console.log(`[UserCardManager:${this.instanceId}] Updated user card for ${phone}: ${name}`);
-        
-        return existingCard;
-      }
-      
-      // Create new user card
-      const userCard = {
-        id: phone,
-        phoneNumber: this.cleanPhoneNumber(phoneNumber),
-        name: name || 'Unknown User',
-        firstContact: Date.now(),
-        lastContact: Date.now(),
-        updatedAt: Date.now(),
-        profilePicUrl: null,
-        ...additionalInfo
-      };
-      
-      // Try to get profile picture if WhatsApp client is available
-      if (this.whatsAppClient && typeof this.whatsAppClient.getProfilePicture === 'function') {
-        try {
-          userCard.profilePicUrl = await this.whatsAppClient.getProfilePicture(phone);
-        } catch (picError) {
-          console.log(`[UserCardManager:${this.instanceId}] Could not get profile picture for ${phone}`);
-        }
-      }
-      
-      // Add to map
-      this.userCards.set(phone, userCard);
-      
-      // Save to disk
-      this.saveUserCards();
-      
-      console.log(`[UserCardManager:${this.instanceId}] Created user card for ${phone}: ${name}`);
-      
-      return userCard;
-    } catch (error) {
-      console.error(`[UserCardManager:${this.instanceId}] Error creating user card:`, error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Get user card
-   * @param {string} phoneNumber - User's phone number
-   * @returns {Object|null} - User card or null if not found
-   */
-  async getUserCard(phoneNumber) {
-    try {
-      // Format phone number
-      const phone = this.formatPhoneNumber(phoneNumber);
-      
-      // Get from map
-      const userCard = this.userCards.get(phone);
-      
-      if (userCard) {
-        // Update last contact time
-        userCard.lastContact = Date.now();
-        
-        // If we have a WhatsApp client but no profile pic, try to get it
-        if (this.whatsAppClient && !userCard.profilePicUrl && typeof this.whatsAppClient.getProfilePicture === 'function') {
-          try {
-            userCard.profilePicUrl = await this.whatsAppClient.getProfilePicture(phone);
-            userCard.updatedAt = Date.now();
-            
-            // Save updated user card
-            this.saveUserCards();
-          } catch (picError) {
-            // Ignore profile pic errors
-          }
-        }
-      }
-      
-      return userCard || null;
-    } catch (error) {
-      console.error(`[UserCardManager:${this.instanceId}] Error getting user card:`, error);
-      return null;
-    }
-  }
-  
-  /**
-   * Check if user exists
-   * @param {string} phoneNumber - User's phone number
-   * @returns {boolean} - Whether user exists
-   */
-  async userExists(phoneNumber) {
-    // Format phone number
-    const phone = this.formatPhoneNumber(phoneNumber);
+  createUserCard(jid, name = null) {
+    const cleanJid = this.cleanJid(jid);
     
-    // Check if in map
-    return this.userCards.has(phone);
+    const userCard = {
+      jid: cleanJid,
+      name: name || 'Unknown',
+      lastActivity: new Date().toISOString(),
+      queuedMessages: [],
+      attributes: {},
+      metadata: {}
+    };
+    
+    this.userCards.set(cleanJid, userCard);
+    this.saveUserCards();
+    
+    return userCard;
   }
   
   /**
-   * Update user card
-   * @param {string} phoneNumber - User's phone number
-   * @param {Object} updates - Updates to apply
-   * @returns {Object|null} - Updated user card or null if not found
+   * Update a user card
+   * @param {string} jid - JID to update
+   * @param {Object} updates - Fields to update
+   * @returns {Object|null} - Updated user card or null
    */
-  async updateUserCard(phoneNumber, updates) {
-    try {
-      // Format phone number
-      const phone = this.formatPhoneNumber(phoneNumber);
-      
-      // Check if user card exists
-      if (!this.userCards.has(phone)) {
-        console.log(`[UserCardManager:${this.instanceId}] User card not found for ${phone}`);
-        return null;
-      }
-      
-      // Get existing card
-      const userCard = this.userCards.get(phone);
-      
-      // Apply updates
-      Object.assign(userCard, updates, { updatedAt: Date.now() });
-      
-      // Save to disk
-      this.saveUserCards();
-      
-      console.log(`[UserCardManager:${this.instanceId}] Updated user card for ${phone}`);
-      
-      return userCard;
-    } catch (error) {
-      console.error(`[UserCardManager:${this.instanceId}] Error updating user card:`, error);
+  updateUserCard(jid, updates) {
+    const cleanJid = this.cleanJid(jid);
+    const userCard = this.getUserCard(cleanJid);
+    
+    if (!userCard) {
       return null;
     }
+    
+    // Update fields
+    Object.assign(userCard, updates);
+    
+    // Always update last activity
+    userCard.lastActivity = new Date().toISOString();
+    
+    this.userCards.set(cleanJid, userCard);
+    this.saveUserCards();
+    
+    return userCard;
   }
   
   /**
-   * Delete user card
-   * @param {string} phoneNumber - User's phone number
+   * Delete a user card
+   * @param {string} jid - JID to delete
    * @returns {boolean} - Whether deletion was successful
    */
-  deleteUserCard(phoneNumber) {
-    try {
-      // Format phone number
-      const phone = this.formatPhoneNumber(phoneNumber);
-      
-      // Remove from map
-      const deleted = this.userCards.delete(phone);
-      
-      if (deleted) {
-        // Save to disk
-        this.saveUserCards();
-        
-        console.log(`[UserCardManager:${this.instanceId}] Deleted user card for ${phone}`);
-      } else {
-        console.log(`[UserCardManager:${this.instanceId}] User card not found for ${phone}`);
-      }
-      
-      return deleted;
-    } catch (error) {
-      console.error(`[UserCardManager:${this.instanceId}] Error deleting user card:`, error);
-      return false;
+  deleteUserCard(jid) {
+    const cleanJid = this.cleanJid(jid);
+    const result = this.userCards.delete(cleanJid);
+    
+    if (result) {
+      this.saveUserCards();
     }
+    
+    return result;
+  }
+  
+  /**
+   * Add a message to a user's queue
+   * @param {string} jid - JID to queue message for
+   * @param {Object} message - Message to queue
+   * @returns {boolean} - Success status
+   */
+  queueMessage(jid, message) {
+    const cleanJid = this.cleanJid(jid);
+    let userCard = this.getUserCard(cleanJid);
+    
+    // Create user card if it doesn't exist
+    if (!userCard) {
+      userCard = this.createUserCard(cleanJid);
+    }
+    
+    // Initialize queued messages if not present
+    if (!userCard.queuedMessages) {
+      userCard.queuedMessages = [];
+    }
+    
+    // Add message to queue
+    userCard.queuedMessages.push(message);
+    
+    // Save
+    this.saveUserCards();
+    
+    return true;
+  }
+  
+  /**
+   * Get the number of user cards
+   * @returns {number} - Number of user cards
+   */
+  getUserCardCount() {
+    return this.userCards.size;
   }
   
   /**
@@ -314,19 +204,38 @@ class UserCardManager {
   }
   
   /**
-   * Get user card count
-   * @returns {number} - Number of user cards
+   * Clean a JID for storage
+   * @param {string} jid - JID to clean
+   * @returns {string} - Cleaned JID
    */
-  getUserCardCount() {
-    return this.userCards.size;
+  cleanJid(jid) {
+    if (!jid) {
+      return '';
+    }
+    
+    // Remove WhatsApp domain
+    return jid.split('@')[0];
   }
   
   /**
-   * Set WhatsApp client
-   * @param {Object} client - WhatsApp client
+   * Format a JID for WhatsApp
+   * @param {string} jid - JID to format
+   * @returns {string} - Formatted JID
    */
-  setWhatsAppClient(client) {
-    this.whatsAppClient = client;
+  formatJid(jid) {
+    if (!jid) {
+      return '';
+    }
+    
+    // Ensure JID has WhatsApp domain
+    return jid.includes('@') ? jid : `${jid}@s.whatsapp.net`;
+  }
+  
+  /**
+   * Clean up resources
+   */
+  cleanup() {
+    this.saveUserCards();
   }
 }
 

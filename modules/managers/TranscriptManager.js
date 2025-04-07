@@ -1,166 +1,83 @@
 // modules/managers/TranscriptManager.js
 const fs = require('fs');
 const path = require('path');
-const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
+const { AttachmentBuilder } = require('discord.js');
 
 /**
- * Manages ticket transcripts
+ * Manages conversation transcripts
  */
 class TranscriptManager {
   /**
    * Create a new transcript manager
-   * @param {Object} options - Manager options
+   * @param {Object} options - Transcript options
    */
   constructor(options = {}) {
     this.instanceId = options.instanceId || 'default';
     this.transcriptChannelId = options.transcriptChannelId || null;
     this.discordClient = options.discordClient || null;
     this.guildId = options.guildId || null;
-    
-    // Set base directory for transcripts
     this.baseDir = options.baseDir || path.join(__dirname, '..', '..', 'instances', this.instanceId, 'transcripts');
     
-    // Flag for disabled transcripts
+    // Flag to disable transcripts
     this.isDisabled = false;
     
-    // Ensure directory exists
-    this.ensureDirectories();
-    
-    console.log(`[TranscriptManager:${this.instanceId}] Initialized${this.transcriptChannelId ? ` with channel ${this.transcriptChannelId}` : ''}`);
-  }
-  
-  /**
-   * Ensure required directories exist
-   */
-  ensureDirectories() {
-    try {
-      if (!fs.existsSync(this.baseDir)) {
-        fs.mkdirSync(this.baseDir, { recursive: true });
-      }
-    } catch (error) {
-      console.error(`[TranscriptManager:${this.instanceId}] Error creating directories:`, error);
-    }
-  }
-  
-  /**
-   * Set transcript channel ID
-   * @param {string} channelId - Discord channel ID 
-   */
-  setTranscriptChannel(channelId) {
-    this.transcriptChannelId = channelId;
-  }
-  
-  /**
-   * Clean phone number for consistent storage
-   * @param {string} phoneNumber - Raw phone number
-   * @returns {string} - Cleaned phone number
-   */
-  cleanPhoneNumber(phoneNumber) {
-    if (!phoneNumber) return 'unknown';
-    
-    // Convert to string first
-    let clean = String(phoneNumber);
-    
-    // Remove WhatsApp extensions (be thorough)
-    clean = clean.replace(/@s\.whatsapp\.net/g, '')
-                .replace(/@c\.us/g, '')
-                .replace(/@g\.us/g, '')
-                .replace(/@broadcast/g, '')
-                .replace(/@.*$/, '');
-    
-    // Remove any non-digit characters except possibly leading '+' sign
-    if (clean.startsWith('+')) {
-      clean = '+' + clean.substring(1).replace(/[^0-9]/g, '');
-    } else {
-      clean = clean.replace(/[^0-9]/g, '');
+    // Create base directory if it doesn't exist
+    if (!fs.existsSync(this.baseDir)) {
+      fs.mkdirSync(this.baseDir, { recursive: true });
     }
     
-    return clean;
+    console.log(`[TranscriptManager:${this.instanceId}] Initialized`);
   }
   
   /**
-   * Format directory name from user name
-   * @param {string} name - User name
-   * @returns {string} - Formatted directory name
-   */
-  formatDirectoryName(name) {
-    if (!name) return 'unknown-user';
-    
-    // Make filesystem safe: lowercase, replace spaces with hyphens, remove special chars
-    return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-  }
-  
-  /**
-   * Get user directory path
-   * @param {string} phoneNumber - User's phone number
-   * @param {string} name - User's name
-   * @returns {string} - Path to user directory
-   */
-  getUserDir(phoneNumber, name) {
-    // Clean phone number
-    const cleanPhone = this.cleanPhoneNumber(phoneNumber);
-    
-    // Format directory name
-    const dirName = this.formatDirectoryName(name || 'unknown');
-    
-    // Create path with phone number included
-    return path.join(this.baseDir, `${dirName}(${cleanPhone})`);
-  }
-  
-  /**
-   * Create a transcript from a channel
+   * Create a transcript from a Discord channel
    * @param {Object} channel - Discord channel
-   * @param {string} phoneNumber - User's phone number
-   * @param {string} userName - User's name (optional)
-   * @returns {Promise<string|null>} - Path to transcript or null if failed
+   * @param {string} phoneNumber - User phone number
+   * @param {string} name - User name
+   * @returns {Promise<string>} - Path to transcript
    */
-  async createTranscript(channel, phoneNumber, userName = null) {
+  async createTranscript(channel, phoneNumber, name) {
     try {
-      // Check if transcripts are disabled
+      // Skip if disabled
       if (this.isDisabled) {
         console.log(`[TranscriptManager:${this.instanceId}] Transcripts are disabled, skipping`);
         return null;
       }
       
-      console.log(`[TranscriptManager:${this.instanceId}] Creating transcript for ${phoneNumber} from channel ${channel.id}`);
-      
-      // Try to get username from channel name if not provided
-      if (!userName && channel.name) {
-        userName = channel.name.replace(/-/g, ' ');
-      }
-      
-      // Get user directory
-      const userDir = this.getUserDir(phoneNumber, userName);
-      
-      // Ensure directory exists
-      if (!fs.existsSync(userDir)) {
-        fs.mkdirSync(userDir, { recursive: true });
-      }
-      
-      // Fetch messages from channel (up to 500)
-      const messages = await this.fetchMessages(channel);
-      
-      if (messages.length === 0) {
-        console.log(`[TranscriptManager:${this.instanceId}] No messages found in channel ${channel.id}`);
+      // Check if channel exists
+      if (!channel) {
+        console.error(`[TranscriptManager:${this.instanceId}] Cannot create transcript: Channel is null`);
         return null;
       }
       
-      // Format transcript
-      const transcript = this.formatTranscript(messages, phoneNumber, userName, channel.name);
+      console.log(`[TranscriptManager:${this.instanceId}] Creating transcript for ${name} (${phoneNumber})`);
       
-      // Generate filename with timestamp
-      const timestamp = Date.now();
-      const filename = `transcript-${timestamp}.md`;
+      // Create user directory
+      const userDir = this.getUserDirectory(phoneNumber, name);
+      
+      // Generate transcript filename
+      const timestamp = new Date().toISOString().replace(/[:T]/g, '-').split('.')[0];
+      const filename = `transcript-${timestamp}.html`;
       const filePath = path.join(userDir, filename);
       
+      // Create master transcript path
+      const masterPath = path.join(userDir, 'transcript-master.html');
+      
+      // Fetch channel messages
+      const messages = await this.fetchChannelMessages(channel);
+      
+      // Generate HTML content
+      const htmlContent = this.generateTranscriptHtml(channel, messages, phoneNumber, name);
+      
       // Write to file
-      fs.writeFileSync(filePath, transcript, 'utf8');
+      fs.writeFileSync(filePath, htmlContent, 'utf8');
+      fs.writeFileSync(masterPath, htmlContent, 'utf8');
       
       console.log(`[TranscriptManager:${this.instanceId}] Saved transcript to ${filePath}`);
       
-      // Post to transcript channel if configured
-      if (this.transcriptChannelId && this.discordClient) {
-        await this.postTranscriptToChannel(filePath, phoneNumber, userName, channel.name);
+      // Post to transcript channel if enabled
+      if (this.transcriptChannelId) {
+        await this.postTranscriptToChannel(filePath, channel.name, phoneNumber, name);
       }
       
       return filePath;
@@ -171,18 +88,17 @@ class TranscriptManager {
   }
   
   /**
-   * Fetch messages from a channel
+   * Fetch all messages from a channel
    * @param {Object} channel - Discord channel
-   * @param {number} limit - Maximum number of messages
    * @returns {Promise<Array>} - Array of messages
    */
-  async fetchMessages(channel, limit = 500) {
+  async fetchChannelMessages(channel) {
     try {
       const messages = [];
       let lastId = null;
       let fetched;
       
-      // Fetch in batches of 100 (Discord API limit)
+      // Fetch messages in batches of 100
       do {
         const options = { limit: 100 };
         if (lastId) {
@@ -195,243 +111,320 @@ class TranscriptManager {
           lastId = fetched.last().id;
           messages.push(...fetched.values());
         }
-      } while (fetched.size > 0 && messages.length < limit);
+      } while (fetched.size === 100);
       
-      // Sort messages by timestamp (oldest first)
-      return messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+      // Sort messages by timestamp
+      messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+      
+      return messages;
     } catch (error) {
-      console.error(`[TranscriptManager:${this.instanceId}] Error fetching messages:`, error);
+      console.error(`[TranscriptManager:${this.instanceId}] Error fetching channel messages:`, error);
       return [];
     }
   }
   
   /**
-   * Format transcript from messages
-   * @param {Array} messages - Array of Discord messages
-   * @param {string} phoneNumber - User's phone number
-   * @param {string} userName - User's name
-   * @param {string} channelName - Channel name
-   * @returns {string} - Formatted transcript
+   * Generate HTML transcript
+   * @param {Object} channel - Discord channel
+   * @param {Array} messages - Channel messages
+   * @param {string} phoneNumber - User phone number
+   * @param {string} name - User name
+   * @returns {string} - HTML content
    */
-  formatTranscript(messages, phoneNumber, userName, channelName) {
+  generateTranscriptHtml(channel, messages, phoneNumber, name) {
     try {
-      const lines = [
-        `# Transcript: ${userName || 'Unknown User'}`,
-        `Channel: #${channelName}`,
-        `WhatsApp: ${this.cleanPhoneNumber(phoneNumber)}`,
-        `Instance: ${this.instanceId}`,
-        `Date: ${new Date().toISOString()}`,
-        '',
-        '---',
-        ''
-      ];
+      // Generate header
+      let html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WhatsApp Transcript - ${name}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .header {
+      background-color: #075e54;
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+    }
+    .message {
+      margin-bottom: 15px;
+      padding: 10px;
+      border-radius: 5px;
+    }
+    .user-message {
+      background-color: #dcf8c6;
+      margin-left: 40px;
+    }
+    .discord-message {
+      background-color: #f2f2f2;
+      margin-right: 40px;
+    }
+    .system-message {
+      background-color: #ffeecc;
+    }
+    .timestamp {
+      font-size: 0.8em;
+      color: #888;
+      text-align: right;
+    }
+    .author {
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+    .attachment {
+      margin-top: 5px;
+      max-width: 100%;
+    }
+    .attachment img {
+      max-width: 300px;
+      max-height: 200px;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>WhatsApp Conversation Transcript</h1>
+    <p>User: ${name}</p>
+    <p>WhatsApp: ${phoneNumber}</p>
+    <p>Channel: ${channel.name}</p>
+    <p>Date: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}</p>
+    <p>Instance: ${this.instanceId}</p>
+  </div>
+  <div class="messages">`;
       
       // Process each message
       for (const message of messages) {
-        // Skip system messages
-        if (message.system) continue;
-        
-        // Format timestamp
-        const timestamp = new Date(message.createdTimestamp).toISOString();
-        
-        // Format author
-        const author = message.author.bot 
-          ? `[BOT] ${message.author.username}`
-          : message.author.username;
-        
-        // Add message header
-        lines.push(`## ${author} (${timestamp})`);
-        
-        // Add content if any
-        if (message.content) {
-          lines.push(message.content);
-          lines.push('');
+        // Skip system messages or bot messages that aren't from our bot
+        if (message.system || (message.author.bot && message.author.id !== this.discordClient?.user?.id)) {
+          continue;
         }
         
-        // Add embeds if any
-        if (message.embeds && message.embeds.length > 0) {
-          for (const embed of message.embeds) {
-            // Add embed title
-            if (embed.title) {
-              lines.push(`### ${embed.title}`);
-            }
-            
-            // Add embed description
-            if (embed.description) {
-              lines.push(embed.description);
-              lines.push('');
-            }
-            
-            // Add fields
-            if (embed.fields && embed.fields.length > 0) {
-              for (const field of embed.fields) {
-                lines.push(`**${field.name}**: ${field.value}`);
-              }
-              lines.push('');
-            }
+        const timestamp = new Date(message.createdTimestamp).toLocaleString();
+        let messageClass = 'discord-message';
+        let authorName = message.author.username;
+        
+        // Check for WhatsApp messages (has specific format)
+        if (message.content.startsWith('**')) {
+          const match = message.content.match(/^\*\*(.*?)\*\*: /);
+          if (match) {
+            authorName = match[1];
+            messageClass = 'user-message';
           }
         }
         
-        // Add attachments if any
-        if (message.attachments && message.attachments.size > 0) {
-          lines.push('**Attachments:**');
-          message.attachments.forEach(attachment => {
-            lines.push(`- ${attachment.name}: ${attachment.url}`);
-          });
-          lines.push('');
+        // Check for system messages
+        if (message.content.includes('Ticket closed by') || 
+            message.content.includes('saved transcript') ||
+            message.content.includes('New Support Ticket')) {
+          messageClass = 'system-message';
         }
         
-        // Add separator
-        lines.push('---');
-        lines.push('');
+        // Format message content
+        let content = message.content
+          .replace(/\n/g, '<br>')
+          .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+          .replace(/\*(.*?)\*/g, '<em>$1</em>')
+          .replace(/`(.*?)`/g, '<code>$1</code>');
+        
+        // Add message to HTML
+        html += `
+    <div class="message ${messageClass}">
+      <div class="author">${authorName}</div>
+      <div class="content">${content}</div>`;
+        
+        // Add attachments if any
+        if (message.attachments.size > 0) {
+          html += `<div class="attachments">`;
+          
+          message.attachments.forEach(attachment => {
+            // Check if it's an image
+            if (attachment.contentType && attachment.contentType.startsWith('image/')) {
+              html += `<div class="attachment">
+          <img src="${attachment.url}" alt="Image">
+        </div>`;
+            } else {
+              html += `<div class="attachment">
+          <a href="${attachment.url}" target="_blank">${attachment.name}</a>
+        </div>`;
+            }
+          });
+          
+          html += `</div>`;
+        }
+        
+        // Add timestamp
+        html += `<div class="timestamp">${timestamp}</div>
+    </div>`;
       }
       
-      // Join lines into a single string
-      return lines.join('\n');
+      // Close HTML
+      html += `
+  </div>
+</body>
+</html>`;
+      
+      return html;
     } catch (error) {
-      console.error(`[TranscriptManager:${this.instanceId}] Error formatting transcript:`, error);
-      return `Error creating transcript: ${error.message}`;
+      console.error(`[TranscriptManager:${this.instanceId}] Error generating transcript HTML:`, error);
+      return `<html><body><h1>Error generating transcript</h1><p>${error.message}</p></body></html>`;
     }
   }
   
   /**
-   * Post transcript to Discord channel
-   * @param {string} filePath - Path to transcript file
-   * @param {string} phoneNumber - User's phone number
-   * @param {string} userName - User's name
+   * Post transcript to designated channel
+   * @param {string} transcriptPath - Path to transcript file
    * @param {string} channelName - Channel name
-   * @returns {Promise<boolean>} - Success status
+   * @param {string} phoneNumber - User phone number
+   * @param {string} name - User name
    */
-  async postTranscriptToChannel(filePath, phoneNumber, userName, channelName) {
+  async postTranscriptToChannel(transcriptPath, channelName, phoneNumber, name) {
     try {
-      // Check if transcript channel is configured
-      if (!this.transcriptChannelId || !this.discordClient) {
-        console.log(`[TranscriptManager:${this.instanceId}] No transcript channel configured`);
-        return false;
+      // Skip if no transcript channel or disabled
+      if (!this.transcriptChannelId || this.isDisabled) {
+        return;
       }
       
-      console.log(`[TranscriptManager:${this.instanceId}] Posting transcript to channel ${this.transcriptChannelId}`);
-      
-      // Get guild
-      const guild = await this.discordClient.guilds.fetch(this.guildId);
+      // Get guild and channel
+      const guild = this.discordClient.guilds.cache.get(this.guildId);
       if (!guild) {
         console.error(`[TranscriptManager:${this.instanceId}] Guild not found: ${this.guildId}`);
-        return false;
+        return;
       }
       
-      // Get transcript channel
-      let transcriptChannel;
-      try {
-        transcriptChannel = await guild.channels.fetch(this.transcriptChannelId);
-      } catch (channelError) {
-        console.error(`[TranscriptManager:${this.instanceId}] Transcript channel not found: ${this.transcriptChannelId}`, channelError);
-        return false;
-      }
-      
+      const transcriptChannel = guild.channels.cache.get(this.transcriptChannelId);
       if (!transcriptChannel) {
         console.error(`[TranscriptManager:${this.instanceId}] Transcript channel not found: ${this.transcriptChannelId}`);
-        return false;
+        return;
       }
-      
-      // Check if file exists
-      if (!fs.existsSync(filePath)) {
-        console.error(`[TranscriptManager:${this.instanceId}] Transcript file not found: ${filePath}`);
-        return false;
-      }
-      
-      // Create embed
-      const embed = new EmbedBuilder()
-        .setColor(0x4CAF50)
-        .setTitle(`Transcript: ${userName || 'Unknown User'}`)
-        .setDescription(`WhatsApp conversation transcript from #${channelName}`)
-        .addFields(
-          { name: 'User', value: userName || 'Unknown User', inline: true },
-          { name: 'WhatsApp', value: this.cleanPhoneNumber(phoneNumber), inline: true },
-          { name: 'Date', value: new Date().toISOString(), inline: true }
-        )
-        .setTimestamp();
       
       // Create attachment
-      const attachment = new AttachmentBuilder(filePath, { name: path.basename(filePath) });
+      const attachment = new AttachmentBuilder(transcriptPath, { name: `transcript-${phoneNumber}.html` });
       
       // Send to channel
       await transcriptChannel.send({
-        embeds: [embed],
+        content: `📄 Transcript saved for **${name}** (${phoneNumber}) from channel **${channelName}**`,
         files: [attachment]
       });
       
-      console.log(`[TranscriptManager:${this.instanceId}] Transcript posted to channel ${this.transcriptChannelId}`);
-      return true;
+      console.log(`[TranscriptManager:${this.instanceId}] Posted transcript to channel ${this.transcriptChannelId}`);
     } catch (error) {
-      console.error(`[TranscriptManager:${this.instanceId}] Error posting transcript:`, error);
-      return false;
+      console.error(`[TranscriptManager:${this.instanceId}] Error posting transcript to channel:`, error);
     }
   }
   
   /**
-   * Save a transcript directly
-   * @param {string} phoneNumber - User's phone number
-   * @param {string} userName - User's name
-   * @param {string} content - Transcript content
-   * @param {string} channelName - Channel name
-   * @returns {Promise<string|null>} - Path to transcript or null if failed
+   * Get user directory
+   * @param {string} phoneNumber - User phone number
+   * @param {string} name - User name
+   * @returns {string} - Directory path
    */
-  async saveTranscript(phoneNumber, userName, content, channelName = 'unknown-channel') {
+  getUserDirectory(phoneNumber, name) {
+    // Clean the name for filesystem
+    const cleanName = (name || 'unknown')
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-');
+    
+    // Create directory path with phone number appended
+    const dirPath = path.join(this.baseDir, `${cleanName}(${phoneNumber})`);
+    
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+    }
+    
+    return dirPath;
+  }
+  
+  /**
+   * Get latest transcript for a user
+   * @param {string} phoneNumber - User phone number
+   * @param {string} name - User name
+   * @returns {string|null} - Transcript content or null
+   */
+  getLatestTranscript(phoneNumber, name) {
     try {
-      // Check if transcripts are disabled
+      // Skip if disabled
       if (this.isDisabled) {
-        console.log(`[TranscriptManager:${this.instanceId}] Transcripts are disabled, skipping`);
         return null;
       }
       
-      console.log(`[TranscriptManager:${this.instanceId}] Saving transcript for ${phoneNumber} (${userName})`);
-      
       // Get user directory
-      const userDir = this.getUserDir(phoneNumber, userName);
+      const userDir = this.getUserDirectory(phoneNumber, name);
       
-      // Ensure directory exists
-      if (!fs.existsSync(userDir)) {
-        fs.mkdirSync(userDir, { recursive: true });
+      // Check for master transcript
+      const masterPath = path.join(userDir, 'transcript-master.html');
+      if (fs.existsSync(masterPath)) {
+        return fs.readFileSync(masterPath, 'utf8');
       }
       
-      // Generate filename with timestamp
-      const timestamp = Date.now();
+      // If no master, look for latest transcript
+      const files = fs.readdirSync(userDir).filter(file => file.startsWith('transcript-') && file.endsWith('.html'));
+      
+      if (files.length === 0) {
+        return null;
+      }
+      
+      // Sort by modification time (newest first)
+      files.sort((a, b) => {
+        const aTime = fs.statSync(path.join(userDir, a)).mtime.getTime();
+        const bTime = fs.statSync(path.join(userDir, b)).mtime.getTime();
+        return bTime - aTime;
+      });
+      
+      // Get latest transcript
+      const latestPath = path.join(userDir, files[0]);
+      return fs.readFileSync(latestPath, 'utf8');
+    } catch (error) {
+      console.error(`[TranscriptManager:${this.instanceId}] Error getting latest transcript:`, error);
+      return null;
+    }
+  }
+  
+  /**
+   * Save markdown transcript
+   * @param {string} phoneNumber - User phone number
+   * @param {string} name - User name
+   * @param {string} content - Transcript content
+   * @returns {string|null} - Path to saved transcript
+   */
+  saveMarkdownTranscript(phoneNumber, name, content) {
+    try {
+      // Skip if disabled
+      if (this.isDisabled) {
+        return null;
+      }
+      
+      // Get user directory
+      const userDir = this.getUserDirectory(phoneNumber, name);
+      
+      // Generate filename
+      const timestamp = new Date().toISOString().replace(/[:T]/g, '-').split('.')[0];
       const filename = `transcript-${timestamp}.md`;
       const filePath = path.join(userDir, filename);
       
-      // Ensure the content has headers
-      let finalContent = content;
-      
-      // Add headers if not present
-      if (!content.startsWith('# Transcript')) {
-        // Check if we already have content
-        const header = [
-          `# Transcript: ${userName || 'Unknown User'}`,
-          `Channel: #${channelName}`,
-          `WhatsApp: ${this.cleanPhoneNumber(phoneNumber)}`,
-          `Instance: ${this.instanceId}`,
-          `Date: ${new Date().toISOString()}`,
-          '',
-          '---',
-          ''
-        ].join('\n');
-        
-        finalContent = header + '\n' + content;
-      }
+      // Create master transcript path
+      const masterPath = path.join(userDir, 'transcript-master.md');
       
       // Write to file
-      fs.writeFileSync(filePath, finalContent, 'utf8');
+      fs.writeFileSync(filePath, content, 'utf8');
+      fs.writeFileSync(masterPath, content, 'utf8');
       
-      console.log(`[TranscriptManager:${this.instanceId}] Saved transcript to ${filePath}`);
-      
-      // Post to transcript channel if configured
-      if (this.transcriptChannelId && this.discordClient) {
-        await this.postTranscriptToChannel(filePath, phoneNumber, userName, channelName);
-      }
+      console.log(`[TranscriptManager:${this.instanceId}] Saved markdown transcript to ${filePath}`);
       
       return filePath;
     } catch (error) {
-      console.error(`[TranscriptManager:${this.instanceId}] Error saving transcript:`, error);
+      console.error(`[TranscriptManager:${this.instanceId}] Error saving markdown transcript:`, error);
       return null;
     }
   }
