@@ -49,18 +49,21 @@ class ContinueSetupButton extends Button {
       // Log which source we're using for customSettings
       if (setupParams.customSettings) {
         console.log(`Using custom settings from setupParams for guild ${guildId}`);
+        console.log("Custom settings content:", JSON.stringify(setupParams.customSettings, null, 2));
       } else if (global.lastCustomSettings) {
         console.log(`Using custom settings from global.lastCustomSettings for guild ${guildId}`);
+        console.log("Custom settings content:", JSON.stringify(global.lastCustomSettings, null, 2));
       } else {
         console.log(`Using default settings for guild ${guildId}`);
       }
   
-      // Clear the global variable
-      global.lastCustomSettings = null;
-  
+      // IMPORTANT: Save these settings directly to ensure they are persisted
       // Get bridge instance manager
       const InstanceManager = require('../../core/InstanceManager');
       
+      // Clear the global variable
+      global.lastCustomSettings = null;
+  
       // Generate QR code with this configuration
       const qrCode = await InstanceManager.generateQRCode({
         guildId,
@@ -77,6 +80,13 @@ class ContinueSetupButton extends Button {
           components: [],
         });
   
+        // Even though already connected, make sure the settings are saved
+        const existingInstance = InstanceManager.getInstanceByGuildId(guildId);
+        if (existingInstance) {
+          await InstanceManager.saveInstanceSettings(existingInstance.instanceId, customSettings);
+          console.log(`Saved settings to existing instance ${existingInstance.instanceId}`);
+        }
+        
         // Clean up setup params
         global.setupStorage.cleanupSetupParams(guildId);
         return;

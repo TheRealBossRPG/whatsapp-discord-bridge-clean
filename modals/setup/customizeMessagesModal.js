@@ -1,3 +1,4 @@
+// modals/setup/customizeMessagesModal.js - Fixed for proper settings saving
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const Modal = require('../../templates/Modal');
 
@@ -28,7 +29,7 @@ class CustomizeMessagesModal extends Modal {
         closeMessage: closeMessage ? closeMessage.substring(0, 20) + "..." : "missing",
       });
   
-      // Store settings in global variable for setup flow
+      // Store settings in a well-structured object with correct field names
       const customSettings = {
         welcomeMessage,
         introMessage,
@@ -45,22 +46,15 @@ class CustomizeMessagesModal extends Modal {
       // Store in global variable for later use in QR code generation
       global.lastCustomSettings = customSettings;
   
+      // Get bridge instance manager
+      const InstanceManager = require('../../core/InstanceManager');
+      
       // Try to get an instance - but don't fail if we can't find one (setup flow)
       if (instance && !instance.isTemporary) {
-        // Get bridge instance manager
-        const InstanceManager = require('../../core/InstanceManager');
-        
         // If we have a real instance, update its settings too
         console.log(`Updating existing instance ${instance.instanceId} settings`);
         
-        if (!instance.customSettings) {
-          instance.customSettings = {};
-        }
-        
-        // Update the settings
-        Object.assign(instance.customSettings, customSettings);
-        
-        // Save settings
+        // Save settings through the instance manager to ensure proper persistence
         await InstanceManager.saveInstanceSettings(instance.instanceId, customSettings);
       } else {
         // We're in setup mode, just log that we're storing temporary settings
