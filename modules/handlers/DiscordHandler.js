@@ -72,53 +72,79 @@ class DiscordHandler {
       }
       
       // Format the message content
-      let content = message.content;
-      
-      // Check if content is empty but there are attachments
-      if (!content && message.attachments.size > 0) {
-        content = "Image: ";
-      }
+      let content = message.content || "";
       
       // Add agent prefix
       const agentName = message.member?.nickname || message.author.username;
       content = `*${agentName}*: ${content}`;
       
-      // Send text message first
-      if (content) {
+      // Send text message first if there's content
+      if (content.trim().length > 0) {
         try {
           await this.whatsAppClient.sendTextMessage(phoneNumber, content);
         } catch (textError) {
           console.error(`[DiscordHandler:${this.instanceId}] Error sending text message:`, textError);
           await message.react('⚠️');
-          return false;
+          // Continue to try sending attachments even if text fails
         }
       }
       
       // Process attachments
       if (message.attachments.size > 0) {
+        let successCount = 0;
+        const totalAttachments = message.attachments.size;
+        
         for (const [attachmentId, attachment] of message.attachments) {
           try {
-            const result = await this.whatsAppClient.sendMediaFromUrl(
-              phoneNumber,
-              attachment.url,
-              attachment.name,
-              attachment.name
-            );
+            console.log(`[DiscordHandler:${this.instanceId}] Processing attachment: ${attachment.name} (${attachment.contentType})`);
             
-            if (!result) {
-              await message.react('⚠️');
-              return false;
+            // Determine the attachment type
+            const isImage = attachment.contentType?.startsWith('image/');
+            const isVideo = attachment.contentType?.startsWith('video/');
+            const isAudio = attachment.contentType?.startsWith('audio/');
+            const isGif = attachment.contentType === 'image/gif' || attachment.name?.endsWith('.gif');
+            const isDocument = !isImage && !isVideo && !isAudio;
+            
+            let result = false;
+            
+            // Handle different attachment types
+            if (isGif) {
+              result = await this.whatsAppClient.sendGif(phoneNumber, attachment.url, attachment.name);
+            } else if (isImage) {
+              result = await this.whatsAppClient.sendMediaFromUrl(phoneNumber, attachment.url, "Image", attachment.name);
+            } else if (isVideo) {
+              result = await this.whatsAppClient.sendMediaFromUrl(phoneNumber, attachment.url, "Video", attachment.name);
+            } else if (isAudio) {
+              result = await this.whatsAppClient.sendMediaFromUrl(phoneNumber, attachment.url, "Audio", attachment.name);
+            } else if (isDocument) {
+              result = await this.whatsAppClient.sendMediaFromUrl(phoneNumber, attachment.url, "Document", attachment.name);
             }
-          } catch (mediaError) {
-            console.error(`[DiscordHandler:${this.instanceId}] Error sending media:`, mediaError);
-            await message.react('⚠️');
-            return false;
+            
+            if (result) {
+              successCount++;
+            } else {
+              console.error(`[DiscordHandler:${this.instanceId}] Failed to send attachment: ${attachment.name}`);
+            }
+          } catch (attachmentError) {
+            console.error(`[DiscordHandler:${this.instanceId}] Error sending attachment:`, attachmentError);
           }
         }
+        
+        // React based on success ratio
+        if (successCount === totalAttachments) {
+          await message.react('✅');
+        } else if (successCount > 0) {
+          await message.react('⚠️'); // Some attachments failed
+        } else {
+          await message.react('❌'); // All attachments failed
+          await message.reply('❌ Failed to send media attachments to WhatsApp. Please try again or use a different format.');
+          return false;
+        }
+      } else {
+        // No attachments, just react with success for text message
+        await message.react('✅');
       }
       
-      // React with success emoji
-      await message.react('✅');
       return true;
     } catch (error) {
       console.error(`[DiscordHandler:${this.instanceId}] Error handling Discord message:`, error);

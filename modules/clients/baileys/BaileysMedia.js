@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+const axios = require('axios');
 
 class BaileysMedia {
   constructor(client) {
@@ -72,6 +73,42 @@ class BaileysMedia {
     }
   }
   
+  // Download media from URL to a local file
+  async downloadMediaFromUrl(url, filename) {
+    try {
+      console.log(`[BaileysMedia:${this.client.instanceId}] Downloading media from URL: ${url}`);
+      
+      // Generate temporary filename if not provided
+      if (!filename) {
+        const urlParts = url.split('/');
+        filename = urlParts[urlParts.length - 1].split('?')[0];
+      }
+      
+      // Create a file path in the temp directory
+      const tempPath = path.join(this.client.tempDir, `dl_${Date.now()}_${filename}`);
+      
+      // Download the file
+      const response = await axios({
+        method: 'GET',
+        url: url,
+        responseType: 'arraybuffer'
+      });
+      
+      // Write the file to disk
+      fs.writeFileSync(tempPath, Buffer.from(response.data));
+      
+      console.log(`[BaileysMedia:${this.client.instanceId}] Media downloaded to: ${tempPath}`);
+      return {
+        path: tempPath,
+        data: Buffer.from(response.data),
+        mimetype: response.headers['content-type']
+      };
+    } catch (error) {
+      console.error(`[BaileysMedia:${this.client.instanceId}] Error downloading media from URL:`, error);
+      throw error;
+    }
+  }
+  
   // Send a GIF
   async sendGif(recipient, gifInput, caption = '') {
     try {
@@ -87,7 +124,15 @@ class BaileysMedia {
       }
       
       // Format recipient
-      const jid = this.client.message.formatJid(recipient);
+      const jid = this.client.formatJid ? 
+                 this.client.formatJid(recipient) : 
+                 (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
+      
+      // If the input is a URL, download it first
+      if (typeof gifInput === 'string' && (gifInput.startsWith('http://') || gifInput.startsWith('https://'))) {
+        const downloadedMedia = await this.downloadMediaFromUrl(gifInput, 'input.gif');
+        gifInput = downloadedMedia.path;
+      }
       
       // Convert GIF to MP4
       const mp4Path = await this.convertGifToMp4(gifInput);
@@ -114,6 +159,50 @@ class BaileysMedia {
     }
   }
   
+  // Send a sticker
+  async sendSticker(recipient, stickerInput) {
+    try {
+      console.log(`[BaileysMedia:${this.client.instanceId}] Preparing to send sticker to ${recipient}...`);
+      
+      // Ensure initialized
+      if (!this.client.isReady) {
+        const initialized = await this.client.initialize();
+        if (!initialized) {
+          throw new Error('Failed to initialize Baileys connection');
+        }
+      }
+      
+      // Format recipient
+      const jid = this.client.formatJid ? 
+                this.client.formatJid(recipient) : 
+                (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
+      
+      // If the input is a URL, download it first
+      let stickerBuffer;
+      if (typeof stickerInput === 'string' && (stickerInput.startsWith('http://') || stickerInput.startsWith('https://'))) {
+        const downloadedMedia = await this.downloadMediaFromUrl(stickerInput);
+        stickerBuffer = downloadedMedia.data;
+      } else if (Buffer.isBuffer(stickerInput)) {
+        stickerBuffer = stickerInput;
+      } else if (typeof stickerInput === 'string' && fs.existsSync(stickerInput)) {
+        stickerBuffer = fs.readFileSync(stickerInput);
+      } else {
+        throw new Error('Invalid sticker input type');
+      }
+      
+      // Send as sticker
+      const result = await this.client.auth.sock.sendMessage(jid, {
+        sticker: stickerBuffer
+      });
+      
+      console.log(`[BaileysMedia:${this.client.instanceId}] Sticker sent successfully!`);
+      return result;
+    } catch (error) {
+      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending sticker:`, error);
+      throw error;
+    }
+  }
+  
   // Send a video
   async sendVideo(recipient, videoPath, caption = '') {
     try {
@@ -126,13 +215,28 @@ class BaileysMedia {
       }
       
       // Format recipient
-      const jid = this.client.message.formatJid(recipient);
+      const jid = this.client.formatJid ? 
+                this.client.formatJid(recipient) : 
+                (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
       
       console.log(`[BaileysMedia:${this.client.instanceId}] Sending video to ${jid}...`);
       
+      // If the input is a URL, download it first
+      let videoBuffer;
+      if (typeof videoPath === 'string' && (videoPath.startsWith('http://') || videoPath.startsWith('https://'))) {
+        const downloadedMedia = await this.downloadMediaFromUrl(videoPath);
+        videoBuffer = downloadedMedia.data;
+      } else if (Buffer.isBuffer(videoPath)) {
+        videoBuffer = videoPath;
+      } else if (typeof videoPath === 'string' && fs.existsSync(videoPath)) {
+        videoBuffer = fs.readFileSync(videoPath);
+      } else {
+        throw new Error('Invalid video input type');
+      }
+      
       // Send as video
       const result = await this.client.auth.sock.sendMessage(jid, {
-        video: fs.readFileSync(videoPath),
+        video: videoBuffer,
         caption: caption || undefined,
       });
       
@@ -140,6 +244,52 @@ class BaileysMedia {
       return result;
     } catch (error) {
       console.error(`[BaileysMedia:${this.client.instanceId}] Error sending video:`, error);
+      throw error;
+    }
+  }
+  
+  // Send an audio message
+  async sendAudio(recipient, audioPath, isVoiceNote = false) {
+    try {
+      // Ensure initialized
+      if (!this.client.isReady) {
+        const initialized = await this.client.initialize();
+        if (!initialized) {
+          throw new Error('Failed to initialize Baileys connection');
+        }
+      }
+      
+      // Format recipient
+      const jid = this.client.formatJid ? 
+                this.client.formatJid(recipient) : 
+                (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
+      
+      console.log(`[BaileysMedia:${this.client.instanceId}] Sending audio to ${jid}...`);
+      
+      // If the input is a URL, download it first
+      let audioBuffer;
+      if (typeof audioPath === 'string' && (audioPath.startsWith('http://') || audioPath.startsWith('https://'))) {
+        const downloadedMedia = await this.downloadMediaFromUrl(audioPath);
+        audioBuffer = downloadedMedia.data;
+      } else if (Buffer.isBuffer(audioPath)) {
+        audioBuffer = audioPath;
+      } else if (typeof audioPath === 'string' && fs.existsSync(audioPath)) {
+        audioBuffer = fs.readFileSync(audioPath);
+      } else {
+        throw new Error('Invalid audio input type');
+      }
+      
+      // Send as audio or voice note
+      const result = await this.client.auth.sock.sendMessage(jid, {
+        audio: audioBuffer,
+        mimetype: 'audio/mp4',
+        ptt: isVoiceNote // Set to true for voice note, false for audio file
+      });
+      
+      console.log(`[BaileysMedia:${this.client.instanceId}] Audio sent successfully!`);
+      return result;
+    } catch (error) {
+      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending audio:`, error);
       throw error;
     }
   }
@@ -156,16 +306,39 @@ class BaileysMedia {
       }
       
       // Format recipient
-      const jid = this.client.message.formatJid(recipient);
+      const jid = this.client.formatJid ? 
+                this.client.formatJid(recipient) : 
+                (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
       
       console.log(`[BaileysMedia:${this.client.instanceId}] Sending document to ${jid}...`);
       
-      // Handle buffer or file path
+      // Handle various input types
       let documentBuffer;
-      if (Buffer.isBuffer(documentPath)) {
+      if (typeof documentPath === 'string' && (documentPath.startsWith('http://') || documentPath.startsWith('https://'))) {
+        const downloadedMedia = await this.downloadMediaFromUrl(documentPath);
+        documentBuffer = downloadedMedia.data;
+        
+        // Use the downloaded file's content type if available
+        if (!filename) {
+          const urlParts = documentPath.split('/');
+          filename = urlParts[urlParts.length - 1].split('?')[0];
+        }
+      } else if (Buffer.isBuffer(documentPath)) {
         documentBuffer = documentPath;
-      } else {
+      } else if (typeof documentPath === 'string' && fs.existsSync(documentPath)) {
         documentBuffer = fs.readFileSync(documentPath);
+        
+        // Use the file's name if filename not provided
+        if (!filename) {
+          filename = path.basename(documentPath);
+        }
+      } else {
+        throw new Error('Invalid document input type');
+      }
+      
+      // Default filename if none provided
+      if (!filename) {
+        filename = `document_${Date.now()}.pdf`;
       }
       
       // Determine mimetype based on extension
@@ -197,6 +370,90 @@ class BaileysMedia {
     }
   }
   
+  // Send media from URL
+  async sendMediaFromUrl(recipient, url, mediaType = 'auto', filename = null, caption = '') {
+    try {
+      console.log(`[BaileysMedia:${this.client.instanceId}] Sending media from URL: ${url}`);
+      
+      // Download the media from the URL
+      const downloadedMedia = await this.downloadMediaFromUrl(url, filename);
+      
+      // Determine media type if set to auto
+      let detectedType = mediaType.toLowerCase();
+      if (detectedType === 'auto') {
+        const contentType = downloadedMedia.mimetype || '';
+        if (contentType.startsWith('image/')) {
+          if (contentType === 'image/gif') {
+            detectedType = 'gif';
+          } else {
+            detectedType = 'image';
+          }
+        } else if (contentType.startsWith('video/')) {
+          detectedType = 'video';
+        } else if (contentType.startsWith('audio/')) {
+          detectedType = 'audio';
+        } else {
+          detectedType = 'document';
+        }
+      }
+      
+      // Extract filename from URL if not provided
+      if (!filename) {
+        const urlParts = url.split('/');
+        filename = urlParts[urlParts.length - 1].split('?')[0];
+      }
+      
+      // Send based on detected type
+      let result;
+      switch (detectedType.toLowerCase()) {
+        case 'image':
+          result = await this.client.auth.sock.sendMessage(
+            this.client.formatJid ? this.client.formatJid(recipient) : `${recipient}@s.whatsapp.net`,
+            {
+              image: downloadedMedia.data,
+              caption: caption || undefined,
+              mimetype: downloadedMedia.mimetype
+            }
+          );
+          break;
+        
+        case 'gif':
+          result = await this.sendGif(recipient, downloadedMedia.path, caption);
+          break;
+        
+        case 'video':
+          result = await this.sendVideo(recipient, downloadedMedia.data, caption);
+          break;
+        
+        case 'audio':
+          result = await this.sendAudio(recipient, downloadedMedia.data, false);
+          break;
+        
+        case 'voice':
+        case 'ptt':
+          result = await this.sendAudio(recipient, downloadedMedia.data, true);
+          break;
+        
+        case 'document':
+        default:
+          result = await this.sendDocument(recipient, downloadedMedia.data, filename, caption);
+          break;
+      }
+      
+      // Clean up the downloaded file
+      try {
+        fs.unlinkSync(downloadedMedia.path);
+      } catch (e) {
+        console.error(`[BaileysMedia:${this.client.instanceId}] Error cleaning up temp file:`, e);
+      }
+      
+      return result;
+    } catch (error) {
+      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending media from URL:`, error);
+      throw error;
+    }
+  }
+  
   // Download media from a message
   async downloadMedia(chatId, messageId, messageObj = null) {
     try {
@@ -211,14 +468,18 @@ class BaileysMedia {
       }
       
       // Format chat ID
-      const jid = this.client.message.formatJid(chatId);
+      const jid = this.client.formatJid ? 
+                this.client.formatJid(chatId) : 
+                (chatId.includes('@s.whatsapp.net') ? chatId : `${chatId}@s.whatsapp.net`);
       
       // Get message object
       let msg = messageObj;
       
       if (!msg) {
         // Try to get from message store
-        msg = this.client.message.getStoredMessage(jid, messageId);
+        if (this.client.message && typeof this.client.message.getStoredMessage === 'function') {
+          msg = this.client.message.getStoredMessage(jid, messageId);
+        }
         
         if (!msg) {
           try {

@@ -61,51 +61,57 @@ class WhatsAppHandler {
       // Extract user ID
       const userId = this.channelManager.extractUserIdFromMessage(message);
       if (!userId) {
-        console.error(`[WhatsAppHandler:${this.instanceId}] Could not extract user ID from message`);
+        console.error(
+          `[WhatsAppHandler:${this.instanceId}] Could not extract user ID from message`
+        );
         return false;
       }
-  
+
       // Get message content
       const baileysMessage = require("../clients/baileys/BaileysMessage.js");
       const baileysMessageInstance = new BaileysMessage();
       const content = baileysMessageInstance.extractMessageText(message);
       const hasMedia = this.isMediaMessage(message);
-  
+
       // CRITICAL FIX: Get existing user info FIRST and log it
       const existingUserInfo = this.userCardManager.getUserInfo(userId);
-      console.log(`[WhatsAppHandler:${this.instanceId}] Looking up user ${userId}, found:`, 
-                  existingUserInfo ? JSON.stringify(existingUserInfo) : "no existing info");
-  
+      console.log(
+        `[WhatsAppHandler:${this.instanceId}] Looking up user ${userId}, found:`,
+        existingUserInfo ? JSON.stringify(existingUserInfo) : "no existing info"
+      );
+
       // Initialize user state tracker if needed
       if (!this.userState) {
         this.userState = new Map();
       }
-  
+
       // Get or create user state with proper username initialization
       let userState = this.userState.get(userId);
       if (!userState) {
         // IMPORTANT: If we have existing username, we're in active stage
-        const hasValidUsername = existingUserInfo && existingUserInfo.username && 
-                                existingUserInfo.username !== "Unknown User";
-        
+        const hasValidUsername =
+          existingUserInfo &&
+          existingUserInfo.username &&
+          existingUserInfo.username !== "Unknown User";
+
         userState = {
           stage: hasValidUsername ? "active" : "new",
           messages: [],
           username: hasValidUsername ? existingUserInfo.username : null,
           hasTicket: false,
-          welcomedBack: false
+          welcomedBack: false,
         };
-  
+
         this.userState.set(userId, userState);
       }
-  
+
       // Add message to history
       userState.messages.push({
         content,
         timestamp: Date.now(),
         isMedia: hasMedia,
       });
-  
+
       // Process based on conversation stage
       switch (userState.stage) {
         case "new":
@@ -117,69 +123,97 @@ class WhatsAppHandler {
           userState.stage = "greeted";
           this.userState.set(userId, userState);
           return true;
-  
+
         case "greeted":
           // Process user's name response
           const username = this.sanitizeUsername(content);
           userState.username = username;
-  
+
           // CRITICAL FIX: Save user info immediately and properly
-          console.log(`[WhatsAppHandler:${this.instanceId}] Setting username for ${userId} to "${username}"`);
+          console.log(
+            `[WhatsAppHandler:${this.instanceId}] Setting username for ${userId} to "${username}"`
+          );
           this.userCardManager.setUserInfo(userId, username);
-  
+
           // Send intro message
-          const introMessage = (this.introMessage || "Nice to meet you, {name}!")
-            .replace(/{name}/g, username);
+          const introMessage = (
+            this.introMessage || "Nice to meet you, {name}!"
+          ).replace(/{name}/g, username);
           await this.whatsAppClient.sendTextMessage(userId, introMessage);
-  
+
           // Create ticket
-          const ticketCreated = await this.ticketManager.createTicket(userId, username);
+          const ticketCreated = await this.ticketManager.createTicket(
+            userId,
+            username
+          );
           userState.stage = "active";
           userState.hasTicket = ticketCreated;
           this.userState.set(userId, userState);
           return ticketCreated;
-  
+
         case "active":
           // CRITICAL FIX: Better handle existing user case
           // Check if user has an active ticket channel
           let channelId = this.channelManager.getUserChannel(userId);
-          
+
           if (!channelId || !userState.hasTicket) {
             // Get username - prefer userState, fallback to stored info
-            const username = userState.username || 
-                            (existingUserInfo ? existingUserInfo.username : "Unknown User");
-  
+            const username =
+              userState.username ||
+              (existingUserInfo ? existingUserInfo.username : "Unknown User");
+
             // If returning user, send welcome back message
             if (!userState.welcomedBack) {
-              console.log(`[WhatsAppHandler:${this.instanceId}] Sending welcome back message to ${username} (${userId})`);
-              const reopenMessage = (this.reopenTicketMessage || "Welcome back, {name}!")
-                .replace(/{name}/g, username);
+              console.log(
+                `[WhatsAppHandler:${this.instanceId}] Sending welcome back message to ${username} (${userId})`
+              );
+              const reopenMessage = (
+                this.reopenTicketMessage || "Welcome back, {name}!"
+              ).replace(/{name}/g, username);
               await this.whatsAppClient.sendTextMessage(userId, reopenMessage);
               userState.welcomedBack = true;
             }
-  
+
             // Create a new ticket
-            console.log(`[WhatsAppHandler:${this.instanceId}] Creating new ticket for ${username} (${userId})`);
-            const newTicket = await this.ticketManager.createTicket(userId, username);
+            console.log(
+              `[WhatsAppHandler:${this.instanceId}] Creating new ticket for ${username} (${userId})`
+            );
+            const newTicket = await this.ticketManager.createTicket(
+              userId,
+              username
+            );
             userState.hasTicket = !!newTicket;
             this.userState.set(userId, userState);
-            
+
             // If ticket created successfully, forward the current message
             if (newTicket) {
-              return await this.ticketManager.forwardUserMessage(userId, content, hasMedia);
+              return await this.ticketManager.forwardUserMessage(
+                userId,
+                content,
+                hasMedia
+              );
             }
             return false;
           }
-  
+
           // Forward message to existing ticket
-          return await this.ticketManager.forwardUserMessage(userId, content, hasMedia);
-  
+          return await this.ticketManager.forwardUserMessage(
+            userId,
+            content,
+            hasMedia
+          );
+
         default:
-          console.error(`[WhatsAppHandler:${this.instanceId}] Unknown stage: ${userState.stage}`);
+          console.error(
+            `[WhatsAppHandler:${this.instanceId}] Unknown stage: ${userState.stage}`
+          );
           return false;
       }
     } catch (error) {
-      console.error(`[WhatsAppHandler:${this.instanceId}] Error handling message:`, error);
+      console.error(
+        `[WhatsAppHandler:${this.instanceId}] Error handling message:`,
+        error
+      );
       return false;
     }
   }
@@ -636,7 +670,7 @@ class WhatsAppHandler {
       // Get caption if any
       let caption = "";
 
-      // FIXED: Safely extract the caption
+      // Safely extract the caption
       if (message.message?.imageMessage?.caption) {
         caption = message.message.imageMessage.caption;
       } else if (message.message?.videoMessage?.caption) {
@@ -660,23 +694,27 @@ class WhatsAppHandler {
         // Forward just the caption if we couldn't download the media
         if (caption) {
           await this.ticketManager.forwardUserMessage(
-            channelId,
-            username,
-            `[Failed to download ${mediaType}] ${caption}`,
-            sender
+            sender,
+            {
+              content: `[Failed to download ${mediaType}] ${caption}`,
+              files: [],
+            },
+            true
           );
         } else {
           await this.ticketManager.forwardUserMessage(
-            channelId,
-            username,
-            `[Failed to download ${mediaType}]`,
-            sender
+            sender,
+            {
+              content: `[Failed to download ${mediaType}]`,
+              files: [],
+            },
+            true
           );
         }
         return;
       }
 
-      if (!media || !media.data) {
+      if (!media) {
         console.error(
           `[WhatsAppHandler:${this.instanceId}] No media data for ${mediaType} message`
         );
@@ -684,17 +722,21 @@ class WhatsAppHandler {
         // Forward just the caption if we have one
         if (caption) {
           await this.ticketManager.forwardUserMessage(
-            channelId,
-            username,
-            `[${mediaType} attachment - no data] ${caption}`,
-            sender
+            sender,
+            {
+              content: `[${mediaType} attachment - no data] ${caption}`,
+              files: [],
+            },
+            true
           );
         } else {
           await this.ticketManager.forwardUserMessage(
-            channelId,
-            username,
-            `[${mediaType} attachment - no data]`,
-            sender
+            sender,
+            {
+              content: `[${mediaType} attachment - no data]`,
+              files: [],
+            },
+            true
           );
         }
         return;
@@ -712,16 +754,22 @@ class WhatsAppHandler {
       const filepath = path.join(this.tempDir, filename);
 
       // Write the media to file
-      fs.writeFileSync(filepath, media.data);
+      fs.writeFileSync(filepath, media);
+
+      // Create content with username and caption
+      const contentPrefix = caption
+        ? `${caption}`
+        : `[${mediaType.toUpperCase()}]`;
+      const formattedContent = `**${username}**: ${contentPrefix}`;
 
       // Forward the media to Discord
-      await this.ticketManager.forwardUserMedia(
-        channelId,
-        username,
-        filepath,
-        caption,
+      await this.ticketManager.forwardUserMessage(
         sender,
-        media.mimetype
+        {
+          content: formattedContent,
+          files: [filepath],
+        },
+        true
       );
 
       // Update the user's status and last activity
@@ -752,7 +800,7 @@ class WhatsAppHandler {
       );
     }
   }
-
+  
   /**
    * Handle location message
    * @param {Object} message - WhatsApp message
