@@ -94,15 +94,6 @@ class ChannelManager {
   }
   
   /**
-   * For compatibility with the ticket manager
-   * @param {string} phoneNumber - WhatsApp phone number
-   * @param {string} channelId - Discord channel ID
-   */
-  mapUserToChannel(phoneNumber, channelId) {
-    return this.addChannelMapping(phoneNumber, channelId);
-  }
-  
-  /**
    * Get channel for a user
    * @param {string} phoneNumber - WhatsApp phone number
    * @returns {string|null} Channel ID

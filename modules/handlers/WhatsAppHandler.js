@@ -257,9 +257,9 @@ class WhatsAppHandler {
       // Map user to channel
       // CRITICAL FIX: Handle different method names for backward compatibility
       if (typeof this.channelManager.mapUserToChannel === 'function') {
-        this.channelManager.mapUserToChannel(sender, channel.id);
+        this.channelManager.addChannelMapping(sender, channel.id);
       } else if (typeof this.channelManager.addUserToChannel === 'function') {
-        this.channelManager.addUserToChannel(sender, channel.id);
+        this.channelManager.addChannelMapping(sender, channel.id);
       } else {
         console.error(`[WhatsAppHandler:${this.instanceId}] Could not find a method to map user to channel`);
       }

@@ -143,7 +143,7 @@ class TicketManager {
       });
 
       // Map channel to phone number in channel manager
-      await this.channelManager.addChannel(cleanPhone, channel.id);
+      await this.channelManager.addChannelMapping(cleanPhone, channel.id);
 
       // Get intro message template
       let introMessage = this.getIntroMessage();
