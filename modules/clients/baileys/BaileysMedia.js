@@ -26,7 +26,7 @@ class BaileysMedia {
   }
   
   // Convert GIF to MP4 using FFmpeg
-  async convertGifToMp4(gifInput) {
+  async convertGifToMp4(gifInput, outputPath = null) {
     try {
       let gifPath;
       let needToCleanup = false;
@@ -40,16 +40,19 @@ class BaileysMedia {
         gifPath = gifInput;
       }
       
-      const outputPath = path.join(
-        this.client.tempDir,
-        `baileys_mp4_${Date.now()}.mp4`
-      );
+      // Create output path if not provided
+      if (!outputPath) {
+        outputPath = path.join(
+          this.client.tempDir,
+          `baileys_mp4_${Date.now()}.mp4`
+        );
+      }
       
       console.log(`[BaileysMedia:${this.client.instanceId}] Converting GIF to MP4: ${gifPath} -> ${outputPath}`);
       
-      // Using exact command from working test
       return new Promise((resolve, reject) => {
-        const command = `ffmpeg -i "${gifPath}" -movflags faststart -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -b:v 1M -maxrate 1M -bufsize 1M -an "${outputPath}"`;
+        // Use more compatible ffmpeg settings
+        const command = `ffmpeg -f gif -i "${gifPath}" -movflags faststart -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -preset fast -c:v libx264 -b:v 1M -maxrate 1M -bufsize 1M -an "${outputPath}"`;
         
         exec(command, (error, stdout, stderr) => {
           // Clean up the input if we created it
@@ -59,7 +62,21 @@ class BaileysMedia {
           
           if (error) {
             console.error(`[BaileysMedia:${this.client.instanceId}] FFmpeg error:`, error);
-            reject(error);
+            
+            // Try a more basic conversion as fallback
+            const fallbackCommand = `ffmpeg -i "${gifPath}" -c:v libx264 -f mp4 "${outputPath}"`;
+            
+            exec(fallbackCommand, (fallbackError, fallbackStdout, fallbackStderr) => {
+              if (fallbackError) {
+                console.error(`[BaileysMedia:${this.client.instanceId}] Fallback FFmpeg error:`, fallbackError);
+                reject(fallbackError);
+                return;
+              }
+              
+              console.log(`[BaileysMedia:${this.client.instanceId}] GIF to MP4 fallback conversion complete: ${outputPath}`);
+              resolve(outputPath);
+            });
+            
             return;
           }
           
@@ -134,14 +151,39 @@ class BaileysMedia {
         gifInput = downloadedMedia.path;
       }
       
+      // Check if FFmpeg is installed
+      const ffmpegInstalled = await this.checkFfmpeg();
+      
+      if (!ffmpegInstalled) {
+        console.warn(`[BaileysMedia:${this.client.instanceId}] FFmpeg not found, sending as regular video`);
+        
+        // If ffmpeg isn't available, try sending as regular video
+        if (Buffer.isBuffer(gifInput)) {
+          const gifPath = path.join(this.client.tempDir, `baileys_gif_${Date.now()}.gif`);
+          fs.writeFileSync(gifPath, gifInput);
+          gifInput = gifPath;
+        }
+        
+        // Send as regular video without conversion
+        const result = await this.client.socket.sendMessage(jid, {
+          video: fs.readFileSync(gifInput),
+          caption: caption || undefined,
+          gifPlayback: true
+        });
+        
+        return result;
+      }
+      
       // Convert GIF to MP4
       const mp4Path = await this.convertGifToMp4(gifInput);
       
-      // Send as GIF
-      const result = await this.client.auth.sock.sendMessage(jid, {
+      // Send as GIF with proper attributes
+      const result = await this.client.socket.sendMessage(jid, {
         video: fs.readFileSync(mp4Path),
         caption: caption || undefined,
-        gifPlayback: true
+        gifPlayback: true,
+        jpegThumbnail: await this.generateThumbnail(mp4Path),
+        mimetype: 'video/mp4'
       });
       
       // Clean up
@@ -156,6 +198,34 @@ class BaileysMedia {
     } catch (error) {
       console.error(`[BaileysMedia:${this.client.instanceId}] Error sending GIF:`, error);
       throw error;
+    }
+  }
+
+  async generateThumbnail(videoPath) {
+    try {
+      const thumbnailPath = path.join(this.client.tempDir, `thumb_${Date.now()}.jpg`);
+      
+      return new Promise((resolve, reject) => {
+        exec(`ffmpeg -i "${videoPath}" -ss 0.0 -frames:v 1 "${thumbnailPath}"`, (error) => {
+          if (error) {
+            console.error(`[BaileysMedia:${this.client.instanceId}] Error generating thumbnail:`, error);
+            resolve(null); // Continue without thumbnail
+            return;
+          }
+          
+          try {
+            const thumbBuffer = fs.readFileSync(thumbnailPath);
+            fs.unlinkSync(thumbnailPath); // Clean up
+            resolve(thumbBuffer);
+          } catch (readError) {
+            console.error(`[BaileysMedia:${this.client.instanceId}] Error reading thumbnail:`, readError);
+            resolve(null);
+          }
+        });
+      });
+    } catch (error) {
+      console.error(`[BaileysMedia:${this.client.instanceId}] Error in generateThumbnail:`, error);
+      return null;
     }
   }
   
@@ -177,8 +247,10 @@ class BaileysMedia {
                 this.client.formatJid(recipient) : 
                 (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
       
-      // If the input is a URL, download it first
+      // Process different input types
       let stickerBuffer;
+      
+      // If the input is a URL, download it first
       if (typeof stickerInput === 'string' && (stickerInput.startsWith('http://') || stickerInput.startsWith('https://'))) {
         const downloadedMedia = await this.downloadMediaFromUrl(stickerInput);
         stickerBuffer = downloadedMedia.data;
@@ -190,9 +262,19 @@ class BaileysMedia {
         throw new Error('Invalid sticker input type');
       }
       
+      // Ensure we have valid sticker data
+      if (!stickerBuffer || stickerBuffer.length === 0) {
+        throw new Error('Empty sticker data');
+      }
+      
+      // For better compatibility, ensure it's webp format
+      // If input isn't webp, we could convert it using sharp or another library
+      // But for now, we'll just send it as is to keep complexity manageable
+      
       // Send as sticker
-      const result = await this.client.auth.sock.sendMessage(jid, {
-        sticker: stickerBuffer
+      const result = await this.client.socket.sendMessage(jid, {
+        sticker: stickerBuffer,
+        mimetype: 'image/webp'
       });
       
       console.log(`[BaileysMedia:${this.client.instanceId}] Sticker sent successfully!`);
@@ -264,32 +346,84 @@ class BaileysMedia {
                 this.client.formatJid(recipient) : 
                 (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Sending audio to ${jid}...`);
+      console.log(`[BaileysMedia:${this.instanceId}] Sending ${isVoiceNote ? 'voice note' : 'audio'} to ${jid}...`);
       
-      // If the input is a URL, download it first
+      // Handle different input types
       let audioBuffer;
+      let mimetype = 'audio/mp4';
+      
       if (typeof audioPath === 'string' && (audioPath.startsWith('http://') || audioPath.startsWith('https://'))) {
         const downloadedMedia = await this.downloadMediaFromUrl(audioPath);
         audioBuffer = downloadedMedia.data;
+        mimetype = downloadedMedia.mimetype || mimetype;
       } else if (Buffer.isBuffer(audioPath)) {
         audioBuffer = audioPath;
       } else if (typeof audioPath === 'string' && fs.existsSync(audioPath)) {
         audioBuffer = fs.readFileSync(audioPath);
+        
+        // Try to determine mimetype from filename extension
+        const ext = path.extname(audioPath).toLowerCase();
+        if (ext === '.mp3') mimetype = 'audio/mpeg';
+        else if (ext === '.ogg') mimetype = 'audio/ogg';
+        else if (ext === '.m4a') mimetype = 'audio/mp4';
+        else if (ext === '.wav') mimetype = 'audio/wav';
       } else {
         throw new Error('Invalid audio input type');
       }
       
-      // Send as audio or voice note
-      const result = await this.client.auth.sock.sendMessage(jid, {
+      // For voice notes (ptt), consider converting to the right format if needed
+      if (isVoiceNote) {
+        // WhatsApp voice notes typically work better as OGG/OPUS
+        if (mimetype !== 'audio/ogg' && await this.checkFfmpeg()) {
+          try {
+            const tempInput = path.join(this.client.tempDir, `voice_in_${Date.now()}`);
+            const tempOutput = path.join(this.client.tempDir, `voice_out_${Date.now()}.ogg`);
+            
+            fs.writeFileSync(tempInput, audioBuffer);
+            
+            await new Promise((resolve, reject) => {
+              // Convert to OGG/OPUS - optimal for voice notes
+              exec(`ffmpeg -i "${tempInput}" -c:a libopus -b:a 24k "${tempOutput}"`, (error) => {
+                if (error) {
+                  console.error(`[BaileysMedia:${this.client.instanceId}] Error converting voice note:`, error);
+                  resolve(); // Continue with original format
+                } else {
+                  try {
+                    audioBuffer = fs.readFileSync(tempOutput);
+                    mimetype = 'audio/ogg; codecs=opus';
+                    resolve();
+                  } catch (readError) {
+                    console.error(`[BaileysMedia:${this.client.instanceId}] Error reading converted voice note:`, readError);
+                    resolve(); // Continue with original format
+                  }
+                }
+                
+                // Clean up
+                try {
+                  if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
+                  if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+                } catch (e) { /* ignore */ }
+              });
+            });
+          } catch (convError) {
+            console.error(`[BaileysMedia:${this.client.instanceId}] Voice conversion error:`, convError);
+            // Continue with original format
+          }
+        }
+      }
+      
+      // Send the audio or voice note
+      const result = await this.client.socket.sendMessage(jid, {
         audio: audioBuffer,
-        mimetype: 'audio/mp4',
-        ptt: isVoiceNote // Set to true for voice note, false for audio file
+        mimetype: mimetype,
+        ptt: isVoiceNote, // This flag makes it a voice note
+        seconds: 0, // Baileys will calculate duration if not provided
       });
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Audio sent successfully!`);
+      console.log(`[BaileysMedia:${this.client.instanceId}] ${isVoiceNote ? 'Voice note' : 'Audio'} sent successfully!`);
       return result;
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending audio:`, error);
+      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending ${isVoiceNote ? 'voice note' : 'audio'}:`, error);
       throw error;
     }
   }
@@ -455,70 +589,53 @@ class BaileysMedia {
   }
   
   // Download media from a message
-  async downloadMedia(chatId, messageId, messageObj = null) {
+  async downloadMedia(message) {
     try {
-      console.log(`[BaileysMedia:${this.client.instanceId}] Downloading media from chat ${chatId}, message ${messageId}`);
+      console.log(`[BaileysMedia:${this.client.instanceId}] Downloading media from message`);
       
-      // Ensure initialized
-      if (!this.client.isReady) {
-        const initialized = await this.client.initialize();
-        if (!initialized) {
-          throw new Error('Failed to initialize Baileys connection');
-        }
+      if (!message) {
+        console.error(`[BaileysMedia:${this.client.instanceId}] No message provided for media download`);
+        return null;
       }
       
-      // Format chat ID
-      const jid = this.client.formatJid ? 
-                this.client.formatJid(chatId) : 
-                (chatId.includes('@s.whatsapp.net') ? chatId : `${chatId}@s.whatsapp.net`);
+      // Get the message properly depending on baileys structure
+      const downloadableMessage = message.message || message;
       
-      // Get message object
-      let msg = messageObj;
-      
-      if (!msg) {
-        // Try to get from message store
-        if (this.client.message && typeof this.client.message.getStoredMessage === 'function') {
-          msg = this.client.message.getStoredMessage(jid, messageId);
-        }
-        
-        if (!msg) {
-          try {
-            // Try to fetch message
-            const msgs = await this.client.auth.sock.fetchMessages(jid, { limit: 10 });
-            if (Array.isArray(msgs) && msgs.length > 0) {
-              msg = msgs.find(m => m.key.id === messageId);
-            }
-          } catch (fetchError) {
-            console.error(`[BaileysMedia:${this.client.instanceId}] Error fetching messages:`, fetchError);
-          }
-        }
-      }
-      
-      if (!msg) {
-        throw new Error(`Message ${messageId} not found in chat ${jid}`);
-      }
-      
-      // Download media
-      console.log(`[BaileysMedia:${this.client.instanceId}] Found message, downloading media...`);
+      // Use the downloadMediaMessage function with proper error handling
       const buffer = await downloadMediaMessage(
-        msg,
+        message, 
         'buffer',
         {},
         { 
           logger: this.client.logger,
-          reuploadRequest: this.client.auth.sock.updateMediaMessage
+          reuploadRequest: this.client.socket?.updateMediaMessage || undefined,
+          // Add timeouts to prevent hanging
+          downloadMediaTimeout: 60000
         }
       );
       
       if (!buffer || buffer.length === 0) {
-        throw new Error('Downloaded buffer is empty');
+        console.error(`[BaileysMedia:${this.client.instanceId}] Downloaded buffer is empty`);
+        return null;
       }
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Successfully downloaded ${buffer.length} bytes of media`);
-      return buffer;
+      // Get media type and metadata
+      const mediaType = this.getMediaType(message);
+      let mimetype = this.getMimeType(message, mediaType);
+      let filename = this.getFilename(message, mediaType, mimetype);
+      
+      console.log(`[BaileysMedia:${this.client.instanceId}] Successfully downloaded ${buffer.length} bytes of ${mediaType} media`);
+      
+      return {
+        buffer,
+        mediaType,
+        mimetype,
+        filename,
+        size: buffer.length
+      };
     } catch (error) {
       console.error(`[BaileysMedia:${this.client.instanceId}] Error downloading media:`, error);
-      throw error;
+      return null;
     }
   }
   
@@ -529,6 +646,46 @@ class BaileysMedia {
       mimetype: mimetype,
       filename: filename
     };
+  }
+
+  getMediaType(message) {
+    const msg = message.message || message;
+    
+    if (msg.imageMessage) return 'image';
+    if (msg.videoMessage) return 'video';
+    if (msg.audioMessage) return msg.audioMessage.ptt ? 'ptt' : 'audio';
+    if (msg.documentMessage) return 'document';
+    if (msg.stickerMessage) return 'sticker';
+    
+    return 'unknown';
+  }
+  
+  getMimeType(message, mediaType) {
+    const msg = message.message || message;
+    
+    switch (mediaType) {
+      case 'image': return msg.imageMessage?.mimetype || 'image/jpeg';
+      case 'video': return msg.videoMessage?.mimetype || 'video/mp4';
+      case 'audio': 
+      case 'ptt': return msg.audioMessage?.mimetype || 'audio/ogg';
+      case 'document': return msg.documentMessage?.mimetype || 'application/octet-stream';
+      case 'sticker': return msg.stickerMessage?.mimetype || 'image/webp';
+      default: return 'application/octet-stream';
+    }
+  }
+  
+  getFilename(message, mediaType, mimetype) {
+    const msg = message.message || message;
+    const timestamp = Date.now();
+    
+    // If document has a filename, use it
+    if (mediaType === 'document' && msg.documentMessage?.fileName) {
+      return msg.documentMessage.fileName;
+    }
+    
+    // Generate appropriate extension based on mimetype
+    const ext = this.getExtensionFromMimetype(mimetype);
+    return `${mediaType}_${timestamp}${ext}`;
   }
 }
 

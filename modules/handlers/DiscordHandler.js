@@ -2,6 +2,8 @@
 const { PermissionsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
+const BaileysMedia = require('../clients/baileys/BaileysMedia.js');
 
 /**
  * Handles Discord events and interactions
@@ -79,9 +81,11 @@ class DiscordHandler {
       content = `*${agentName}*: ${content}`;
       
       // Send text message first if there's content
+      let textSent = false;
       if (content.trim().length > 0) {
         try {
           await this.whatsAppClient.sendTextMessage(phoneNumber, content);
+          textSent = true;
         } catch (textError) {
           console.error(`[DiscordHandler:${this.instanceId}] Error sending text message:`, textError);
           await message.react('⚠️');
@@ -93,40 +97,97 @@ class DiscordHandler {
       if (message.attachments.size > 0) {
         let successCount = 0;
         const totalAttachments = message.attachments.size;
+        const reactions = [];
         
         for (const [attachmentId, attachment] of message.attachments) {
           try {
             console.log(`[DiscordHandler:${this.instanceId}] Processing attachment: ${attachment.name} (${attachment.contentType})`);
+            
+            // Download to temp file first for more reliable processing
+            const tempPath = path.join(this.tempDir, `discord_${Date.now()}_${attachmentId}_${attachment.name}`);
+            
+            // Download the file
+            const response = await axios({
+              method: 'GET',
+              url: attachment.url,
+              responseType: 'arraybuffer'
+            });
+            
+            fs.writeFileSync(tempPath, Buffer.from(response.data));
             
             // Determine the attachment type
             const isImage = attachment.contentType?.startsWith('image/');
             const isVideo = attachment.contentType?.startsWith('video/');
             const isAudio = attachment.contentType?.startsWith('audio/');
             const isGif = attachment.contentType === 'image/gif' || attachment.name?.endsWith('.gif');
+            const isVoice = isAudio && (attachment.name?.includes('voice') || attachment.name?.includes('ptt'));
             const isDocument = !isImage && !isVideo && !isAudio;
             
             let result = false;
+
+            const baileysMediaInstance = new BaileysMedia();
             
-            // Handle different attachment types
+            // Handle different attachment types with better error handling
             if (isGif) {
-              result = await this.whatsAppClient.sendGif(phoneNumber, attachment.url, attachment.name);
+              result = await baileysMediaInstance.sendGif(phoneNumber, tempPath, textSent ? undefined : content).catch(e => {
+                console.error(`[DiscordHandler:${this.instanceId}] GIF send error:`, e);
+                reactions.push('❓');
+                return false;
+              });
             } else if (isImage) {
-              result = await this.whatsAppClient.sendMediaFromUrl(phoneNumber, attachment.url, "Image", attachment.name);
+              result = await baileysMediaInstance.sendMediaFromUrl(phoneNumber, attachment.url, "image", attachment.name, textSent ? undefined : content).catch(e => {
+                console.error(`[DiscordHandler:${this.instanceId}] Image send error:`, e);
+                reactions.push('🖼️');
+                return false;
+              });
             } else if (isVideo) {
-              result = await this.whatsAppClient.sendMediaFromUrl(phoneNumber, attachment.url, "Video", attachment.name);
+              result = await baileysMediaInstance.sendMediaFromUrl(phoneNumber, attachment.url, "video", attachment.name, textSent ? undefined : content).catch(e => {
+                console.error(`[DiscordHandler:${this.instanceId}] Video send error:`, e);
+                reactions.push('🎥');
+                return false;
+              });
+            } else if (isVoice) {
+              result = await baileysMediaInstance.sendAudio(phoneNumber, tempPath, true).catch(e => {
+                console.error(`[DiscordHandler:${this.instanceId}] Voice send error:`, e);
+                reactions.push('🎤');
+                return false;
+              });
             } else if (isAudio) {
-              result = await this.whatsAppClient.sendMediaFromUrl(phoneNumber, attachment.url, "Audio", attachment.name);
+              result = await baileysMediaInstance.sendAudio(phoneNumber, tempPath, false).catch(e => {
+                console.error(`[DiscordHandler:${this.instanceId}] Audio send error:`, e);
+                reactions.push('🎵');
+                return false;
+              });
             } else if (isDocument) {
-              result = await this.whatsAppClient.sendMediaFromUrl(phoneNumber, attachment.url, "Document", attachment.name);
+              result = await baileysMediaInstance.sendDocument(phoneNumber, tempPath, attachment.name, textSent ? undefined : content).catch(e => {
+                console.error(`[DiscordHandler:${this.instanceId}] Document send error:`, e);
+                reactions.push('📄');
+                return false;
+              });
+            }
+            
+            // Clean up temp file
+            try {
+              fs.unlinkSync(tempPath);
+            } catch (unlinkError) {
+              console.error(`[DiscordHandler:${this.instanceId}] Error cleaning up temp file:`, unlinkError);
             }
             
             if (result) {
               successCount++;
-            } else {
-              console.error(`[DiscordHandler:${this.instanceId}] Failed to send attachment: ${attachment.name}`);
             }
           } catch (attachmentError) {
-            console.error(`[DiscordHandler:${this.instanceId}] Error sending attachment:`, attachmentError);
+            console.error(`[DiscordHandler:${this.instanceId}] Error processing attachment:`, attachmentError);
+            reactions.push('⚠️');
+          }
+        }
+        
+        // Add specific reaction for failed media types if any
+        for (const reaction of reactions) {
+          try {
+            await message.react(reaction);
+          } catch (e) {
+            /* Ignore reaction errors */
           }
         }
         
@@ -140,7 +201,7 @@ class DiscordHandler {
           await message.reply('❌ Failed to send media attachments to WhatsApp. Please try again or use a different format.');
           return false;
         }
-      } else {
+      } else if (textSent) {
         // No attachments, just react with success for text message
         await message.react('✅');
       }

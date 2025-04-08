@@ -666,11 +666,11 @@ class WhatsAppHandler {
       // Get user info
       const userCard = this.userCardManager.getUserCard(sender) || {};
       const username = userCard.name || "Unknown User";
-
+  
       // Get caption if any
       let caption = "";
-
-      // Safely extract the caption
+  
+      // Safely extract the caption from various message types
       if (message.message?.imageMessage?.caption) {
         caption = message.message.imageMessage.caption;
       } else if (message.message?.videoMessage?.caption) {
@@ -680,88 +680,76 @@ class WhatsAppHandler {
       } else if (message.caption) {
         caption = message.caption;
       }
-
-      // Get media
-      let media;
+  
+      // Get media with better error handling
+      let media = null;
       try {
+        // Always pass the full message object to downloadMedia
         media = await this.whatsAppClient.downloadMedia(message);
       } catch (downloadError) {
         console.error(
           `[WhatsAppHandler:${this.instanceId}] Failed to download media:`,
           downloadError
         );
-
+        
         // Forward just the caption if we couldn't download the media
         if (caption) {
           await this.ticketManager.forwardUserMessage(
             sender,
-            {
-              content: `[Failed to download ${mediaType}] ${caption}`,
-              files: [],
-            },
-            true
+            `[Failed to download ${mediaType}] ${caption}`,
+            false
           );
         } else {
           await this.ticketManager.forwardUserMessage(
             sender,
-            {
-              content: `[Failed to download ${mediaType}]`,
-              files: [],
-            },
-            true
+            `[Failed to download ${mediaType}]`,
+            false
           );
         }
         return;
       }
-
-      if (!media) {
+  
+      // If no media data, handle gracefully
+      if (!media || !media.buffer) {
         console.error(
           `[WhatsAppHandler:${this.instanceId}] No media data for ${mediaType} message`
         );
-
+  
         // Forward just the caption if we have one
         if (caption) {
           await this.ticketManager.forwardUserMessage(
             sender,
-            {
-              content: `[${mediaType} attachment - no data] ${caption}`,
-              files: [],
-            },
-            true
+            `[${mediaType} attachment - no data] ${caption}`,
+            false
           );
         } else {
           await this.ticketManager.forwardUserMessage(
             sender,
-            {
-              content: `[${mediaType} attachment - no data]`,
-              files: [],
-            },
-            true
+            `[${mediaType} attachment - no data]`,
+            false
           );
         }
         return;
       }
-
-      // Create a temporary file to store the media
+  
+      // Create a temporary file to store the media with proper extension
       const timestamp = Date.now();
-      const extension = this.getExtensionFromMimeType(
-        media.mimetype || `${mediaType}/unknown`
-      );
-      const filename = `${timestamp}_${sender.replace(
-        /[^\w]/g,
-        "_"
-      )}_${mediaType}${extension}`;
+      const extension = media.mimetype ? 
+        this.getExtensionFromMimeType(media.mimetype) : 
+        this.getDefaultExtension(mediaType);
+      
+      const filename = media.filename || `${timestamp}_${sender.replace(/[^\w]/g, "_")}_${mediaType}${extension}`;
       const filepath = path.join(this.tempDir, filename);
-
+  
       // Write the media to file
-      fs.writeFileSync(filepath, media);
-
+      fs.writeFileSync(filepath, media.buffer);
+  
       // Create content with username and caption
       const contentPrefix = caption
         ? `${caption}`
         : `[${mediaType.toUpperCase()}]`;
       const formattedContent = `**${username}**: ${contentPrefix}`;
-
+  
       // Forward the media to Discord
       await this.ticketManager.forwardUserMessage(
         sender,
@@ -771,7 +759,7 @@ class WhatsAppHandler {
         },
         true
       );
-
+  
       // Update the user's status and last activity
       if (userCard) {
         userCard.lastMessage = caption || `[${mediaType}]`;
@@ -779,7 +767,7 @@ class WhatsAppHandler {
         userCard.status = "active";
         this.userCardManager.updateUserCard(sender, userCard);
       }
-
+  
       // Cleanup temp file after delay to ensure Discord has time to process it
       setTimeout(() => {
         try {
@@ -800,7 +788,19 @@ class WhatsAppHandler {
       );
     }
   }
-  
+
+  getDefaultExtension(mediaType) {
+    switch (mediaType.toLowerCase()) {
+      case 'image': return '.jpg';
+      case 'video': return '.mp4';
+      case 'audio': return '.mp3';
+      case 'ptt': return '.ogg';
+      case 'sticker': return '.webp';
+      case 'document': return '.bin';
+      default: return '.bin';
+    }
+  }
+
   /**
    * Handle location message
    * @param {Object} message - WhatsApp message

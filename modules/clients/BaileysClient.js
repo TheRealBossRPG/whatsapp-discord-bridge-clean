@@ -51,6 +51,29 @@ class BaileysClient extends EventEmitter {
     );
   }
 
+  async downloadMedia(message) {
+    try {
+      if (!this.isReady || !this.socket) {
+        throw new Error("Client not initialized or not ready");
+      }
+
+      // Ensure we have a media helper
+      if (!this.media) {
+        const BaileysMedia = require("./baileys/BaileysMedia");
+        this.media = new BaileysMedia(this);
+      }
+
+      // Call through to the media helper with better handling
+      return await this.media.downloadMedia(null, null, message);
+    } catch (error) {
+      console.error(
+        `[BaileysClient:${this.instanceId}] Error downloading media:`,
+        error
+      );
+      throw error;
+    }
+  }
+
   /**
    * Set whether to show QR code during connection
    * @param {boolean} showQrCode - Whether to show QR code
