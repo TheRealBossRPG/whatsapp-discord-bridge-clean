@@ -61,58 +61,51 @@ class WhatsAppHandler {
       // Extract user ID
       const userId = this.channelManager.extractUserIdFromMessage(message);
       if (!userId) {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] Could not extract user ID from message`
-        );
+        console.error(`[WhatsAppHandler:${this.instanceId}] Could not extract user ID from message`);
         return false;
       }
-
+  
       // Get message content
       const baileysMessage = require("../clients/baileys/BaileysMessage.js");
       const baileysMessageInstance = new BaileysMessage();
       const content = baileysMessageInstance.extractMessageText(message);
       const hasMedia = this.isMediaMessage(message);
-
-      console.log(
-        `[WhatsAppHandler:${
-          this.instanceId
-        }] Message received from ${userId}: ${content.substring(0, 50)}${
-          content.length > 50 ? "..." : ""
-        } ${hasMedia ? "(with media)" : ""}`
-      );
-
+  
+      // CRITICAL FIX: Get existing user info FIRST and log it
+      const existingUserInfo = this.userCardManager.getUserInfo(userId);
+      console.log(`[WhatsAppHandler:${this.instanceId}] Looking up user ${userId}, found:`, 
+                  existingUserInfo ? JSON.stringify(existingUserInfo) : "no existing info");
+  
       // Initialize user state tracker if needed
       if (!this.userState) {
         this.userState = new Map();
       }
-
-      // IMPORTANT: First, check if we recognize this user from previous conversations
-      const existingUserInfo = this.userCardManager.getUserInfo(userId);
-
-      // Get or create user state
+  
+      // Get or create user state with proper username initialization
       let userState = this.userState.get(userId);
       if (!userState) {
-        // New conversation state
+        // IMPORTANT: If we have existing username, we're in active stage
+        const hasValidUsername = existingUserInfo && existingUserInfo.username && 
+                                existingUserInfo.username !== "Unknown User";
+        
         userState = {
-          stage:
-            existingUserInfo && existingUserInfo.username !== "Unknown User"
-              ? "active"
-              : "new",
+          stage: hasValidUsername ? "active" : "new",
           messages: [],
-          username: existingUserInfo ? existingUserInfo.username : null,
+          username: hasValidUsername ? existingUserInfo.username : null,
           hasTicket: false,
+          welcomedBack: false
         };
-
+  
         this.userState.set(userId, userState);
       }
-
+  
       // Add message to history
       userState.messages.push({
         content,
         timestamp: Date.now(),
         isMedia: hasMedia,
       });
-
+  
       // Process based on conversation stage
       switch (userState.stage) {
         case "new":
@@ -124,92 +117,69 @@ class WhatsAppHandler {
           userState.stage = "greeted";
           this.userState.set(userId, userState);
           return true;
-
+  
         case "greeted":
           // Process user's name response
           const username = this.sanitizeUsername(content);
           userState.username = username;
-
-          // Save user info
+  
+          // CRITICAL FIX: Save user info immediately and properly
+          console.log(`[WhatsAppHandler:${this.instanceId}] Setting username for ${userId} to "${username}"`);
           this.userCardManager.setUserInfo(userId, username);
-
+  
           // Send intro message
-          const introMessage = (
-            this.introMessage || "Nice to meet you, {name}!"
-          ).replace(/{name}/g, username);
+          const introMessage = (this.introMessage || "Nice to meet you, {name}!")
+            .replace(/{name}/g, username);
           await this.whatsAppClient.sendTextMessage(userId, introMessage);
-
+  
           // Create ticket
-          const ticketCreated = await this.ticketManager.createTicket(
-            userId,
-            username
-          );
+          const ticketCreated = await this.ticketManager.createTicket(userId, username);
           userState.stage = "active";
           userState.hasTicket = ticketCreated;
           this.userState.set(userId, userState);
-
-          // Forward previous messages (excluding name message)
-          if (ticketCreated && userState.messages.length > 1) {
-            for (let i = 0; i < userState.messages.length; i++) {
-              const msg = userState.messages[i];
-              // Skip the name message (i=1)
-              if (i !== 1) {
-                await this.ticketManager.forwardUserMessage(
-                  userId,
-                  msg.content,
-                  msg.isMedia
-                );
-              }
-            }
-          }
           return ticketCreated;
-
+  
         case "active":
-          // Handle existing user with active conversation
-          if (!userState.hasTicket) {
-            // Try to create/restore ticket
-            const username =
-              userState.username ||
-              (existingUserInfo ? existingUserInfo.username : "Unknown User");
-
+          // CRITICAL FIX: Better handle existing user case
+          // Check if user has an active ticket channel
+          let channelId = this.channelManager.getUserChannel(userId);
+          
+          if (!channelId || !userState.hasTicket) {
+            // Get username - prefer userState, fallback to stored info
+            const username = userState.username || 
+                            (existingUserInfo ? existingUserInfo.username : "Unknown User");
+  
             // If returning user, send welcome back message
-            if (existingUserInfo && !userState.welcomedBack) {
-              const reopenMessage = (
-                this.reopenTicketMessage || "Welcome back, {name}!"
-              ).replace(/{name}/g, username);
+            if (!userState.welcomedBack) {
+              console.log(`[WhatsAppHandler:${this.instanceId}] Sending welcome back message to ${username} (${userId})`);
+              const reopenMessage = (this.reopenTicketMessage || "Welcome back, {name}!")
+                .replace(/{name}/g, username);
               await this.whatsAppClient.sendTextMessage(userId, reopenMessage);
               userState.welcomedBack = true;
             }
-
-            const ticketCreated = await this.ticketManager.createTicket(
-              userId,
-              username
-            );
-            userState.hasTicket = ticketCreated;
+  
+            // Create a new ticket
+            console.log(`[WhatsAppHandler:${this.instanceId}] Creating new ticket for ${username} (${userId})`);
+            const newTicket = await this.ticketManager.createTicket(userId, username);
+            userState.hasTicket = !!newTicket;
             this.userState.set(userId, userState);
+            
+            // If ticket created successfully, forward the current message
+            if (newTicket) {
+              return await this.ticketManager.forwardUserMessage(userId, content, hasMedia);
+            }
+            return false;
           }
-
-          // Forward message to ticket
-          if (userState.hasTicket) {
-            return await this.ticketManager.forwardUserMessage(
-              userId,
-              content,
-              hasMedia
-            );
-          }
-          return false;
-
+  
+          // Forward message to existing ticket
+          return await this.ticketManager.forwardUserMessage(userId, content, hasMedia);
+  
         default:
-          console.error(
-            `[WhatsAppHandler:${this.instanceId}] Unknown conversation stage: ${userState.stage}`
-          );
+          console.error(`[WhatsAppHandler:${this.instanceId}] Unknown stage: ${userState.stage}`);
           return false;
       }
     } catch (error) {
-      console.error(
-        `[WhatsAppHandler:${this.instanceId}] Error handling message:`,
-        error
-      );
+      console.error(`[WhatsAppHandler:${this.instanceId}] Error handling message:`, error);
       return false;
     }
   }

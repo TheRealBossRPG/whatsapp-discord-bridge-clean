@@ -160,17 +160,19 @@ class UserCardManager {
       const cleanPhone = this.cleanPhoneNumber(phoneNumber);
       
       // Store user info with the phone number as the key
-      this.userCards.set(cleanPhone, {
+      const userInfo = {
         phoneNumber: cleanPhone,
         username: username || 'Unknown User',
         lastSeen: Date.now(),
         ...additionalInfo
-      });
+      };
+      
+      console.log(`[UserCardManager:${this.instanceId}] Setting user info for ${cleanPhone}: ${JSON.stringify(userInfo)}`);
+      this.userCards.set(cleanPhone, userInfo);
       
       // Save to disk
       this.saveUserCards();
       
-      console.log(`[UserCardManager:${this.instanceId}] Updated user info for ${cleanPhone} (${username})`);
       return true;
     } catch (error) {
       console.error(`[UserCardManager:${this.instanceId}] Error setting user info:`, error);
@@ -190,9 +192,14 @@ class UserCardManager {
       // Clean the phone number
       const cleanPhone = this.cleanPhoneNumber(phoneNumber);
       
-      // Get from cache
+      // IMPROVED: Log what we're looking up
+      console.log(`[UserCardManager:${this.instanceId}] Looking up info for ${cleanPhone}`);
+      
+      // Get from userCards map
       if (this.userCards.has(cleanPhone)) {
-        return this.userCards.get(cleanPhone);
+        const userCard = this.userCards.get(cleanPhone);
+        console.log(`[UserCardManager:${this.instanceId}] Found user info for ${cleanPhone}: ${JSON.stringify(userCard)}`);
+        return userCard;
       }
       
       console.log(`[UserCardManager:${this.instanceId}] No user info found for ${cleanPhone}`);

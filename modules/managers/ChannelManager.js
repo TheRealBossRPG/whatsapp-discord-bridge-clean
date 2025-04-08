@@ -111,7 +111,14 @@ class ChannelManager {
     // Clean up phone number format
     const cleanPhone = this.cleanPhoneNumber(phoneNumber);
 
+    // IMPORTANT: Log this mapping for debugging
+    console.log(
+      `[ChannelManager:${this.instanceId}] Mapping user ${cleanPhone} to channel ${channelId}`
+    );
+
     this.channelMap.set(cleanPhone, channelId);
+
+    // CRITICAL FIX: Make sure to save mappings to disk for persistence
     this.saveMappings();
   }
 
@@ -121,8 +128,22 @@ class ChannelManager {
    * @returns {string|null} Channel ID
    */
   getUserChannel(phoneNumber) {
-    const cleanPhone = this.cleanPhoneNumber(phoneNumber);
-    return this.channelMap.get(cleanPhone) || null;
+    try {
+      const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+      const channelId = this.channelMap.get(cleanPhone);
+      
+      // IMPROVED: Add logging
+      if (channelId) {
+        console.log(`[ChannelManager:${this.instanceId}] Found channel ${channelId} for user ${cleanPhone}`);
+      } else {
+        console.log(`[ChannelManager:${this.instanceId}] No channel found for user ${cleanPhone}`);
+      }
+      
+      return channelId || null;
+    } catch (error) {
+      console.error(`[ChannelManager:${this.instanceId}] Error in getUserChannel:`, error);
+      return null;
+    }
   }
 
   /**
@@ -141,14 +162,24 @@ class ChannelManager {
    * @returns {boolean} Success
    */
   removeChannel(phoneNumber) {
-    const cleanPhone = this.cleanPhoneNumber(phoneNumber);
-    const result = this.channelMap.delete(cleanPhone);
-
-    if (result) {
-      this.saveMappings();
+    try {
+      const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+      console.log(`[ChannelManager:${this.instanceId}] Removing channel for ${cleanPhone}`);
+      
+      const result = this.channelMap.delete(cleanPhone);
+      
+      if (result) {
+        this.saveMappings();
+        console.log(`[ChannelManager:${this.instanceId}] Successfully removed channel mapping for ${cleanPhone}`);
+      } else {
+        console.log(`[ChannelManager:${this.instanceId}] No channel mapping found for ${cleanPhone}`);
+      }
+      
+      return result;
+    } catch (error) {
+      console.error(`[ChannelManager:${this.instanceId}] Error removing channel:`, error);
+      return false;
     }
-
-    return result;
   }
 
   /**
@@ -274,44 +305,52 @@ class ChannelManager {
   }
 
   /**
- * Get username by user ID
- * @param {string} userId - User ID or phone number
- * @returns {string} - Username or default if not found
- */
-getUsernameByUserId(userId) {
-  try {
-    if (!userId) {
-      console.error(`[ChannelManager:${this.instanceId}] Cannot get username: missing userId`);
-      return 'Unknown User';
-    }
-    
-    // Clean phone number if it's a phone number
-    const cleanUserId = this.cleanPhoneNumber(userId);
-    
-    // Check if we have a username for this user
-    if (this.usernameMap && this.usernameMap.has(cleanUserId)) {
-      return this.usernameMap.get(cleanUserId);
-    }
-    
-    // If no username found but we have a user card manager, try to get from there
-    if (this.userCardManager && typeof this.userCardManager.getUserInfo === 'function') {
-      const userInfo = this.userCardManager.getUserInfo(cleanUserId);
-      if (userInfo && userInfo.username) {
-        // Store for future use
-        if (this.usernameMap) {
-          this.usernameMap.set(cleanUserId, userInfo.username);
-        }
-        return userInfo.username;
+   * Get username by user ID
+   * @param {string} userId - User ID or phone number
+   * @returns {string} - Username or default if not found
+   */
+  getUsernameByUserId(userId) {
+    try {
+      if (!userId) {
+        console.error(
+          `[ChannelManager:${this.instanceId}] Cannot get username: missing userId`
+        );
+        return "Unknown User";
       }
+
+      // Clean phone number if it's a phone number
+      const cleanUserId = this.cleanPhoneNumber(userId);
+
+      // Check if we have a username for this user
+      if (this.usernameMap && this.usernameMap.has(cleanUserId)) {
+        return this.usernameMap.get(cleanUserId);
+      }
+
+      // If no username found but we have a user card manager, try to get from there
+      if (
+        this.userCardManager &&
+        typeof this.userCardManager.getUserInfo === "function"
+      ) {
+        const userInfo = this.userCardManager.getUserInfo(cleanUserId);
+        if (userInfo && userInfo.username) {
+          // Store for future use
+          if (this.usernameMap) {
+            this.usernameMap.set(cleanUserId, userInfo.username);
+          }
+          return userInfo.username;
+        }
+      }
+
+      // Default fallback
+      return "Unknown User";
+    } catch (error) {
+      console.error(
+        `[ChannelManager:${this.instanceId}] Error getting username for ${userId}:`,
+        error
+      );
+      return "Unknown User";
     }
-    
-    // Default fallback
-    return 'Unknown User';
-  } catch (error) {
-    console.error(`[ChannelManager:${this.instanceId}] Error getting username for ${userId}:`, error);
-    return 'Unknown User';
   }
-}
 
   /**
    * Set special channels

@@ -1,8 +1,8 @@
 // modules/MediaManager.js - FIXED VERSION
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 
 /**
  * MediaManager class for handling media storage and directory structure
@@ -11,61 +11,79 @@ const crypto = require('crypto');
 class MediaManager {
   constructor(options = {}) {
     // Set instance ID - critical for isolation
-    this.instanceId = options.instanceId || 'default';
-    
+    this.instanceId = options.instanceId || "default";
+
     // Base directory for all storage
-    this.baseDir = options.baseDir || path.join(__dirname, '..', 'instances', this.instanceId, 'transcripts');
-    
+    this.baseDir =
+      options.baseDir ||
+      path.join(__dirname, "..", "instances", this.instanceId, "transcripts");
+
     // Cache for phone-to-username mapping (CLEAN phone numbers without @s.whatsapp.net)
     this.phoneNumberCache = new Map();
-    
+
     // Cache for media file hashes (for deduplication)
     this.mediaHashCache = new Map();
-    
+
     // Create essential directories
     this.ensureBaseDir();
-    
-    console.log(`[MediaManager:${this.instanceId}] Initialized with base directory: ${this.baseDir}`);
+
+    console.log(
+      `[MediaManager:${this.instanceId}] Initialized with base directory: ${this.baseDir}`
+    );
   }
-  
+
   /**
    * Ensure base directory exists
    */
   ensureBaseDir() {
     if (!fs.existsSync(this.baseDir)) {
       fs.mkdirSync(this.baseDir, { recursive: true });
-      console.log(`[MediaManager:${this.instanceId}] Created base directory: ${this.baseDir}`);
+      console.log(
+        `[MediaManager:${this.instanceId}] Created base directory: ${this.baseDir}`
+      );
     }
   }
-  
+
   /**
    * Set the instance ID
    * @param {string} instanceId - Instance ID to use
    */
   setInstanceId(instanceId) {
     if (!instanceId) {
-      console.warn(`[MediaManager:${this.instanceId}] Warning: Attempted to set null instanceId`);
+      console.warn(
+        `[MediaManager:${this.instanceId}] Warning: Attempted to set null instanceId`
+      );
       return;
     }
-    
+
     // Only update if the instance ID actually changed
     if (this.instanceId !== instanceId) {
-      console.log(`[MediaManager:${this.instanceId}] Changing instance ID from ${this.instanceId} to ${instanceId}`);
-      
+      console.log(
+        `[MediaManager:${this.instanceId}] Changing instance ID from ${this.instanceId} to ${instanceId}`
+      );
+
       // Clear caches when changing instances to prevent data leakage
       this.phoneNumberCache = new Map();
       this.mediaHashCache = new Map();
-      
+
       this.instanceId = instanceId;
-      
+
       // Update base directory for the new instance
-      this.baseDir = path.join(__dirname, '..', 'instances', this.instanceId, 'transcripts');
+      this.baseDir = path.join(
+        __dirname,
+        "..",
+        "instances",
+        this.instanceId,
+        "transcripts"
+      );
       this.ensureBaseDir();
-      
-      console.log(`[MediaManager:${this.instanceId}] Set instance ID to ${instanceId}, using base directory: ${this.baseDir}`);
+
+      console.log(
+        `[MediaManager:${this.instanceId}] Set instance ID to ${instanceId}, using base directory: ${this.baseDir}`
+      );
     }
   }
-  
+
   /**
    * CRITICAL FUNCTION: Clean phone number for consistent storage
    * Strips all WhatsApp extensions and formatting
@@ -73,63 +91,65 @@ class MediaManager {
    * @returns {string} - Cleaned phone number
    */
   cleanPhoneNumber(phoneNumber) {
-    if (!phoneNumber) return 'unknown';
-    
+    if (!phoneNumber) return "unknown";
+
     // Convert to string first
     let clean = String(phoneNumber);
-    
+
     // Remove WhatsApp extensions (be thorough)
-    clean = clean.replace(/@s\.whatsapp\.net/g, '')
-                .replace(/@c\.us/g, '')
-                .replace(/@g\.us/g, '')
-                .replace(/@broadcast/g, '')
-                .replace(/@.*$/, '');
-    
+    clean = clean
+      .replace(/@s\.whatsapp\.net/g, "")
+      .replace(/@c\.us/g, "")
+      .replace(/@g\.us/g, "")
+      .replace(/@broadcast/g, "")
+      .replace(/@.*$/, "");
+
     // Remove any non-digit characters except possibly leading '+' sign
-    if (clean.startsWith('+')) {
-      clean = '+' + clean.substring(1).replace(/[^0-9]/g, '');
+    if (clean.startsWith("+")) {
+      clean = "+" + clean.substring(1).replace(/[^0-9]/g, "");
     } else {
-      clean = clean.replace(/[^0-9]/g, '');
+      clean = clean.replace(/[^0-9]/g, "");
     }
-    
+
     return clean;
   }
-  
+
   /**
    * CRITICAL FUNCTION: Extract clean username WITHOUT phone number
    * @param {string} username - Raw username (may contain phone number)
    * @returns {string} - Clean username
    */
   extractCleanUsername(username) {
-    if (!username) return 'unknown';
-    
+    if (!username) return "unknown";
+
     // Convert to string and trim
     let clean = String(username).trim();
-    
+
     // Remove phone number if it's in parentheses at the end
-    clean = clean.replace(/\([^)]*\)$/, '').trim();
-    
+    clean = clean.replace(/\([^)]*\)$/, "").trim();
+
     // Also check for WhatsApp extensions directly in the username
-    clean = clean.replace(/@s\.whatsapp\.net/g, '')
-              .replace(/@c\.us/g, '')
-              .replace(/@g\.us/g, '')
-              .replace(/@broadcast/g, '')
-              .replace(/@.*$/, '').trim();
-    
+    clean = clean
+      .replace(/@s\.whatsapp\.net/g, "")
+      .replace(/@c\.us/g, "")
+      .replace(/@g\.us/g, "")
+      .replace(/@broadcast/g, "")
+      .replace(/@.*$/, "")
+      .trim();
+
     // Remove just numbers that look like phone numbers (10+ digits)
-    clean = clean.replace(/\s+\d{10,}$/, '').trim();
-    clean = clean.replace(/^\d{10,}\s+/, '').trim();
-    
+    clean = clean.replace(/\s+\d{10,}$/, "").trim();
+    clean = clean.replace(/^\d{10,}\s+/, "").trim();
+
     // Check for phone numbers that might be separated by hyphens, spaces, etc.
-    clean = clean.replace(/\s+\d{3}[\s-]*\d{3}[\s-]*\d{4}$/, '').trim();
-    
+    clean = clean.replace(/\s+\d{3}[\s-]*\d{3}[\s-]*\d{4}$/, "").trim();
+
     // If username is now empty, use 'unknown'
-    if (!clean) return 'unknown';
-    
+    if (!clean) return "unknown";
+
     return clean;
   }
-  
-  
+
   /**
    * Format display name for UI presentation - NO phone number included
    * @param {string} username - Username (may include phone number)
@@ -139,20 +159,23 @@ class MediaManager {
   formatDisplayName(username) {
     return this.extractCleanUsername(username);
   }
-  
+
   /**
    * Format directory name for folder structure - NO phone number included
-   * @param {string} username - Username 
+   * @param {string} username - Username
    * @returns {string} - Safe directory name
    */
   formatDirectoryName(username) {
     // Get clean username without phone number
     const clean = this.extractCleanUsername(username);
-    
+
     // Make filesystem safe: lowercase, replace spaces with hyphens, remove special chars
-    return clean.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    return clean
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-]/g, "");
   }
-  
+
   /**
    * Set phone number to username mapping
    * CRITICAL FIX: Store ONLY the clean username without phone
@@ -161,26 +184,30 @@ class MediaManager {
    */
   setPhoneToUsername(phoneNumber, username) {
     if (!phoneNumber || !username) {
-      console.log(`[MediaManager:${this.instanceId}] Skipping invalid phone-username mapping: ${phoneNumber} -> ${username}`);
+      console.log(
+        `[MediaManager:${this.instanceId}] Skipping invalid phone-username mapping: ${phoneNumber} -> ${username}`
+      );
       return;
     }
-    
+
     // Clean the phone number
     const cleanPhone = this.cleanPhoneNumber(phoneNumber);
-    
+
     // Extract clean username (no phone number)
     const cleanUsername = this.extractCleanUsername(username);
-    
-    console.log(`[MediaManager:${this.instanceId}] MAPPING: Setting phone ${cleanPhone} to clean username "${cleanUsername}"`);
-    
+
+    console.log(
+      `[MediaManager:${this.instanceId}] MAPPING: Setting phone ${cleanPhone} to clean username "${cleanUsername}"`
+    );
+
     // Check if we already have a mapping for this phone
     const existingUsername = this.phoneNumberCache.get(cleanPhone);
-    
+
     // If we don't have a mapping or it's different, update it
     if (!existingUsername || existingUsername !== cleanUsername) {
       // FIRST: Store the new mapping BEFORE doing anything else
       this.phoneNumberCache.set(cleanPhone, cleanUsername);
-      
+
       // If we had a different username before, handle directory renaming
       if (existingUsername && existingUsername !== cleanUsername) {
         this.renameUserDirectory(cleanPhone, existingUsername, cleanUsername);
@@ -190,8 +217,7 @@ class MediaManager {
       }
     }
   }
-  
-  
+
   /**
    * Get username from phone number
    * @param {string} phoneNumber - Phone number
@@ -201,7 +227,13 @@ class MediaManager {
     const cleanPhone = this.cleanPhoneNumber(phoneNumber);
     return this.phoneNumberCache.get(cleanPhone) || null;
   }
-  
+
+  /**
+   * Get user directory path - FIXED for consistent structure
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} username - User's name (may include phone)
+   * @returns {string} - Path to user directory
+   */
   /**
    * Get user directory path - FIXED for consistent structure
    * @param {string} phoneNumber - User's phone number
@@ -211,31 +243,51 @@ class MediaManager {
   getUserDir(phoneNumber, username) {
     // Clean the phone number
     const cleanPhone = this.cleanPhoneNumber(phoneNumber);
-    
-    // Try to get username from cache first
-    let cleanUsername = this.phoneNumberCache.get(cleanPhone);
-    
-    // If not in cache but username provided, extract and use it
+
+    // IMPROVED: Better username handling - check phone cache first
+    let cleanUsername = null;
+
+    // First try getting from cache
+    if (this.phoneNumberCache.has(cleanPhone)) {
+      cleanUsername = this.phoneNumberCache.get(cleanPhone);
+      console.log(
+        `[MediaManager:${this.instanceId}] Using cached username "${cleanUsername}" for ${cleanPhone}`
+      );
+    }
+
+    // If no username in cache but username provided, extract and use it
     if (!cleanUsername && username) {
       cleanUsername = this.extractCleanUsername(username);
+
+      // Important: Save this mapping to the cache
+      if (cleanUsername) {
+        this.phoneNumberCache.set(cleanPhone, cleanUsername);
+        console.log(
+          `[MediaManager:${this.instanceId}] Saved username "${cleanUsername}" for ${cleanPhone} to cache`
+        );
+      }
     }
-    
+
     // If still no username, use unknown
     if (!cleanUsername) {
-      cleanUsername = 'unknown';
+      cleanUsername = "unknown";
     }
-    
+
     // Format for safe directory name
     const safeDirName = this.formatDirectoryName(cleanUsername);
-    
+
+    // IMPORTANT: Log the directory name we're using
+    console.log(
+      `[MediaManager:${this.instanceId}] Using directory name "${safeDirName}" for user ${cleanPhone}`
+    );
+
     // CHANGED: Include phone number in directory name with parentheses
     const dirNameWithPhone = `${safeDirName}(${cleanPhone})`;
-    
+
     // SIMPLIFIED STRUCTURE: baseDir/username(phone)
     return path.join(this.baseDir, dirNameWithPhone);
   }
-  
-  
+
   /**
    * Ensure user directories exist
    * @param {string} phoneNumber - User's phone number
@@ -244,18 +296,20 @@ class MediaManager {
    */
   ensureUserDirectories(phoneNumber, username) {
     const userDir = this.getUserDir(phoneNumber, username);
-    
+
     // Create user directory if it doesn't exist
     if (!fs.existsSync(userDir)) {
       fs.mkdirSync(userDir, { recursive: true });
-      console.log(`[MediaManager:${this.instanceId}] Created user directory: ${userDir}`);
+      console.log(
+        `[MediaManager:${this.instanceId}] Created user directory: ${userDir}`
+      );
     }
-    
+
     // REMOVED: No longer creating redundant transcripts subdirectory
-    
+
     return { userDir };
   }
-  
+
   /**
    * Rename user directory when username changes
    * @param {string} phoneNumber - User's phone number
@@ -266,144 +320,192 @@ class MediaManager {
     try {
       // Clean the phone number
       const cleanPhone = this.cleanPhoneNumber(phoneNumber);
-      
+
       // Format directory names
       const safeOldDirName = this.formatDirectoryName(oldUsername);
       const safeNewDirName = this.formatDirectoryName(newUsername);
-      
+
       // Skip if directory names are the same
       if (safeOldDirName === safeNewDirName) {
-        console.log(`[MediaManager:${this.instanceId}] Directory names are the same, no need to rename: ${safeOldDirName}`);
+        console.log(
+          `[MediaManager:${this.instanceId}] Directory names are the same, no need to rename: ${safeOldDirName}`
+        );
         return;
       }
-      
+
       // Include phone number in directory names with parentheses
       const oldDirWithPhone = `${safeOldDirName}(${cleanPhone})`;
       const newDirWithPhone = `${safeNewDirName}(${cleanPhone})`;
-      
+
       // Get old and new paths
       const oldDir = path.join(this.baseDir, oldDirWithPhone);
       const newDir = path.join(this.baseDir, newDirWithPhone);
-      
-      console.log(`[MediaManager:${this.instanceId}] Trying to rename directory: ${oldDir} -> ${newDir}`);
-      
+
+      console.log(
+        `[MediaManager:${this.instanceId}] Trying to rename directory: ${oldDir} -> ${newDir}`
+      );
+
       // Check if old directory exists - direct approach first
       if (fs.existsSync(oldDir)) {
-        console.log(`[MediaManager:${this.instanceId}] Found exact match directory: ${oldDir}`);
-        
+        console.log(
+          `[MediaManager:${this.instanceId}] Found exact match directory: ${oldDir}`
+        );
+
         // Make sure parent dir exists
         const parentDir = path.dirname(newDir);
         if (!fs.existsSync(parentDir)) {
           fs.mkdirSync(parentDir, { recursive: true });
         }
-        
+
         // IMPORTANT: Make sure the target directory doesn't already exist
         if (fs.existsSync(newDir)) {
-          console.log(`[MediaManager:${this.instanceId}] Target directory already exists: ${newDir}`);
-          console.log(`[MediaManager:${this.instanceId}] Will merge contents instead of renaming`);
-          
+          console.log(
+            `[MediaManager:${this.instanceId}] Target directory already exists: ${newDir}`
+          );
+          console.log(
+            `[MediaManager:${this.instanceId}] Will merge contents instead of renaming`
+          );
+
           // Get all files from old directory
           const files = fs.readdirSync(oldDir);
-          
-          // Copy each file to the new directory 
+
+          // Copy each file to the new directory
           for (const file of files) {
             const oldFilePath = path.join(oldDir, file);
             const newFilePath = path.join(newDir, file);
-            
+
             if (!fs.existsSync(newFilePath)) {
               fs.copyFileSync(oldFilePath, newFilePath);
-              console.log(`[MediaManager:${this.instanceId}] Copied file: ${file}`);
+              console.log(
+                `[MediaManager:${this.instanceId}] Copied file: ${file}`
+              );
             }
           }
-          
+
           // Delete the old directory after copying all files
           try {
-            console.log(`[MediaManager:${this.instanceId}] Removing old directory after merge: ${oldDir}`);
+            console.log(
+              `[MediaManager:${this.instanceId}] Removing old directory after merge: ${oldDir}`
+            );
             fs.rmdirSync(oldDir, { recursive: true });
           } catch (rmError) {
-            console.error(`[MediaManager:${this.instanceId}] Error removing old directory: ${rmError.message}`);
+            console.error(
+              `[MediaManager:${this.instanceId}] Error removing old directory: ${rmError.message}`
+            );
           }
         } else {
           // No conflict, just rename the directory
-          console.log(`[MediaManager:${this.instanceId}] Renaming directory: ${oldDir} -> ${newDir}`);
+          console.log(
+            `[MediaManager:${this.instanceId}] Renaming directory: ${oldDir} -> ${newDir}`
+          );
           fs.renameSync(oldDir, newDir);
-          console.log(`[MediaManager:${this.instanceId}] Directory renamed successfully from ${oldDirWithPhone} to ${newDirWithPhone}`);
+          console.log(
+            `[MediaManager:${this.instanceId}] Directory renamed successfully from ${oldDirWithPhone} to ${newDirWithPhone}`
+          );
         }
       } else {
         // If exact match not found, search for approximate matches
-        console.log(`[MediaManager:${this.instanceId}] Exact directory not found: ${oldDir}`);
-        console.log(`[MediaManager:${this.instanceId}] Searching for phone number in directory names...`);
-        
+        console.log(
+          `[MediaManager:${this.instanceId}] Exact directory not found: ${oldDir}`
+        );
+        console.log(
+          `[MediaManager:${this.instanceId}] Searching for phone number in directory names...`
+        );
+
         let foundOldDir = false;
-        
+
         try {
           // Search for a directory containing the phone number
           const baseItems = fs.readdirSync(this.baseDir);
-          
+
           for (const item of baseItems) {
-            if (item.includes(`(${cleanPhone})`) && fs.statSync(path.join(this.baseDir, item)).isDirectory()) {
+            if (
+              item.includes(`(${cleanPhone})`) &&
+              fs.statSync(path.join(this.baseDir, item)).isDirectory()
+            ) {
               const foundDir = path.join(this.baseDir, item);
-              console.log(`[MediaManager:${this.instanceId}] Found directory with matching phone: ${foundDir}`);
-              
+              console.log(
+                `[MediaManager:${this.instanceId}] Found directory with matching phone: ${foundDir}`
+              );
+
               // Make sure target directory parent exists
               const parentDir = path.dirname(newDir);
               if (!fs.existsSync(parentDir)) {
                 fs.mkdirSync(parentDir, { recursive: true });
               }
-              
+
               // Check if target already exists
               if (fs.existsSync(newDir)) {
-                console.log(`[MediaManager:${this.instanceId}] Target directory already exists: ${newDir}`);
-                console.log(`[MediaManager:${this.instanceId}] Will merge contents instead of renaming`);
-                
+                console.log(
+                  `[MediaManager:${this.instanceId}] Target directory already exists: ${newDir}`
+                );
+                console.log(
+                  `[MediaManager:${this.instanceId}] Will merge contents instead of renaming`
+                );
+
                 // Copy files
                 const files = fs.readdirSync(foundDir);
                 for (const file of files) {
                   const oldFilePath = path.join(foundDir, file);
                   const newFilePath = path.join(newDir, file);
-                  
+
                   if (!fs.existsSync(newFilePath)) {
                     fs.copyFileSync(oldFilePath, newFilePath);
-                    console.log(`[MediaManager:${this.instanceId}] Copied file: ${file}`);
+                    console.log(
+                      `[MediaManager:${this.instanceId}] Copied file: ${file}`
+                    );
                   }
                 }
-                
+
                 // Remove old directory
                 try {
-                  console.log(`[MediaManager:${this.instanceId}] Removing old directory after merge: ${foundDir}`);
+                  console.log(
+                    `[MediaManager:${this.instanceId}] Removing old directory after merge: ${foundDir}`
+                  );
                   fs.rmdirSync(foundDir, { recursive: true });
                 } catch (rmError) {
-                  console.error(`[MediaManager:${this.instanceId}] Error removing old directory: ${rmError.message}`);
+                  console.error(
+                    `[MediaManager:${this.instanceId}] Error removing old directory: ${rmError.message}`
+                  );
                 }
               } else {
                 // Rename directory
-                console.log(`[MediaManager:${this.instanceId}] Renaming matched directory: ${foundDir} -> ${newDir}`);
+                console.log(
+                  `[MediaManager:${this.instanceId}] Renaming matched directory: ${foundDir} -> ${newDir}`
+                );
                 fs.renameSync(foundDir, newDir);
-                console.log(`[MediaManager:${this.instanceId}] Directory renamed successfully from ${item} to ${newDirWithPhone}`);
+                console.log(
+                  `[MediaManager:${this.instanceId}] Directory renamed successfully from ${item} to ${newDirWithPhone}`
+                );
               }
-              
+
               foundOldDir = true;
               break;
             }
           }
         } catch (searchError) {
-          console.error(`[MediaManager:${this.instanceId}] Error searching for matching directories: ${searchError.message}`);
+          console.error(
+            `[MediaManager:${this.instanceId}] Error searching for matching directories: ${searchError.message}`
+          );
         }
-        
+
         // If no matching directory found, create new directory structure
         if (!foundOldDir) {
-          console.log(`[MediaManager:${this.instanceId}] No matching directory found, creating new directory structure`);
+          console.log(
+            `[MediaManager:${this.instanceId}] No matching directory found, creating new directory structure`
+          );
           this.ensureUserDirectories(cleanPhone, newUsername);
         }
       }
     } catch (error) {
-      console.error(`[MediaManager:${this.instanceId}] Error renaming user directory: ${error.message}`);
+      console.error(
+        `[MediaManager:${this.instanceId}] Error renaming user directory: ${error.message}`
+      );
       // Try to create new directories anyway
       this.ensureUserDirectories(phoneNumber, newUsername);
     }
   }
-  
-  
+
   /**
    * Get transcripts directory path
    * @param {string} phoneNumber - User's phone number
@@ -414,7 +516,7 @@ class MediaManager {
     // Just return the user directory since we no longer use a separate transcripts subfolder
     return this.getUserDir(phoneNumber, username);
   }
-  
+
   /**
    * Save transcript file with proper path structure
    * @param {string} username - Username
@@ -423,85 +525,92 @@ class MediaManager {
    * @param {string} phoneNumber - Phone number
    * @returns {string} - Path to saved transcript
    */
-  saveTranscript(username, content, ticketName = '', phoneNumber = null) {
+  saveTranscript(username, content, ticketName = "", phoneNumber = null) {
     try {
       // Add instance ID to content if not already there
       if (!content.includes(`Instance: ${this.instanceId}`)) {
         const instanceLine = `Instance: ${this.instanceId}\n`;
-        const lines = content.split('\n');
-        
+        const lines = content.split("\n");
+
         // Find appropriate place to insert instance info
         let insertIndex = 0;
         for (let i = 0; i < Math.min(10, lines.length); i++) {
-          if (lines[i].includes('WhatsApp:')) {
+          if (lines[i].includes("WhatsApp:")) {
             insertIndex = i + 1;
             break;
           }
         }
-        
+
         if (insertIndex > 0) {
           lines.splice(insertIndex, 0, instanceLine);
-          content = lines.join('\n');
+          content = lines.join("\n");
         }
       }
-      
+
       // Extract clean username without phone number
       const cleanUsername = this.extractCleanUsername(username);
-      
+
       // Get clean phone number
       const cleanPhone = this.cleanPhoneNumber(phoneNumber);
-      
+
       // CHANGED: Get user directory which now includes the phone number
       const userDir = this.getUserDir(cleanPhone, cleanUsername);
-      
+
       // Create user directory if it doesn't exist
       if (!fs.existsSync(userDir)) {
         fs.mkdirSync(userDir, { recursive: true });
       }
-      
+
       // Create a master transcript filename
       const masterFilename = `transcript-master.md`;
       const masterPath = path.join(userDir, masterFilename);
-      
+
       // Also create a timestamped version for history
       const timestamp = Date.now();
-      const safeTicketName = ticketName ? this.formatDirectoryName(ticketName) : 'ticket';
+      const safeTicketName = ticketName
+        ? this.formatDirectoryName(ticketName)
+        : "ticket";
       const timestampedFilename = `transcript-${safeTicketName}-${timestamp}.md`;
       const timestampedPath = path.join(userDir, timestampedFilename);
-      
+
       // Make sure the content includes the phone number
       if (cleanPhone && !content.includes(`WhatsApp: ${cleanPhone}`)) {
         // Add phone number if not already included
         let phoneSection = `WhatsApp: ${cleanPhone}\n\n`;
-        
-        if (content.includes('WhatsApp:')) {
+
+        if (content.includes("WhatsApp:")) {
           // Replace existing phone number
           content = content.replace(/WhatsApp:.*\n/, phoneSection);
         } else {
           // Add phone number after the first few lines
-          const lines = content.split('\n');
+          const lines = content.split("\n");
           const firstLines = lines.slice(0, Math.min(5, lines.length));
           const restLines = lines.slice(Math.min(5, lines.length));
-          content = [...firstLines, phoneSection, ...restLines].join('\n');
+          content = [...firstLines, phoneSection, ...restLines].join("\n");
         }
       }
-      
+
       // Write transcript to both files
-      fs.writeFileSync(masterPath, content, 'utf8');
-      fs.writeFileSync(timestampedPath, content, 'utf8');
-      
-      console.log(`[MediaManager:${this.instanceId}] Saved master transcript to ${masterPath}`);
-      console.log(`[MediaManager:${this.instanceId}] Saved timestamped transcript to ${timestampedPath}`);
-      
+      fs.writeFileSync(masterPath, content, "utf8");
+      fs.writeFileSync(timestampedPath, content, "utf8");
+
+      console.log(
+        `[MediaManager:${this.instanceId}] Saved master transcript to ${masterPath}`
+      );
+      console.log(
+        `[MediaManager:${this.instanceId}] Saved timestamped transcript to ${timestampedPath}`
+      );
+
       // Return the master path
       return masterPath;
     } catch (error) {
-      console.error(`[MediaManager:${this.instanceId}] Error saving transcript: ${error.message}`);
+      console.error(
+        `[MediaManager:${this.instanceId}] Error saving transcript: ${error.message}`
+      );
       return null;
     }
   }
-  
-  
+
   /**
    * Reset all caches for clean restart
    */
@@ -519,35 +628,46 @@ module.exports = MediaManager;
 module.exports.formatFunctions = {
   // Extract clean username WITHOUT phone number
   formatDisplayName: (username, phoneNumber = null) => {
-    if (!username) return phoneNumber ? `Unknown(${phoneNumber})` : 'Unknown';
-    
+    if (!username) return phoneNumber ? `Unknown(${phoneNumber})` : "Unknown";
+
     // Remove phone number if in parentheses at the end
-    return String(username).replace(/\([^)]*\)$/, '').trim() || 'Unknown';
+    return (
+      String(username)
+        .replace(/\([^)]*\)$/, "")
+        .trim() || "Unknown"
+    );
   },
-  
+
   // Format directory name safely
   formatDirectoryName: (username, phoneNumber = null) => {
     // Extract clean username (no phone)
-    const clean = String(username).replace(/\([^)]*\)$/, '').trim() || 'unknown-user';
-    
+    const clean =
+      String(username)
+        .replace(/\([^)]*\)$/, "")
+        .trim() || "unknown-user";
+
     // Make filesystem safe
-    return clean.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    return clean
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-]/g, "");
   },
-  
+
   // Clean phone number by removing extensions
   cleanPhoneNumber: (phoneNumber) => {
-    if (!phoneNumber) return '';
-    
+    if (!phoneNumber) return "";
+
     // Convert to string
     let clean = String(phoneNumber);
-    
+
     // Remove WhatsApp extensions and non-digits
-    clean = clean.replace(/@s\.whatsapp\.net/g, '')
-                .replace(/@c\.us/g, '')
-                .replace(/@g\.us/g, '')
-                .replace(/@broadcast/g, '')
-                .replace(/@.*$/, '');
-    
+    clean = clean
+      .replace(/@s\.whatsapp\.net/g, "")
+      .replace(/@c\.us/g, "")
+      .replace(/@g\.us/g, "")
+      .replace(/@broadcast/g, "")
+      .replace(/@.*$/, "");
+
     return clean;
-  }
+  },
 };
