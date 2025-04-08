@@ -393,11 +393,6 @@ class TicketManager {
         allowedMentions: { parse: [] }, // Don't ping anyone
       });
 
-      // If this is a transcript-enabled message, add to transcript
-      if (this.transcriptManager && !this.transcriptManager.isDisabled) {
-        this.transcriptManager.addUserMessage(userId, username, content);
-      }
-
       return true;
     } catch (error) {
       console.error(

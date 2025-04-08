@@ -117,7 +117,7 @@ class WhatsAppHandler {
       switch (userState.stage) {
         case "new":
           // Send welcome message
-          await this.whatsAppClient.sendMessage(
+          await this.whatsAppClient.sendTextMessage(
             userId,
             this.welcomeMessage || "Welcome! What's your name?"
           );
@@ -137,10 +137,10 @@ class WhatsAppHandler {
           const introMessage = (
             this.introMessage || "Nice to meet you, {name}!"
           ).replace(/{name}/g, username);
-          await this.whatsAppClient.sendMessage(userId, introMessage);
+          await this.whatsAppClient.sendTextMessage(userId, introMessage);
 
           // Create ticket
-          const ticketCreated = await this.createTicketForUser(
+          const ticketCreated = await this.ticketManager.createTicket(
             userId,
             username
           );
@@ -177,11 +177,11 @@ class WhatsAppHandler {
               const reopenMessage = (
                 this.reopenTicketMessage || "Welcome back, {name}!"
               ).replace(/{name}/g, username);
-              await this.whatsAppClient.sendMessage(userId, reopenMessage);
+              await this.whatsAppClient.sendTextMessage(userId, reopenMessage);
               userState.welcomedBack = true;
             }
 
-            const ticketCreated = await this.createTicketForUser(
+            const ticketCreated = await this.ticketManager.createTicket(
               userId,
               username
             );
@@ -193,7 +193,7 @@ class WhatsAppHandler {
           if (userState.hasTicket) {
             return await this.ticketManager.forwardUserMessage(
               userId,
-              message,
+              content,
               hasMedia
             );
           }
@@ -268,6 +268,32 @@ class WhatsAppHandler {
       );
       return null;
     }
+  }
+
+  /**
+   * Check if a message contains media
+   * @param {Object} message - WhatsApp message object
+   * @returns {boolean} - Whether the message contains media
+   */
+  isMediaMessage(message) {
+    if (!message) return false;
+
+    // Extract the message content
+    const messageContent = message.message || {};
+
+    // Check for various media types
+    return !!(
+      messageContent.imageMessage ||
+      messageContent.videoMessage ||
+      messageContent.audioMessage ||
+      messageContent.documentMessage ||
+      messageContent.stickerMessage ||
+      messageContent.viewOnceMessage ||
+      messageContent.viewOnceMessageV2 ||
+      messageContent.documentWithCaptionMessage ||
+      // Backwards compatibility with older Baileys versions
+      messageContent.documentWithCaption
+    );
   }
 
   /**

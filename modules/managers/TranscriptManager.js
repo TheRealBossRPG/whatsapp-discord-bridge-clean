@@ -1,8 +1,8 @@
 // modules/managers/TranscriptManager.js
-const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
-const path = require('path');
-const fs = require('fs');
-const MediaManager = require('../../utils/MediaManager');
+const { EmbedBuilder, AttachmentBuilder } = require("discord.js");
+const path = require("path");
+const fs = require("fs");
+const MediaManager = require("../../utils/MediaManager");
 
 /**
  * Manages chat transcripts
@@ -13,22 +13,31 @@ class TranscriptManager {
    * @param {Object} options - Options
    */
   constructor(options = {}) {
-    this.instanceId = options.instanceId || 'default';
+    this.instanceId = options.instanceId || "default";
     this.transcriptChannelId = options.transcriptChannelId || null;
     this.discordClient = options.discordClient || null;
     this.guildId = options.guildId || null;
     this.isDisabled = false;
-    
+
     // Set up media manager
-    this.baseDir = options.baseDir || path.join(__dirname, '..', '..', 'instances', this.instanceId, 'transcripts');
+    this.baseDir =
+      options.baseDir ||
+      path.join(
+        __dirname,
+        "..",
+        "..",
+        "instances",
+        this.instanceId,
+        "transcripts"
+      );
     this.mediaManager = new MediaManager({
       instanceId: this.instanceId,
-      baseDir: this.baseDir
+      baseDir: this.baseDir,
     });
-    
+
     console.log(`[TranscriptManager:${this.instanceId}] Initialized`);
   }
-  
+
   /**
    * Set custom base directory
    * @param {string} dir - Base directory
@@ -37,7 +46,7 @@ class TranscriptManager {
     this.baseDir = dir;
     this.mediaManager.baseDir = dir;
   }
-  
+
   /**
    * Create and save transcript
    * @param {Object} channel - Discord channel
@@ -49,29 +58,33 @@ class TranscriptManager {
     try {
       // Check if disabled
       if (this.isDisabled) {
-        console.log(`[TranscriptManager:${this.instanceId}] Transcript creation disabled`);
+        console.log(
+          `[TranscriptManager:${this.instanceId}] Transcript creation disabled`
+        );
         return null;
       }
-      
+
       // Get user directory
       const userDir = this.getUserDir(phoneNumber, username);
-      
+
       // Ensure directory exists
       if (!fs.existsSync(userDir)) {
         fs.mkdirSync(userDir, { recursive: true });
       }
-      
+
       // Create filename with timestamp
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const filename = `transcript-${timestamp}.html`;
       const filepath = path.join(userDir, filename);
-      
+
       // Fetch messages from the channel (up to 100)
       const messages = await channel.messages.fetch({ limit: 100 });
-      
+
       // Sort messages by timestamp (oldest first)
-      const sortedMessages = Array.from(messages.values()).sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-      
+      const sortedMessages = Array.from(messages.values()).sort(
+        (a, b) => a.createdTimestamp - b.createdTimestamp
+      );
+
       // Start building HTML
       let html = `<!DOCTYPE html>
 <html lang="en">
@@ -147,79 +160,86 @@ class TranscriptManager {
   </div>
   <h2>Messages</h2>
 `;
-      
+
       // Add each message to the transcript
       for (const message of sortedMessages) {
         const author = message.member?.nickname || message.author.username;
         const isBot = message.author.bot;
-        const botPrefix = isBot ? '[BOT] ' : '';
-        
+        const botPrefix = isBot ? "[BOT] " : "";
+
         html += `
   <div class="message">
     <div class="author">${botPrefix}${author}</div>
     <div class="content">
       <div class="time">${message.createdAt.toLocaleString()}</div>
-      <div class="text">${message.content || ''}</div>`;
-        
+      <div class="text">${message.content || ""}</div>`;
+
         // Add attachments
         if (message.attachments.size > 0) {
           for (const [id, attachment] of message.attachments) {
             html += `
       <div class="attachment">
         <a href="${attachment.url}" target="_blank">${attachment.name}</a>
-        ${attachment.contentType?.startsWith('image/') 
-          ? `<br><img src="${attachment.url}" alt="${attachment.name}" style="max-width:400px; max-height:300px;">` 
-          : ''}
+        ${
+          attachment.contentType?.startsWith("image/")
+            ? `<br><img src="${attachment.url}" alt="${attachment.name}" style="max-width:400px; max-height:300px;">`
+            : ""
+        }
       </div>`;
           }
         }
-        
+
         // Add embeds
         if (message.embeds.length > 0) {
           for (const embed of message.embeds) {
             html += `
       <div class="embed">
-        ${embed.title ? `<div><strong>${embed.title}</strong></div>` : ''}
-        ${embed.description ? `<div>${embed.description}</div>` : ''}`;
-            
+        ${embed.title ? `<div><strong>${embed.title}</strong></div>` : ""}
+        ${embed.description ? `<div>${embed.description}</div>` : ""}`;
+
             if (embed.fields.length > 0) {
               for (const field of embed.fields) {
                 html += `
         <div><strong>${field.name}:</strong> ${field.value}</div>`;
               }
             }
-            
+
             html += `
       </div>`;
           }
         }
-        
+
         html += `
     </div>
   </div>`;
       }
-      
+
       // Close HTML
       html += `
 </body>
 </html>`;
-      
+
       // Write file
-      fs.writeFileSync(filepath, html, 'utf8');
-      console.log(`[TranscriptManager:${this.instanceId}] Saved transcript to ${filepath}`);
-      
+      fs.writeFileSync(filepath, html, "utf8");
+      console.log(
+        `[TranscriptManager:${this.instanceId}] Saved transcript to ${filepath}`
+      );
+
       // Send to transcript channel if available
       if (this.transcriptChannelId && this.discordClient && this.guildId) {
         await this.sendTranscriptToChannel(filepath, username, phoneNumber);
       }
-      
+
       return filepath;
     } catch (error) {
-      console.error(`[TranscriptManager:${this.instanceId}] Error creating transcript:`, error);
+      console.error(
+        `[TranscriptManager:${this.instanceId}] Error creating transcript:`,
+        error
+      );
       throw error;
     }
   }
-  
+
   /**
    * Send transcript to channel
    * @param {string} filepath - Path to transcript
@@ -231,52 +251,127 @@ class TranscriptManager {
     try {
       // Check if we have what we need
       if (!this.transcriptChannelId || !this.discordClient || !this.guildId) {
-        console.log(`[TranscriptManager:${this.instanceId}] Missing information to send transcript to channel`);
+        console.log(
+          `[TranscriptManager:${this.instanceId}] Missing information to send transcript to channel`
+        );
         return false;
       }
-      
+
       // Get guild
       const guild = this.discordClient.guilds.cache.get(this.guildId);
       if (!guild) {
-        console.error(`[TranscriptManager:${this.instanceId}] Guild not found: ${this.guildId}`);
+        console.error(
+          `[TranscriptManager:${this.instanceId}] Guild not found: ${this.guildId}`
+        );
         return false;
       }
-      
+
       // Get channel
       const channel = guild.channels.cache.get(this.transcriptChannelId);
       if (!channel) {
-        console.error(`[TranscriptManager:${this.instanceId}] Channel not found: ${this.transcriptChannelId}`);
+        console.error(
+          `[TranscriptManager:${this.instanceId}] Channel not found: ${this.transcriptChannelId}`
+        );
         return false;
       }
-      
+
       // Create embed
       const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('Ticket Transcript')
+        .setColor(0x5865f2)
+        .setTitle("Ticket Transcript")
         .setDescription(`Support ticket transcript for ${username}`)
         .addFields(
-          { name: 'User', value: username, inline: true },
-          { name: 'WhatsApp', value: phoneNumber.replace(/@.*$/, ''), inline: true },
-          { name: 'Date', value: new Date().toLocaleString(), inline: true }
+          { name: "User", value: username, inline: true },
+          {
+            name: "WhatsApp",
+            value: phoneNumber.replace(/@.*$/, ""),
+            inline: true,
+          },
+          { name: "Date", value: new Date().toLocaleString(), inline: true }
         )
         .setTimestamp();
-      
+
       // Create attachment
       const attachment = new AttachmentBuilder(filepath, {
-        name: `transcript-${username.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now()}.html`
+        name: `transcript-${username
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "-")}-${Date.now()}.html`,
       });
-      
+
       // Send to channel
       await channel.send({ embeds: [embed], files: [attachment] });
-      console.log(`[TranscriptManager:${this.instanceId}] Sent transcript to channel ${this.transcriptChannelId}`);
-      
+      console.log(
+        `[TranscriptManager:${this.instanceId}] Sent transcript to channel ${this.transcriptChannelId}`
+      );
+
       return true;
     } catch (error) {
-      console.error(`[TranscriptManager:${this.instanceId}] Error sending transcript to channel:`, error);
+      console.error(
+        `[TranscriptManager:${this.instanceId}] Error sending transcript to channel:`,
+        error
+      );
       return false;
     }
   }
-  
+
+  /**
+   * Add a user message to the transcript
+   * @param {string} userId - User ID or phone number
+   * @param {string} username - User's name
+   * @param {string} message - Message content
+   * @param {Date} timestamp - Message timestamp
+   * @param {boolean} isMedia - Whether the message is media
+   * @returns {boolean} - Success status
+   */
+  addUserMessage(
+    userId,
+    username,
+    message,
+    timestamp = new Date(),
+    isMedia = false
+  ) {
+    try {
+      // Skip if transcripts are disabled
+      if (this.isDisabled) {
+        return true;
+      }
+
+      // Initialize user's transcript array if it doesn't exist
+      if (!this.transcripts) {
+        this.transcripts = {};
+      }
+
+      if (!this.transcripts[userId]) {
+        this.transcripts[userId] = {
+          username: username || "Unknown User",
+          messages: [],
+        };
+      }
+
+      // Add message to transcript
+      this.transcripts[userId].messages.push({
+        isBot: false,
+        username: username,
+        content: message,
+        timestamp: timestamp,
+        isMedia: isMedia,
+      });
+
+      console.log(
+        `[TranscriptManager:${
+          this.instanceId
+        }] Added user message to transcript for ${username || userId}`
+      );
+      return true;
+    } catch (error) {
+      console.error(
+        `[TranscriptManager:${this.instanceId}] Error adding user message:`,
+        error
+      );
+      return false;
+    }
+  }
+
   /**
    * Get user directory
    * @param {string} phoneNumber - Phone number
@@ -286,7 +381,7 @@ class TranscriptManager {
   getUserDir(phoneNumber, username) {
     return this.mediaManager.getUserDir(phoneNumber, username);
   }
-  
+
   /**
    * Get transcripts directory
    * @param {string} phoneNumber - Phone number
