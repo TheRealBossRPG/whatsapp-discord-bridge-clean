@@ -1,4 +1,4 @@
-// modules/managers/UserCardManager.js - Fixed with proper method names
+// modules/managers/UserCardManager.js - Fixed for phone number keys
 const fs = require('fs');
 const path = require('path');
 
@@ -10,13 +10,12 @@ class UserCardManager {
    * Create a new UserCardManager
    * @param {string} instanceId - Instance ID
    */
-  constructor(instanceId) {
+  constructor(instanceId = 'default') {
     this.instanceId = instanceId;
     this.userCards = new Map();
-    this.usersFile = path.join(__dirname, '..', '..', 'instances', instanceId, 'user_cards.json');
-    this.phoneCache = new Map(); // Cache for phone number lookups
+    this.phoneCache = new Map(); // Initialize the phone cache
+    this.dataFile = path.join(__dirname, '..', '..', 'instances', instanceId, 'user_cards.json');
     
-    // Load existing user cards
     this.loadUserCards();
     
     console.log(`[UserCardManager:${this.instanceId}] Initialized with ${this.userCards.size} user cards`);
@@ -27,27 +26,66 @@ class UserCardManager {
    */
   loadUserCards() {
     try {
-      if (fs.existsSync(this.usersFile)) {
-        const data = fs.readFileSync(this.usersFile, 'utf8');
+      if (fs.existsSync(this.dataFile)) { // Fix: use dataFile not usersFile
+        const data = fs.readFileSync(this.dataFile, 'utf8');
         const jsonData = JSON.parse(data);
         
-        // Process each user card
-        for (const [key, value] of Object.entries(jsonData)) {
-          this.userCards.set(key, value);
-          
-          // Also create phone number lookup cache
-          if (value.phoneNumber) {
-            const cleanPhone = this.cleanPhoneNumber(value.phoneNumber);
-            this.phoneCache.set(cleanPhone, key);
+        // Check if it's the old format (keys like "user_1234_567")
+        const isOldFormat = Object.keys(jsonData).some(key => key.startsWith('user_'));
+        
+        if (isOldFormat) {
+          console.log(`[UserCardManager:${this.instanceId}] Converting old format user cards`);
+          this.convertOldFormat(jsonData);
+        } else {
+          // Process each user card in the new format (phone numbers as keys)
+          for (const [phoneNumber, userData] of Object.entries(jsonData)) {
+            const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+            this.userCards.set(cleanPhone, userData);
           }
         }
         
         console.log(`[UserCardManager:${this.instanceId}] Loaded ${this.userCards.size} user cards`);
       } else {
-        console.log(`[UserCardManager:${this.instanceId}] No user cards file found at ${this.usersFile}`);
+        console.log(`[UserCardManager:${this.instanceId}] No user cards file found at ${this.dataFile}`);
       }
     } catch (error) {
       console.error(`[UserCardManager:${this.instanceId}] Error loading user cards: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Convert old format user cards to new format
+   * @param {Object} oldData - Old format user data
+   */
+  convertOldFormat(oldData) {
+    try {
+      // Clear the existing maps
+      this.userCards.clear();
+      this.phoneCache.clear();
+      
+      // Process each entry in old format
+      for (const [oldKey, userData] of Object.entries(oldData)) {
+        // Extract phone number if it exists
+        if (userData.phoneNumber) {
+          const cleanPhone = this.cleanPhoneNumber(userData.phoneNumber);
+          this.userCards.set(cleanPhone, userData);
+        } 
+        // If it's a string value, it might be the old "user_id": "phoneNumber" format
+        else if (typeof userData === 'string') {
+          const cleanPhone = this.cleanPhoneNumber(userData);
+          this.userCards.set(cleanPhone, {
+            phoneNumber: cleanPhone,
+            username: 'Unknown User',
+            lastSeen: Date.now()
+          });
+        }
+      }
+      
+      // Save in new format
+      this.saveUserCards();
+      console.log(`[UserCardManager:${this.instanceId}] Converted ${this.userCards.size} user cards to new format`);
+    } catch (error) {
+      console.error(`[UserCardManager:${this.instanceId}] Error converting old format:`, error);
     }
   }
   
@@ -57,7 +95,7 @@ class UserCardManager {
   saveUserCards() {
     try {
       // Create directory if it doesn't exist
-      const dir = path.dirname(this.usersFile);
+      const dir = path.dirname(this.dataFile);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
@@ -69,7 +107,8 @@ class UserCardManager {
       }
       
       // Write to file
-      fs.writeFileSync(this.usersFile, JSON.stringify(jsonData, null, 2), 'utf8');
+      fs.writeFileSync(this.dataFile, JSON.stringify(jsonData, null, 2), 'utf8');
+      console.log(`[UserCardManager:${this.instanceId}] Saved ${this.userCards.size} user cards`);
     } catch (error) {
       console.error(`[UserCardManager:${this.instanceId}] Error saving user cards: ${error.message}`);
     }
@@ -83,114 +122,171 @@ class UserCardManager {
   cleanPhoneNumber(phoneNumber) {
     if (!phoneNumber) return '';
     
-    return String(phoneNumber)
-      .replace(/@s\.whatsapp\.net/g, '')
-      .replace(/@c\.us/g, '')
-      .replace(/@g\.us/g, '')
-      .replace(/@broadcast/g, '')
-      .replace(/@.*$/, '');
+    // Convert to string
+    let clean = String(phoneNumber);
+    
+    // Remove WhatsApp extensions
+    clean = clean.replace(/@s\.whatsapp\.net/g, '')
+               .replace(/@c\.us/g, '')
+               .replace(/@g\.us/g, '')
+               .replace(/@broadcast/g, '')
+               .replace(/@.*$/, '');
+    
+    // Only keep digits and possibly a leading +
+    if (clean.startsWith('+')) {
+      clean = '+' + clean.substring(1).replace(/[^0-9]/g, '');
+    } else {
+      clean = clean.replace(/[^0-9]/g, '');
+    }
+    
+    return clean;
   }
   
   /**
-   * Get a user card by unique ID
-   * @param {string} uniqueId - Unique user ID
-   * @returns {Object|null} - User card or null if not found
+   * Set user information - CRITICAL NEW METHOD that other components expect
+   * @param {string} phoneNumber - User's phone number
+   * @param {string} username - User's name
+   * @param {Object} additionalInfo - Additional user info
+   * @returns {boolean} - Success status
    */
-  getUserCard(uniqueId) {
-    return this.userCards.get(uniqueId) || null;
+  setUserInfo(phoneNumber, username, additionalInfo = {}) {
+    try {
+      if (!phoneNumber) {
+        console.error(`[UserCardManager:${this.instanceId}] Cannot set user info: missing phone number`);
+        return false;
+      }
+      
+      // Clean the phone number
+      const cleanPhone = this.cleanPhoneNumber(phoneNumber);
+      
+      // Store user info with the phone number as the key
+      this.userCards.set(cleanPhone, {
+        phoneNumber: cleanPhone,
+        username: username || 'Unknown User',
+        lastSeen: Date.now(),
+        ...additionalInfo
+      });
+      
+      // Save to disk
+      this.saveUserCards();
+      
+      console.log(`[UserCardManager:${this.instanceId}] Updated user info for ${cleanPhone} (${username})`);
+      return true;
+    } catch (error) {
+      console.error(`[UserCardManager:${this.instanceId}] Error setting user info:`, error);
+      return false;
+    }
   }
   
   /**
-   * CRITICAL FIX: Get a user card by phone number
-   * This is the method that was missing
-   * @param {string} phoneNumber - Phone number to lookup
-   * @returns {Object|null} - User card or null if not found
+   * Get user information - CRITICAL NEW METHOD that other components expect
+   * @param {string} phoneNumber - User's phone number
+   * @returns {Object|null} - User info or null if not found
    */
-  getUserCardByPhone(phoneNumber) {
+  getUserInfo(phoneNumber) {
     try {
       if (!phoneNumber) return null;
       
       // Clean the phone number
       const cleanPhone = this.cleanPhoneNumber(phoneNumber);
       
-      // Check the phone cache first
-      const uniqueId = this.phoneCache.get(cleanPhone);
-      if (uniqueId) {
-        return this.getUserCard(uniqueId);
+      // Get from cache
+      if (this.userCards.has(cleanPhone)) {
+        return this.userCards.get(cleanPhone);
       }
       
-      // If not in cache, search all user cards
-      for (const [id, card] of this.userCards.entries()) {
-        if (card.phoneNumber && this.cleanPhoneNumber(card.phoneNumber) === cleanPhone) {
-          // Update cache for future lookups
-          this.phoneCache.set(cleanPhone, id);
-          return card;
-        }
-      }
-      
+      console.log(`[UserCardManager:${this.instanceId}] No user info found for ${cleanPhone}`);
       return null;
     } catch (error) {
-      console.error(`[UserCardManager:${this.instanceId}] Error getting user card by phone: ${error.message}`);
+      console.error(`[UserCardManager:${this.instanceId}] Error getting user info:`, error);
       return null;
     }
   }
   
+  // Backward compatibility methods:
+  
   /**
-   * Create a new user card
-   * @param {Object} userData - User data
-   * @returns {string} - Unique ID for the user
+   * Get a user card by unique ID (compatibility method)
+   * @param {string} uniqueId - Unique user ID or phone number
+   * @returns {Object|null} - User card or null if not found
    */
-  createUserCard(userData) {
-    // Generate a unique ID
-    const uniqueId = `user_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-    
-    // Store the user card
-    this.userCards.set(uniqueId, userData);
-    
-    // Update phone cache if phone number is provided
-    if (userData.phoneNumber) {
-      const cleanPhone = this.cleanPhoneNumber(userData.phoneNumber);
-      this.phoneCache.set(cleanPhone, uniqueId);
+  getUserCard(uniqueId) {
+    // First try as a direct key (phone number)
+    if (this.userCards.has(uniqueId)) {
+      return this.userCards.get(uniqueId);
     }
     
-    // Save to disk
-    this.saveUserCards();
+    // Then try as a cleaned phone number
+    const cleanPhone = this.cleanPhoneNumber(uniqueId);
+    if (this.userCards.has(cleanPhone)) {
+      return this.userCards.get(cleanPhone);
+    }
     
-    return uniqueId;
+    return null;
   }
   
   /**
-   * Update a user card
-   * @param {string} uniqueId - Unique user ID
+   * Get a user card by phone number (compatibility method)
+   * @param {string} phoneNumber - Phone number to lookup
+   * @returns {Object|null} - User card or null if not found
+   */
+  getUserCardByPhone(phoneNumber) {
+    return this.getUserInfo(phoneNumber);
+  }
+  
+  /**
+   * Create a new user card (compatibility method - now uses phone number as key)
+   * @param {Object} userData - User data
+   * @returns {string} - Phone number as user ID
+   */
+  createUserCard(userData) {
+    if (!userData.phoneNumber) {
+      console.error(`[UserCardManager:${this.instanceId}] Cannot create user card without phone number`);
+      return null;
+    }
+    
+    const cleanPhone = this.cleanPhoneNumber(userData.phoneNumber);
+    this.userCards.set(cleanPhone, userData);
+    this.saveUserCards();
+    
+    return cleanPhone;
+  }
+  
+  /**
+   * Update a user card (compatibility method)
+   * @param {string} uniqueId - Unique user ID or phone number
    * @param {Object} userData - Updated user data
    * @returns {boolean} - Success
    */
   updateUserCard(uniqueId, userData) {
-    if (!this.userCards.has(uniqueId)) {
+    // If uniqueId is not a phone number, try to find the corresponding phone number
+    if (!uniqueId.match(/^\+?\d+$/)) {
+      console.warn(`[UserCardManager:${this.instanceId}] Non-phone number ID provided: ${uniqueId}`);
+      
+      // If userData contains a phone number, use that as the key
+      if (userData.phoneNumber) {
+        const cleanPhone = this.cleanPhoneNumber(userData.phoneNumber);
+        this.userCards.set(cleanPhone, {
+          ...userData,
+          phoneNumber: cleanPhone // Ensure clean phone number is stored
+        });
+        this.saveUserCards();
+        return true;
+      }
+      
       return false;
     }
     
-    // Get old data to check for phone number changes
-    const oldData = this.userCards.get(uniqueId);
+    // Clean the phone number
+    const cleanPhone = this.cleanPhoneNumber(uniqueId);
     
-    // Update user card
-    this.userCards.set(uniqueId, {
-      ...oldData,
-      ...userData
+    // Update or create the entry
+    const existingData = this.userCards.get(cleanPhone) || {};
+    this.userCards.set(cleanPhone, {
+      ...existingData,
+      ...userData,
+      phoneNumber: cleanPhone // Ensure clean phone number is stored
     });
-    
-    // Update phone cache if phone number changed
-    if (userData.phoneNumber && oldData.phoneNumber !== userData.phoneNumber) {
-      // Remove old phone number from cache
-      if (oldData.phoneNumber) {
-        const oldCleanPhone = this.cleanPhoneNumber(oldData.phoneNumber);
-        this.phoneCache.delete(oldCleanPhone);
-      }
-      
-      // Add new phone number to cache
-      const newCleanPhone = this.cleanPhoneNumber(userData.phoneNumber);
-      this.phoneCache.set(newCleanPhone, uniqueId);
-    }
     
     // Save to disk
     this.saveUserCards();
@@ -199,29 +295,27 @@ class UserCardManager {
   }
   
   /**
-   * Delete a user card
-   * @param {string} uniqueId - Unique user ID
+   * Delete a user card (compatibility method)
+   * @param {string} uniqueId - Unique user ID or phone number
    * @returns {boolean} - Success
    */
   deleteUserCard(uniqueId) {
-    if (!this.userCards.has(uniqueId)) {
-      return false;
+    // Try as a direct key
+    if (this.userCards.has(uniqueId)) {
+      this.userCards.delete(uniqueId);
+      this.saveUserCards();
+      return true;
     }
     
-    // Remove from phone cache
-    const userData = this.userCards.get(uniqueId);
-    if (userData && userData.phoneNumber) {
-      const cleanPhone = this.cleanPhoneNumber(userData.phoneNumber);
-      this.phoneCache.delete(cleanPhone);
+    // Try as a cleaned phone number
+    const cleanPhone = this.cleanPhoneNumber(uniqueId);
+    if (this.userCards.has(cleanPhone)) {
+      this.userCards.delete(cleanPhone);
+      this.saveUserCards();
+      return true;
     }
     
-    // Delete user card
-    this.userCards.delete(uniqueId);
-    
-    // Save to disk
-    this.saveUserCards();
-    
-    return true;
+    return false;
   }
   
   /**
@@ -257,10 +351,11 @@ class UserCardManager {
     const results = [];
     const searchName = name.toLowerCase();
     
-    for (const [id, card] of this.userCards.entries()) {
-      if (card.name && card.name.toLowerCase().includes(searchName)) {
+    for (const [phone, card] of this.userCards.entries()) {
+      if ((card.name && card.name.toLowerCase().includes(searchName)) ||
+          (card.username && card.username.toLowerCase().includes(searchName))) {
         results.push({
-          id,
+          id: phone, // Use phone number as ID
           ...card
         });
       }
