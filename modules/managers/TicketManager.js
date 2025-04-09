@@ -361,9 +361,9 @@ class TicketManager {
   /**
    * Forward a user message to their Discord ticket channel
    * @param {string} userId - User ID or phone number
-   * @param {Object} message - Message data
+   * @param {Object|string} message - Message data or text
    * @param {boolean} [isMedia=false] - Whether message contains media
-   * @returns {Promise<boolean>} - Success status
+   * @returns {Promise<boolean|string>} - Success status or message ID
    */
   async forwardUserMessage(userId, message, isMedia = false) {
     try {
@@ -412,8 +412,12 @@ class TicketManager {
           content = message.content || "";
           files = message.files || [];
 
-          // Add username if not already added
-          if (content && !content.startsWith(`**${username}**`)) {
+          // Add username if not already added and content doesn't already include it
+          if (
+            content &&
+            !content.startsWith(`**${username}**`) &&
+            !content.includes(`**${username}**:`)
+          ) {
             content = `**${username}**: ${content}`;
           }
         } else {
@@ -422,20 +426,34 @@ class TicketManager {
         }
       } else {
         // Handle text message
-        content =
-          typeof message === "string"
-            ? `**${username}**: ${message}`
-            : `**${username}**: ${message.body || message.content || ""}`;
+        if (typeof message === "string") {
+          // Simple string content
+          if (!message.includes(`**${username}**`)) {
+            content = `**${username}**: ${message}`;
+          } else {
+            content = message;
+          }
+        } else {
+          // Object with properties
+          content = message.content || message.body || "";
+
+          // Make sure username is included
+          if (!content.includes(`**${username}**`)) {
+            content = `**${username}**: ${content}`;
+          }
+        }
       }
 
       // Send to Discord channel
       try {
-        await channel.send({
+        const sentMessage = await channel.send({
           content: content,
           files: files,
           allowedMentions: { parse: [] }, // Don't ping anyone
         });
-        return true;
+
+        // Return the message ID for reference (useful for updating/editing)
+        return sentMessage.id;
       } catch (sendError) {
         console.error(
           `[TicketManager:${this.instanceId}] Error sending message to Discord:`,
@@ -445,10 +463,11 @@ class TicketManager {
         // If we failed to send files, try just sending the text
         if (files.length > 0) {
           try {
-            await channel.send({
+            const fallbackMessage = await channel.send({
               content: `${content}\n\n❌ *Failed to send media attachments.*`,
               allowedMentions: { parse: [] },
             });
+            return fallbackMessage.id;
           } catch (textError) {
             console.error(
               `[TicketManager:${this.instanceId}] Error sending fallback text message:`,

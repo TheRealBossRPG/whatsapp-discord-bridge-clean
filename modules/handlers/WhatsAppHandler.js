@@ -187,21 +187,13 @@ class WhatsAppHandler {
 
             // If ticket created successfully, forward the current message
             if (newTicket) {
-              return await this.ticketManager.forwardUserMessage(
-                userId,
-                content,
-                hasMedia
-              );
+              return await this.processMessage(message, userId, newTicket.id);
             }
             return false;
           }
 
           // Forward message to existing ticket
-          return await this.ticketManager.forwardUserMessage(
-            userId,
-            content,
-            hasMedia
-          );
+          return await this.processMessage(message, userId, channelId);
 
         default:
           console.error(
@@ -366,176 +358,6 @@ class WhatsAppHandler {
   }
 
   /**
-   * Handle first contact from a new user
-   * @param {string} sender - Sender ID
-   * @param {Object} message - WhatsApp message
-   */
-  async handleFirstContact(sender, message) {
-    try {
-      // CRITICAL FIX: Get the text safely with proper type checking
-      const text = this.getTextFromMessage(message);
-
-      // Check if we have a non-empty string
-      if (typeof text === "string" && text.trim()) {
-        // Check if the message contains a name (assume any first message with 2+ chars is a name)
-        if (text.trim().length >= 2 && /[a-zA-Z]/.test(text)) {
-          // Assume this is a name response
-          await this.handleNameResponse(sender, text.trim());
-        } else {
-          // Send welcome message asking for name
-          await this.sendWelcomeMessage(sender);
-        }
-      } else {
-        // No text content (maybe a media message), send welcome message
-        await this.sendWelcomeMessage(sender);
-      }
-    } catch (error) {
-      console.error(
-        `[WhatsAppHandler:${this.instanceId}] Error handling first contact:`,
-        error
-      );
-    }
-  }
-
-  /**
-   * Send welcome message to new user
-   * @param {string} sender - Sender ID
-   */
-  async sendWelcomeMessage(sender) {
-    try {
-      // Send welcome message
-      await this.whatsAppClient.sendTextMessage(sender, this.welcomeMessage);
-
-      // Create a minimal user card to track that we've initiated contact
-      this.userCardManager.createMinimalUserCard(sender);
-    } catch (error) {
-      console.error(
-        `[WhatsAppHandler:${this.instanceId}] Error sending welcome message:`,
-        error
-      );
-    }
-  }
-
-  /**
-   * Handle name response from user
-   * @param {string} sender - Sender ID
-   * @param {string} name - User's name
-   */
-  async handleNameResponse(sender, name) {
-    try {
-      // Create or update user card with name
-      const userCard = this.userCardManager.getUserCard(sender) || {};
-      userCard.name = name;
-      this.userCardManager.updateUserCard(sender, userCard);
-
-      // Create channel for this user
-      const channel = await this.ticketManager.createTicket(sender, name);
-
-      if (!channel) {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] Failed to create channel for ${sender}`
-        );
-        await this.whatsAppClient.sendTextMessage(
-          sender,
-          "I'm sorry, there was an issue setting up your support ticket. Please try again later."
-        );
-        return;
-      }
-
-      // Map user to channel
-      // CRITICAL FIX: Handle different method names for backward compatibility
-      if (typeof this.channelManager.mapUserToChannel === "function") {
-        this.channelManager.addChannelMapping(sender, channel.id);
-      } else if (typeof this.channelManager.addUserToChannel === "function") {
-        this.channelManager.addChannelMapping(sender, channel.id);
-      } else {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] Could not find a method to map user to channel`
-        );
-      }
-
-      // Send intro message to user
-      const personalizedIntro = this.introMessage.replace(/{name}/g, name);
-      await this.whatsAppClient.sendTextMessage(sender, personalizedIntro);
-
-      console.log(
-        `[WhatsAppHandler:${this.instanceId}] Created ticket channel ${channel.id} for user ${name} (${sender})`
-      );
-    } catch (error) {
-      console.error(
-        `[WhatsAppHandler:${this.instanceId}] Error handling name response:`,
-        error
-      );
-
-      // Try to send fallback message
-      try {
-        await this.whatsAppClient.sendTextMessage(
-          sender,
-          "I'm sorry, there was an issue setting up your support ticket. Please try again later."
-        );
-      } catch (sendError) {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] Error sending fallback message:`,
-          sendError
-        );
-      }
-    }
-  }
-
-  /**
-   * Handle returning user
-   * @param {string} sender - Sender ID
-   * @param {Object} userCard - User card
-   * @param {Object} message - WhatsApp message
-   */
-  async handleReturningUser(sender, userCard, message) {
-    try {
-      // Create a new ticket channel for returning user
-      const name = userCard.name || "User";
-      const channel = await this.ticketManager.createTicket(sender, name);
-
-      if (!channel) {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] Failed to create channel for returning user ${sender}`
-        );
-        await this.whatsAppClient.sendTextMessage(
-          sender,
-          "I'm sorry, there was an issue setting up your support ticket. Please try again later."
-        );
-        return;
-      }
-
-      // Map user to channel
-      // CRITICAL FIX: Handle different method names for backward compatibility
-      if (typeof this.channelManager.mapUserToChannel === "function") {
-        this.channelManager.mapUserToChannel(sender, channel.id);
-      } else if (typeof this.channelManager.addUserToChannel === "function") {
-        this.channelManager.addUserToChannel(sender, channel.id);
-      } else {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] Could not find a method to map user to channel`
-        );
-      }
-
-      // Send reopen message
-      const reopenMessage = this.reopenTicketMessage.replace(/{name}/g, name);
-      await this.whatsAppClient.sendTextMessage(sender, reopenMessage);
-
-      // Also send the original message to Discord
-      await this.processMessage(message, sender, channel.id);
-
-      console.log(
-        `[WhatsAppHandler:${this.instanceId}] Reopened ticket channel ${channel.id} for returning user ${name} (${sender})`
-      );
-    } catch (error) {
-      console.error(
-        `[WhatsAppHandler:${this.instanceId}] Error handling returning user:`,
-        error
-      );
-    }
-  }
-
-  /**
    * Process message for existing ticket channel
    * @param {Object} message - WhatsApp message
    * @param {string} sender - Sender ID
@@ -546,294 +368,186 @@ class WhatsAppHandler {
       // Get the text content from the message
       const text = this.getTextFromMessage(message);
 
-      // Process commands if they exist
-      if (typeof text === "string" && text.trim().startsWith("!")) {
-        const command = text.trim().split(" ")[0].toLowerCase();
-
-        // Check for vouch command
-        if (
-          command === "!vouch" &&
-          this.vouchHandler &&
-          !this.vouchHandler.isDisabled
-        ) {
-          await this.vouchHandler.handleVouchCommand(sender);
-          return;
+      // Process vouch commands if they exist
+      if (
+        typeof text === "string" &&
+        text.trim().toLowerCase().startsWith("vouch!")
+      ) {
+        // Check if vouch handler is available
+        if (this.vouchHandler && !this.vouchHandler.isDisabled) {
+          const userCard = this.userCardManager.getUserInfo(sender);
+          const result = await this.vouchHandler.handleVouch(
+            sender,
+            { text },
+            userCard,
+            message
+          );
+          // If vouch was handled successfully, don't process as normal message
+          if (result) return true;
         }
       }
 
-      // Process message based on type
+      // IMPROVED: Better media type detection
+      // First check for stickers specifically
+      if (message.message?.stickerMessage) {
+        // Handle sticker message specially
+        return await this.handleStickerMessage(
+          message,
+          sender,
+          channelId,
+          text
+        );
+      }
+
+      // Then check for other media types
       if (
         message.message?.imageMessage ||
         message.image ||
         message.mimetype?.startsWith("image/")
       ) {
         // Handle image message
-        await this.handleMediaMessage(message, sender, channelId, "image");
+        return await this.handleMediaMessage(
+          message,
+          sender,
+          channelId,
+          "image",
+          text
+        );
       } else if (
         message.message?.videoMessage ||
         message.video ||
         message.mimetype?.startsWith("video/")
       ) {
         // Handle video message
-        await this.handleMediaMessage(message, sender, channelId, "video");
+        return await this.handleMediaMessage(
+          message,
+          sender,
+          channelId,
+          "video",
+          text
+        );
       } else if (
         message.message?.documentMessage ||
         message.document ||
         message.mimetype?.startsWith("application/")
       ) {
         // Handle document message
-        await this.handleMediaMessage(message, sender, channelId, "document");
+        return await this.handleMediaMessage(
+          message,
+          sender,
+          channelId,
+          "document",
+          text
+        );
       } else if (
         message.message?.audioMessage ||
         message.audio ||
         message.mimetype?.startsWith("audio/")
       ) {
-        // Handle audio message
-        await this.handleMediaMessage(message, sender, channelId, "audio");
+        // IMPROVED: Better voice message detection
+        // Check if it's a voice note (ptt = push to talk)
+        const isVoice =
+          message.message?.audioMessage?.ptt === true ||
+          (message.message?.audioMessage &&
+            (message.message.audioMessage.mimetype === "audio/ogg" ||
+              message.message.audioMessage.mimetype?.includes("opus")));
+
+        // Handle audio/voice message
+        return await this.handleMediaMessage(
+          message,
+          sender,
+          channelId,
+          isVoice ? "voice" : "audio",
+          text
+        );
       } else if (message.message?.locationMessage || message.location) {
         // Handle location message
-        await this.handleLocationMessage(message, sender, channelId);
+        return await this.handleLocationMessage(message, sender, channelId);
       } else if (message.message?.contactMessage || message.contacts) {
         // Handle contact message
-        await this.handleContactMessage(message, sender, channelId);
+        return await this.handleContactMessage(message, sender, channelId);
       } else {
         // Default to text message handling
-        await this.handleTextMessage(message, sender, channelId);
+        return await this.handleTextMessage(message, sender, channelId);
       }
     } catch (error) {
       console.error(
         `[WhatsAppHandler:${this.instanceId}] Error processing message:`,
         error
       );
+      return false;
     }
   }
 
   /**
-   * Handle text message
+   * Handle sticker message specifically
    * @param {Object} message - WhatsApp message
    * @param {string} sender - Sender ID
    * @param {string} channelId - Discord channel ID
+   * @param {string} caption - Optional caption text
    */
-  async handleTextMessage(message, sender, channelId) {
+  async handleStickerMessage(message, sender, channelId, caption = "") {
     try {
-      // Get the text content
-      const text = this.getTextFromMessage(message);
-
-      // Skip if no text content
-      if (!text || !text.trim()) {
-        console.log(
-          `[WhatsAppHandler:${this.instanceId}] Empty text message, skipping`
-        );
-        return;
-      }
-
-      // Get user info
-      const userCard = this.userCardManager.getUserCard(sender) || {};
-      const username = userCard.name || "Unknown User";
-
-      // Forward message to Discord
-      await this.ticketManager.forwardUserMessage(
-        channelId,
-        username,
-        text,
-        sender
+      console.log(
+        `[WhatsAppHandler:${this.instanceId}] Processing sticker message`
       );
 
-      // Update the user's status and last activity
-      if (userCard) {
-        userCard.lastMessage = text;
-        userCard.lastActivity = Date.now();
-        userCard.status = "active";
-        this.userCardManager.updateUserCard(sender, userCard);
-      }
-    } catch (error) {
-      console.error(
-        `[WhatsAppHandler:${this.instanceId}] Error handling text message:`,
-        error
-      );
-    }
-  }
-
-  /**
-   * Handle media message (image, video, document, audio)
-   * @param {Object} message - WhatsApp message
-   * @param {string} sender - Sender ID
-   * @param {string} channelId - Discord channel ID
-   * @param {string} mediaType - Media type
-   */
-  async handleMediaMessage(message, sender, channelId, mediaType) {
-    try {
       // Get user info
-      const userCard = this.userCardManager.getUserCard(sender) || {};
-      const username = userCard.name || "Unknown User";
+      const userInfo = this.userCardManager.getUserInfo(sender);
+      const username = userInfo?.username || "Unknown User";
 
-      // Get caption if any
-      let caption = "";
+      // Create a waiting message to notify that sticker is being processed
+      const placeholderId = await this.ticketManager.forwardUserMessage(
+        sender,
+        `**${username}**: ${caption ? caption : ""} *[sticker downloading...]*`,
+        false
+      );
 
-      // Safely extract the caption from various message types
-      if (message.message?.imageMessage?.caption) {
-        caption = message.message.imageMessage.caption;
-      } else if (message.message?.videoMessage?.caption) {
-        caption = message.message.videoMessage.caption;
-      } else if (message.message?.documentMessage?.caption) {
-        caption = message.message.documentMessage.caption;
-      } else if (message.caption) {
-        caption = message.caption;
-      }
-
-      // Download media with better error handling
+      // Download sticker
       let mediaData = null;
-
       try {
         // Make sure we have a WhatsApp client
         if (!this.whatsAppClient) {
           throw new Error("WhatsApp client is not available");
         }
 
-        // Create a dedicated instance of BaileysMessage for media extraction
-        const BaileysMessage = require("../clients/baileys/BaileysMessage");
-        const msgExtractor = new BaileysMessage({
-          instanceId: this.instanceId,
-          tempDir: this.tempDir,
-        });
-
-        // First try to get text content to ensure it's included
-        let textContent = msgExtractor.extractMessageText(message);
-        if (caption && !textContent.includes(caption)) {
-          textContent = caption;
-        }
-
-        // Try to download the media using the client's method
+        // Attempt to download the sticker
         mediaData = await this.whatsAppClient.downloadMedia(message);
 
-        // If downloadMedia returns null, log and try a fallback approach
-        if (!mediaData) {
-          console.log(
-            `[WhatsAppHandler:${this.instanceId}] Primary download method failed, trying alternative`
-          );
-
-          // Try to extract and download media using the message structure
-          if (message.message?.imageMessage) {
-            mediaData = {
-              buffer: await this.whatsAppClient.socket.downloadMediaMessage(
-                message
-              ),
-              mediaType: "image",
-              mimetype: message.message.imageMessage.mimetype || "image/jpeg",
-              filename: `image_${Date.now()}.jpg`,
-            };
-          } else if (message.message?.videoMessage) {
-            mediaData = {
-              buffer: await this.whatsAppClient.socket.downloadMediaMessage(
-                message
-              ),
-              mediaType: "video",
-              mimetype: message.message.videoMessage.mimetype || "video/mp4",
-              filename: `video_${Date.now()}.mp4`,
-            };
-          } else if (message.message?.audioMessage) {
-            mediaData = {
-              buffer: await this.whatsAppClient.socket.downloadMediaMessage(
-                message
-              ),
-              mediaType: message.message.audioMessage.ptt ? "ptt" : "audio",
-              mimetype: message.message.audioMessage.mimetype || "audio/ogg",
-              filename: `audio_${Date.now()}.ogg`,
-            };
-          } else if (message.message?.documentMessage) {
-            mediaData = {
-              buffer: await this.whatsAppClient.socket.downloadMediaMessage(
-                message
-              ),
-              mediaType: "document",
-              mimetype:
-                message.message.documentMessage.mimetype ||
-                "application/octet-stream",
-              filename:
-                message.message.documentMessage.fileName ||
-                `document_${Date.now()}.bin`,
-            };
-          } else if (message.message?.stickerMessage) {
-            mediaData = {
-              buffer: await this.whatsAppClient.socket.downloadMediaMessage(
-                message
-              ),
-              mediaType: "sticker",
-              mimetype: "image/webp",
-              filename: `sticker_${Date.now()}.webp`,
-            };
-          }
-        }
-
-        // If still no media data, handle gracefully
+        // If download failed, log and return early
         if (!mediaData || !mediaData.buffer) {
           console.error(
-            `[WhatsAppHandler:${this.instanceId}] Failed to download media, sending just the caption`
+            `[WhatsAppHandler:${this.instanceId}] Failed to download sticker`
           );
-
-          // Forward just the caption
-          if (caption) {
-            await this.ticketManager.forwardUserMessage(
-              sender,
-              `**${username}**: ${caption} [${mediaType} attachment could not be downloaded]`,
-              false
-            );
-          } else {
-            await this.ticketManager.forwardUserMessage(
-              sender,
-              `**${username}**: [${mediaType} attachment could not be downloaded]`,
-              false
-            );
-          }
-          return;
+          return false;
         }
+
+        console.log(
+          `[WhatsAppHandler:${this.instanceId}] Successfully downloaded sticker (${mediaData.buffer.length} bytes)`
+        );
       } catch (downloadError) {
         console.error(
-          `[WhatsAppHandler:${this.instanceId}] Error downloading media:`,
+          `[WhatsAppHandler:${this.instanceId}] Error downloading sticker:`,
           downloadError
         );
-
-        // Forward just the caption if download failed
-        if (caption) {
-          await this.ticketManager.forwardUserMessage(
-            sender,
-            `**${username}**: ${caption} [Failed to download ${mediaType}]`,
-            false
-          );
-        } else {
-          await this.ticketManager.forwardUserMessage(
-            sender,
-            `**${username}**: [Failed to download ${mediaType}]`,
-            false
-          );
-        }
-        return;
+        return false;
       }
 
-      // Create a temporary file to store the media with proper extension
+      // Force webp extension for stickers since they are webp format
       const timestamp = Date.now();
-      const extension = mediaData.mimetype
-        ? this.getExtensionFromMimeType(mediaData.mimetype)
-        : this.getDefaultExtension(mediaType);
-
-      const filename =
-        mediaData.filename ||
-        `${timestamp}_${sender.replace(
-          /[^\w]/g,
-          "_"
-        )}_${mediaType}${extension}`;
+      const filename = `sticker_${timestamp}_${sender.replace(
+        /[^\w]/g,
+        "_"
+      )}.webp`;
       const filepath = path.join(this.tempDir, filename);
 
-      // Write the media to file
+      // Write the sticker to file
       fs.writeFileSync(filepath, mediaData.buffer);
 
       // Create content with username and caption
-      const contentPrefix = caption
-        ? `${caption}`
-        : `[${mediaType.toUpperCase()}]`;
-      const formattedContent = `**${username}**: ${contentPrefix}`;
+      const formattedContent = `**${username}**: ${caption || ""} [Sticker]`;
 
-      // Forward the media to Discord
+      // Forward the sticker to Discord as an image attachment
       const success = await this.ticketManager.forwardUserMessage(
         sender,
         {
@@ -844,11 +558,12 @@ class WhatsAppHandler {
       );
 
       // Update the user's status and last activity
-      if (userCard) {
-        userCard.lastMessage = caption || `[${mediaType}]`;
-        userCard.lastActivity = Date.now();
-        userCard.status = "active";
-        this.userCardManager.updateUserCard(sender, userCard);
+      if (userInfo) {
+        this.userCardManager.setUserInfo(sender, username, {
+          lastMessage: caption || "[Sticker]",
+          lastActivity: Date.now(),
+          status: "active",
+        });
       }
 
       // Cleanup temp file after delay to ensure Discord has time to process it
@@ -868,6 +583,235 @@ class WhatsAppHandler {
       return success;
     } catch (error) {
       console.error(
+        `[WhatsAppHandler:${this.instanceId}] Error handling sticker:`,
+        error
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Handle text message
+   * @param {Object} message - WhatsApp message
+   * @param {string} sender - Sender ID
+   * @param {string} channelId - Discord channel ID
+   */
+  async handleTextMessage(message, sender, channelId) {
+    try {
+      // Get the text content
+      const text = this.getTextFromMessage(message);
+
+      // Skip if no text content
+      if (!text || !text.trim()) {
+        console.log(
+          `[WhatsAppHandler:${this.instanceId}] Empty text message, skipping`
+        );
+        return false;
+      }
+
+      // Get user info
+      const userInfo = this.userCardManager.getUserInfo(sender);
+      const username = userInfo?.username || "Unknown User";
+
+      // Forward message to Discord
+      const success = await this.ticketManager.forwardUserMessage(
+        sender,
+        text,
+        false
+      );
+
+      // Update the user's status and last activity
+      if (userInfo) {
+        this.userCardManager.setUserInfo(sender, username, {
+          lastMessage: text,
+          lastActivity: Date.now(),
+          status: "active",
+        });
+      }
+
+      return success;
+    } catch (error) {
+      console.error(
+        `[WhatsAppHandler:${this.instanceId}] Error handling text message:`,
+        error
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Handle media message (image, video, document, audio)
+   * @param {Object} message - WhatsApp message
+   * @param {string} sender - Sender ID
+   * @param {string} channelId - Discord channel ID
+   * @param {string} mediaType - Media type
+   * @param {string} caption - Optional pre-extracted caption
+   */
+  async handleMediaMessage(
+    message,
+    sender,
+    channelId,
+    mediaType,
+    caption = ""
+  ) {
+    try {
+      // Get user info
+      const userInfo = this.userCardManager.getUserInfo(sender);
+      const username = userInfo?.username || "Unknown User";
+
+      // If caption not provided, extract it from the message
+      if (!caption) {
+        // Safely extract the caption from various message types
+        if (message.message?.imageMessage?.caption) {
+          caption = message.message.imageMessage.caption;
+        } else if (message.message?.videoMessage?.caption) {
+          caption = message.message.videoMessage.caption;
+        } else if (message.message?.documentMessage?.caption) {
+          caption = message.message.documentMessage.caption;
+        } else if (message.caption) {
+          caption = message.caption;
+        }
+      }
+
+      // IMPROVED: Use an async function to avoid double-sending placeholder messages
+      // This ensures we either send the media with caption or nothing at all
+      const sendMediaWithDelay = async () => {
+        try {
+          // Create a waiting message to notify that media is being processed
+          // This uses the ticketManager directly to show the message in Discord
+          const placeholderId = await this.ticketManager.forwardUserMessage(
+            sender,
+            `**${username}**: ${
+              caption ? caption : ""
+            } *[${mediaType} downloading...]*`,
+            false
+          );
+
+          // Download media
+          let mediaData = null;
+          try {
+            // Make sure we have a WhatsApp client
+            if (!this.whatsAppClient) {
+              throw new Error("WhatsApp client is not available");
+            }
+
+            // Attempt to download the media
+            mediaData = await this.whatsAppClient.downloadMedia(message);
+
+            // If download failed, log and return early
+            if (!mediaData || !mediaData.buffer) {
+              console.error(
+                `[WhatsAppHandler:${this.instanceId}] Failed to download media`
+              );
+              return false;
+            }
+
+            console.log(
+              `[WhatsAppHandler:${this.instanceId}] Successfully downloaded ${mediaType} (${mediaData.buffer.length} bytes)`
+            );
+          } catch (downloadError) {
+            console.error(
+              `[WhatsAppHandler:${this.instanceId}] Error downloading media:`,
+              downloadError
+            );
+            return false;
+          }
+
+          // IMPROVED: Handle voice/audio more specifically to ensure proper format
+          let extension;
+
+          if (mediaType === "voice") {
+            // Force .ogg extension for voice messages
+            extension = ".ogg";
+
+            // If it's a voice note but has a different mime type, try to ensure it has audio/ogg
+            if (
+              mediaData.mimetype !== "audio/ogg" &&
+              mediaData.mimetype !== "audio/ogg; codecs=opus"
+            ) {
+              mediaData.mimetype = "audio/ogg";
+            }
+
+            console.log(
+              `[WhatsAppHandler:${this.instanceId}] Voice message with mimetype: ${mediaData.mimetype}`
+            );
+          } else {
+            // For other media types, use extension from mime type or default
+            extension = mediaData.mimetype
+              ? this.getExtensionFromMimeType(mediaData.mimetype)
+              : this.getDefaultExtension(mediaType);
+          }
+
+          const timestamp = Date.now();
+          const filename = `${mediaType}_${timestamp}_${sender.replace(
+            /[^\w]/g,
+            "_"
+          )}${extension}`;
+          const filepath = path.join(this.tempDir, filename);
+
+          // Write the media to file
+          fs.writeFileSync(filepath, mediaData.buffer);
+
+          // IMPROVED: Add media type label for clearer identification in Discord
+          let mediaLabel = "";
+          if (mediaType === "voice") {
+            mediaLabel = " [Voice Message]";
+          } else if (mediaType === "audio") {
+            mediaLabel = " [Audio]";
+          }
+
+          // Create content with username and caption
+          const formattedContent = `**${username}**: ${
+            caption || ""
+          }${mediaLabel}`;
+
+          // Forward the media to Discord
+          const success = await this.ticketManager.forwardUserMessage(
+            sender,
+            {
+              content: formattedContent,
+              files: [filepath],
+            },
+            true
+          );
+
+          // Update the user's status and last activity
+          if (userInfo) {
+            this.userCardManager.setUserInfo(sender, username, {
+              lastMessage: caption || `[${mediaType}]`,
+              lastActivity: Date.now(),
+              status: "active",
+            });
+          }
+
+          // Cleanup temp file after delay to ensure Discord has time to process it
+          setTimeout(() => {
+            try {
+              if (fs.existsSync(filepath)) {
+                fs.unlinkSync(filepath);
+              }
+            } catch (unlinkError) {
+              console.error(
+                `[WhatsAppHandler:${this.instanceId}] Error deleting temp file:`,
+                unlinkError
+              );
+            }
+          }, 60000); // 1 minute delay
+
+          return success;
+        } catch (error) {
+          console.error(
+            `[WhatsAppHandler:${this.instanceId}] Media processing error:`,
+            error
+          );
+          return false;
+        }
+      };
+
+      // Execute our async media handling function
+      return await sendMediaWithDelay();
+    } catch (error) {
+      console.error(
         `[WhatsAppHandler:${this.instanceId}] Error handling ${mediaType} message:`,
         error
       );
@@ -885,6 +829,7 @@ class WhatsAppHandler {
       image: ".jpg",
       video: ".mp4",
       audio: ".mp3",
+      voice: ".ogg",
       ptt: ".ogg",
       sticker: ".webp",
       document: ".bin",
@@ -914,37 +859,40 @@ class WhatsAppHandler {
         console.error(
           `[WhatsAppHandler:${this.instanceId}] Invalid location data`
         );
-        return;
+        return false;
       }
 
       // Get user info
-      const userCard = this.userCardManager.getUserCard(sender) || {};
-      const username = userCard.name || "Unknown User";
+      const userInfo = this.userCardManager.getUserInfo(sender);
+      const username = userInfo?.username || "Unknown User";
 
       // Generate Google Maps link
       const mapsLink = `https://www.google.com/maps?q=${latitude},${longitude}`;
 
       // Forward location message
-      const locationText = `📍 *Location shared*\n${mapsLink}`;
-      await this.ticketManager.forwardUserMessage(
-        channelId,
-        username,
+      const locationText = `**${username}**: 📍 *Location shared*\n${mapsLink}`;
+      const success = await this.ticketManager.forwardUserMessage(
+        sender,
         locationText,
-        sender
+        false
       );
 
       // Update the user's status and last activity
-      if (userCard) {
-        userCard.lastMessage = "[Location]";
-        userCard.lastActivity = Date.now();
-        userCard.status = "active";
-        this.userCardManager.updateUserCard(sender, userCard);
+      if (userInfo) {
+        this.userCardManager.setUserInfo(sender, username, {
+          lastMessage: "[Location]",
+          lastActivity: Date.now(),
+          status: "active",
+        });
       }
+
+      return success;
     } catch (error) {
       console.error(
         `[WhatsAppHandler:${this.instanceId}] Error handling location message:`,
         error
       );
+      return false;
     }
   }
 
@@ -974,34 +922,37 @@ class WhatsAppHandler {
       }
 
       // Get user info
-      const userCard = this.userCardManager.getUserCard(sender) || {};
-      const username = userCard.name || "Unknown User";
+      const userInfo = this.userCardManager.getUserInfo(sender);
+      const username = userInfo?.username || "Unknown User";
 
       // Forward contact message
-      let contactText = `📒 *Contact shared*\nName: ${contactName}`;
+      let contactText = `**${username}**: 📒 *Contact shared*\nName: ${contactName}`;
       if (contactPhone) {
         contactText += `\nPhone: ${contactPhone}`;
       }
 
-      await this.ticketManager.forwardUserMessage(
-        channelId,
-        username,
+      const success = await this.ticketManager.forwardUserMessage(
+        sender,
         contactText,
-        sender
+        false
       );
 
       // Update the user's status and last activity
-      if (userCard) {
-        userCard.lastMessage = "[Contact]";
-        userCard.lastActivity = Date.now();
-        userCard.status = "active";
-        this.userCardManager.updateUserCard(sender, userCard);
+      if (userInfo) {
+        this.userCardManager.setUserInfo(sender, username, {
+          lastMessage: "[Contact]",
+          lastActivity: Date.now(),
+          status: "active",
+        });
       }
+
+      return success;
     } catch (error) {
       console.error(
         `[WhatsAppHandler:${this.instanceId}] Error handling contact message:`,
         error
       );
+      return false;
     }
   }
 

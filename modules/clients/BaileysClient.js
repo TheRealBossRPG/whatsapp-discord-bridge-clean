@@ -56,28 +56,158 @@ class BaileysClient extends EventEmitter {
    * @param {Object} message - WhatsApp message object
    * @returns {Promise<Object|null>} - Media data or null if download failed
    */
-  async downloadMedia(message) {
+  async downloadMedia(message, options = {}) {
     try {
-      if (!this.isReady || !this.socket) {
-        throw new Error("Client not initialized or not ready");
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Downloading media from message`);
+      
+      if (!message) {
+        console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] No message provided for media download`);
+        return null;
       }
-
-      // Ensure we have a media helper
-      if (!this.media) {
-        const BaileysMedia = require("./baileys/BaileysMedia");
-        this.media = new BaileysMedia(this);
+      
+      // Make sure we have socket available
+      if (!this.client || !this.client.socket) {
+        throw new Error('WhatsApp client socket is not available');
       }
-
-      // Call the media helper's downloadMedia with correct parameters
-      return await this.media.downloadMedia(message);
-    } catch (error) {
-      console.error(
-        `[BaileysClient:${this.instanceId}] Error downloading media:`,
-        error
+      
+      // Get the message properly depending on baileys structure
+      const downloadableMessage = message.message || message;
+      
+      // IMPROVED: Special handling for stickers to ensure proper download
+      let stickerMessage = null;
+      if (downloadableMessage.stickerMessage) {
+        stickerMessage = downloadableMessage.stickerMessage;
+        console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Detected sticker message`);
+      }
+      
+      // Use the downloadMediaMessage function with proper error handling
+      const buffer = await downloadMediaMessage(
+        message, 
+        'buffer',
+        {},
+        { 
+          logger: this.client.logger,
+          reuploadRequest: this.client.socket?.updateMediaMessage || undefined,
+          // Add timeouts to prevent hanging
+          downloadMediaTimeout: 60000
+        }
       );
+      
+      if (!buffer || buffer.length === 0) {
+        console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Downloaded buffer is empty`);
+        return null;
+      }
+      
+      // Get media type and metadata
+      const mediaType = this.getMediaType(message);
+      let mimetype = this.getMimeType(message, mediaType);
+      let filename = this.getFilename(message, mediaType, mimetype);
+      
+      // IMPROVED: Special handling for voice notes to ensure proper file type
+      if (mediaType === 'ptt' || 
+          (mediaType === 'audio' && downloadableMessage.audioMessage?.ptt === true)) {
+        console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Voice note detected, ensuring proper format`);
+        mimetype = 'audio/ogg; codecs=opus';
+        filename = filename.replace(/\.[^/.]+$/, '.ogg'); // Replace any extension with .ogg
+      }
+      
+      // IMPROVED: For stickers, ensure proper WebP handling
+      if (mediaType === 'sticker' || stickerMessage) {
+        console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Sticker detected, ensuring WebP format`);
+        mimetype = 'image/webp';
+        filename = filename.replace(/\.[^/.]+$/, '.webp'); // Replace any extension with .webp
+      }
+      
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Successfully downloaded ${buffer.length} bytes of ${mediaType} media with mimetype ${mimetype}`);
+      
+      return {
+        buffer,
+        mediaType,
+        mimetype,
+        filename,
+        size: buffer.length
+      };
+    } catch (error) {
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error downloading media:`, error);
       return null;
     }
   }
+
+  getMediaType(message) {
+    const msg = message.message || message;
+    
+    if (msg.imageMessage) return 'image';
+    if (msg.videoMessage) return 'video';
+    if (msg.audioMessage) {
+      // IMPROVED: Better detect voice notes vs regular audio
+      return msg.audioMessage.ptt ? 'ptt' : 'audio';
+    }
+    if (msg.documentMessage) return 'document';
+    if (msg.stickerMessage) return 'sticker';
+    
+    return 'unknown';
+  }
+
+  getMimeType(message, mediaType) {
+    const msg = message.message || message;
+    
+    switch (mediaType) {
+      case 'image': return msg.imageMessage?.mimetype || 'image/jpeg';
+      case 'video': return msg.videoMessage?.mimetype || 'video/mp4';
+      case 'audio': return msg.audioMessage?.mimetype || 'audio/mpeg';
+      case 'ptt': return 'audio/ogg; codecs=opus'; // Force voice notes to have the correct mimetype
+      case 'document': return msg.documentMessage?.mimetype || 'application/octet-stream';
+      case 'sticker': return 'image/webp'; // Force stickers to be webp
+      default: return 'application/octet-stream';
+    }
+  }
+
+  getFilename(message, mediaType, mimetype) {
+    const msg = message.message || message;
+    const timestamp = Date.now();
+    
+    // If document has a filename, use it
+    if (mediaType === 'document' && msg.documentMessage?.fileName) {
+      return msg.documentMessage.fileName;
+    }
+    
+    // IMPROVED: Set appropriate extensions
+    let extension;
+    if (mediaType === 'ptt' || (mediaType === 'audio' && mimetype.includes('ogg'))) {
+      extension = '.ogg';
+    } else if (mediaType === 'sticker') {
+      extension = '.webp';
+    } else {
+      // Generate appropriate extension based on mimetype
+      extension = this.getExtensionFromMimetype(mimetype);
+    }
+    
+    return `${mediaType}_${timestamp}${extension}`;
+  }
+
+  getExtensionFromMimetype(mimetype) {
+    const mimeToExt = {
+      'image/jpeg': '.jpg',
+      'image/png': '.png',
+      'image/gif': '.gif',
+      'image/webp': '.webp',
+      'video/mp4': '.mp4',
+      'video/quicktime': '.mov',
+      'audio/ogg': '.ogg',
+      'audio/mpeg': '.mp3',
+      'audio/mp4': '.m4a',
+      'audio/wav': '.wav',
+      'application/pdf': '.pdf',
+      'application/vnd.ms-excel': '.xls',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+      'application/msword': '.doc',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+      'application/zip': '.zip'
+    };
+    
+    return mimeToExt[mimetype] || '.bin';
+  }
+  
 
   /**
    * Set whether to show QR code during connection
