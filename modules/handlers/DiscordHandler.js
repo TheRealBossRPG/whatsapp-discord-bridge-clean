@@ -43,14 +43,14 @@ class DiscordHandler {
     console.log(`[DiscordHandler:${this.instanceId}] Initialized for category ${this.categoryId}`);
   }
 
-   /**
+  /**
    * Handle a media file from a Discord attachment
    * @param {Object} attachment - Discord attachment
    * @param {string} phoneNumber - WhatsApp phone number
    * @param {string} content - Text content to send with media
    * @returns {Promise<boolean>} - Success
    */
-   async handleAttachment(attachment, phoneNumber, content = '') {
+  async handleAttachment(attachment, phoneNumber, content = '') {
     try {
       console.log(`[DiscordHandler:${this.instanceId}] Processing attachment: ${attachment.name} (${attachment.contentType})`);
       
@@ -65,7 +65,13 @@ class DiscordHandler {
       const isVideo = attachment.contentType?.startsWith('video/');
       const isAudio = attachment.contentType?.startsWith('audio/');
       const isGif = attachment.contentType === 'image/gif' || attachment.name?.endsWith('.gif');
-      const isVoice = isAudio && (attachment.name?.includes('voice') || attachment.name?.includes('ptt'));
+      // FIXED: Improve voice detection - look for opus format or voice indicators in name
+      const isVoice = isAudio && (
+        attachment.name?.includes('voice') || 
+        attachment.name?.includes('ptt') || 
+        attachment.contentType?.includes('opus') ||
+        (attachment.name?.endsWith('.ogg') && attachment.contentType?.includes('audio'))
+      );
       const isDocument = !isImage && !isVideo && !isAudio && !isGif;
       
       // Create a dedicated BaileysMedia instance with proper client reference
@@ -94,7 +100,9 @@ class DiscordHandler {
         } else if (isVideo) {
           result = await mediaHandler.sendVideo(phoneNumber, tempPath, content);
         } else if (isVoice) {
-          result = await mediaHandler.sendAudio(phoneNumber, tempPath, true);
+          // FIXED: Add more detailed logging for voice notes
+          console.log(`[DiscordHandler:${this.instanceId}] Sending as voice note: ${attachment.name}`);
+          result = await mediaHandler.sendAudio(phoneNumber, tempPath, true); // true = voice note
         } else if (isAudio) {
           result = await mediaHandler.sendAudio(phoneNumber, tempPath, false);
         } else if (isDocument) {
@@ -161,30 +169,24 @@ class DiscordHandler {
       const agentName = message.member?.nickname || message.author.username;
       content = `*${agentName}*: ${content}`;
       
-      // Send text message first if there's content
-      let textSent = false;
-      if (content.trim().length > 0) {
-        try {
-          await this.whatsAppClient.sendTextMessage(phoneNumber, content);
-          textSent = true;
-        } catch (textError) {
-          console.error(`[DiscordHandler:${this.instanceId}] Error sending text message:`, textError);
-          await message.react('⚠️');
-          // Continue to try sending attachments even if text fails
-        }
-      }
-      
-      // Process attachments
+      // FIXED: Handle attachments with the text message properly
       if (message.attachments.size > 0) {
+        // Process each attachment and track successful ones
         let successCount = 0;
         const totalAttachments = message.attachments.size;
         const reactions = [];
         
+        // Initial feedback reaction to show processing
+        await message.react('⏳');
+        
+        // Process each attachment WITH the message content
         for (const [attachmentId, attachment] of message.attachments) {
           try {
-            // If text was already sent, don't include it with the media
-            const mediaText = textSent ? '' : content;
-            const success = await this.handleAttachment(attachment, phoneNumber, mediaText);
+            // IMPROVED: Always include the content with the first attachment, empty for others
+            // This ensures text and media arrive together
+            const attachmentContent = successCount === 0 ? content : '';
+            
+            const success = await this.handleAttachment(attachment, phoneNumber, attachmentContent);
             
             if (success) {
               successCount++;
@@ -206,6 +208,13 @@ class DiscordHandler {
           }
         }
         
+        // Remove the processing reaction
+        try {
+          await message.reactions.cache.find(r => r.emoji.name === '⏳')?.remove();
+        } catch (e) {
+          /* Ignore reaction removal errors */
+        }
+        
         // Add specific reaction for failed media types if any
         for (const reaction of reactions) {
           try {
@@ -225,9 +234,16 @@ class DiscordHandler {
           await message.reply('❌ Failed to send media attachments to WhatsApp. Please try again or use a different format.');
           return false;
         }
-      } else if (textSent) {
-        // No attachments, just react with success for text message
-        await message.react('✅');
+      } else {
+        // No attachments, just send the text message
+        try {
+          await this.whatsAppClient.sendTextMessage(phoneNumber, content);
+          await message.react('✅');
+        } catch (textError) {
+          console.error(`[DiscordHandler:${this.instanceId}] Error sending text message:`, textError);
+          await message.react('⚠️');
+          return false;
+        }
       }
       
       return true;
@@ -317,14 +333,14 @@ class DiscordHandler {
       }
       
       // Get user info
-      const userCard = await this.userCardManager.getUserCard(phoneNumber);
+      const userCard = await this.userCardManager.getUserInfo(phoneNumber);
       if (!userCard) {
         await message.reply('❌ Could not find user information.');
         return false;
       }
       
       // Send vouch instructions
-      const success = await this.vouchHandler.sendVouchInstructions(phoneNumber, userCard.name);
+      const success = await this.vouchHandler.sendVouchInstructions(phoneNumber, userCard);
       
       if (success) {
         await message.reply('✅ Vouch instructions sent successfully!');
@@ -477,14 +493,14 @@ class DiscordHandler {
       }
       
       // Get user info
-      const userCard = await this.userCardManager.getUserCard(phoneNumber);
+      const userCard = await this.userCardManager.getUserInfo(phoneNumber);
       if (!userCard) {
         await interaction.editReply('❌ Could not find user information.');
         return false;
       }
       
       // Send vouch instructions
-      const success = await this.vouchHandler.sendVouchInstructions(phoneNumber, userCard.name);
+      const success = await this.vouchHandler.sendVouchInstructions(phoneNumber, userCard);
       
       if (success) {
         await interaction.editReply('✅ Vouch instructions sent successfully!');
@@ -511,8 +527,8 @@ class DiscordHandler {
       const phoneNumber = interaction.customId.replace('edit_ticket_info_', '');
       
       // Get user info
-      const userCard = await this.userCardManager.getUserCard(phoneNumber);
-      const username = userCard ? userCard.name : 'Unknown User';
+      const userCard = await this.userCardManager.getUserInfo(phoneNumber);
+      const username = userCard ? userCard.username : 'Unknown User';
       
       // Find the embed message to get current info
       const messages = await interaction.channel.messages.fetch({ limit: 10 });
@@ -600,11 +616,12 @@ class DiscordHandler {
       if (newUsername && phoneNumber) {
         // Update user card
         if (this.userCardManager) {
-          const oldUserCard = await this.userCardManager.getUserCard(phoneNumber);
-          const oldUsername = oldUserCard ? oldUserCard.name : '';
+          // FIXED: Use getUserInfo and setUserInfo methods for consistency
+          const oldUserInfo = await this.userCardManager.getUserInfo(phoneNumber);
+          const oldUsername = oldUserInfo ? oldUserInfo.username : '';
           
           if (oldUsername !== newUsername) {
-            await this.userCardManager.updateUserCard(phoneNumber, { name: newUsername });
+            await this.userCardManager.setUserInfo(phoneNumber, newUsername);
             
             // Update channel name
             const channelId = this.channelManager.getChannelId(phoneNumber);

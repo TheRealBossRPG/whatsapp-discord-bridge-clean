@@ -367,6 +367,7 @@ class BaileysMedia {
       // Handle different input types
       let audioBuffer;
       let mimetype = 'audio/mp4';
+      let tempFilePath = null;
       
       if (typeof audioPath === 'string' && (audioPath.startsWith('http://') || audioPath.startsWith('https://'))) {
         const downloadedMedia = await this.downloadMediaFromUrl(audioPath);
@@ -387,44 +388,47 @@ class BaileysMedia {
         throw new Error('Invalid audio input type');
       }
       
-      // For voice notes (ptt), consider converting to the right format if needed
-      if (isVoiceNote) {
-        // WhatsApp voice notes typically work better as OGG/OPUS
-        if (mimetype !== 'audio/ogg' && await this.checkFfmpeg()) {
-          try {
-            const tempInput = path.join(this.client?.tempDir || './temp', `voice_in_${Date.now()}`);
-            const tempOutput = path.join(this.client?.tempDir || './temp', `voice_out_${Date.now()}.ogg`);
-            
-            fs.writeFileSync(tempInput, audioBuffer);
-            
-            await new Promise((resolve, reject) => {
-              // Convert to OGG/OPUS - optimal for voice notes
-              exec(`ffmpeg -i "${tempInput}" -c:a libopus -b:a 24k "${tempOutput}"`, (error) => {
-                if (error) {
-                  console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error converting voice note:`, error);
-                  resolve(); // Continue with original format
-                } else {
-                  try {
-                    audioBuffer = fs.readFileSync(tempOutput);
-                    mimetype = 'audio/ogg; codecs=opus';
-                    resolve();
-                  } catch (readError) {
-                    console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error reading converted voice note:`, readError);
-                    resolve(); // Continue with original format
-                  }
-                }
-                
-                // Clean up
+      // FIXED: Always convert voice notes to OGG format for better compatibility
+      if (isVoiceNote && await this.checkFfmpeg()) {
+        try {
+          // Create a temporary file for the voice note
+          const tempInput = path.join(this.client?.tempDir || './temp', `voice_in_${Date.now()}`);
+          const tempOutput = path.join(this.client?.tempDir || './temp', `voice_out_${Date.now()}.ogg`);
+          
+          fs.writeFileSync(tempInput, audioBuffer);
+          
+          // Convert to OGG/OPUS format - optimal for voice notes on WhatsApp
+          console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Converting voice note to OGG format: ${tempInput} -> ${tempOutput}`);
+          
+          await new Promise((resolve, reject) => {
+            // FIXED: More reliable conversion command specifically for voice notes
+            exec(`ffmpeg -y -i "${tempInput}" -c:a libopus -b:a 24k -application voip "${tempOutput}"`, (error, stdout, stderr) => {
+              if (error) {
+                console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error converting voice note:`, error);
+                console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] FFmpeg stderr:`, stderr);
+                resolve(); // Continue with original format
+              } else {
                 try {
-                  if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
-                  if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
-                } catch (e) { /* ignore */ }
-              });
+                  audioBuffer = fs.readFileSync(tempOutput);
+                  tempFilePath = tempOutput; // Store the path for cleanup
+                  mimetype = 'audio/ogg; codecs=opus';
+                  console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Voice note converted successfully to OGG format`);
+                  resolve();
+                } catch (readError) {
+                  console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error reading converted voice note:`, readError);
+                  resolve(); // Continue with original format
+                }
+              }
+              
+              // Clean up input temp file
+              try {
+                if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
+              } catch (e) { /* ignore */ }
             });
-          } catch (convError) {
-            console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Voice conversion error:`, convError);
-            // Continue with original format
-          }
+          });
+        } catch (convError) {
+          console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Voice conversion error:`, convError);
+          // Continue with original format
         }
       }
       
@@ -433,13 +437,26 @@ class BaileysMedia {
         throw new Error('WhatsApp client socket is not available');
       }
       
-      // Send the audio or voice note
-      const result = await this.client.socket.sendMessage(jid, {
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Sending ${isVoiceNote ? 'voice note' : 'audio'} with mimetype: ${mimetype}`);
+      
+      // FIXED: More detailed options for better audio handling
+      const messageOptions = {
         audio: audioBuffer,
         mimetype: mimetype,
-        ptt: isVoiceNote, // This flag makes it a voice note
-        seconds: 0, // Baileys will calculate duration if not provided
-      });
+        ptt: isVoiceNote, // This flag makes it a voice note (push-to-talk)
+      };
+      
+      // Send the audio or voice note
+      const result = await this.client.socket.sendMessage(jid, messageOptions);
+      
+      // Clean up temp file if created
+      if (tempFilePath && fs.existsSync(tempFilePath)) {
+        try {
+          fs.unlinkSync(tempFilePath);
+        } catch (e) {
+          console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error cleaning up temp file:`, e);
+        }
+      }
       
       console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] ${isVoiceNote ? 'Voice note' : 'Audio'} sent successfully!`);
       return result;
@@ -731,7 +748,7 @@ class BaileysMedia {
   // Create media object from buffer
   createMediaFromBuffer(buffer, mimetype, filename) {
     return {
-      data: buffer.toString('base64'),
+      data: buffer,
       mimetype: mimetype,
       filename: filename
     };
