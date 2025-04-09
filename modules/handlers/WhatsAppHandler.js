@@ -666,10 +666,10 @@ class WhatsAppHandler {
       // Get user info
       const userCard = this.userCardManager.getUserCard(sender) || {};
       const username = userCard.name || "Unknown User";
-  
+
       // Get caption if any
       let caption = "";
-  
+
       // Safely extract the caption from various message types
       if (message.message?.imageMessage?.caption) {
         caption = message.message.imageMessage.caption;
@@ -680,78 +680,161 @@ class WhatsAppHandler {
       } else if (message.caption) {
         caption = message.caption;
       }
-  
-      // Get media with better error handling
-      let media = null;
+
+      // Download media with better error handling
+      let mediaData = null;
+
       try {
-        // Always pass the full message object to downloadMedia
-        media = await this.whatsAppClient.downloadMedia(message);
+        // Make sure we have a WhatsApp client
+        if (!this.whatsAppClient) {
+          throw new Error("WhatsApp client is not available");
+        }
+
+        // Create a dedicated instance of BaileysMessage for media extraction
+        const BaileysMessage = require("../clients/baileys/BaileysMessage");
+        const msgExtractor = new BaileysMessage({
+          instanceId: this.instanceId,
+          tempDir: this.tempDir,
+        });
+
+        // First try to get text content to ensure it's included
+        let textContent = msgExtractor.extractMessageText(message);
+        if (caption && !textContent.includes(caption)) {
+          textContent = caption;
+        }
+
+        // Try to download the media using the client's method
+        mediaData = await this.whatsAppClient.downloadMedia(message);
+
+        // If downloadMedia returns null, log and try a fallback approach
+        if (!mediaData) {
+          console.log(
+            `[WhatsAppHandler:${this.instanceId}] Primary download method failed, trying alternative`
+          );
+
+          // Try to extract and download media using the message structure
+          if (message.message?.imageMessage) {
+            mediaData = {
+              buffer: await this.whatsAppClient.socket.downloadMediaMessage(
+                message
+              ),
+              mediaType: "image",
+              mimetype: message.message.imageMessage.mimetype || "image/jpeg",
+              filename: `image_${Date.now()}.jpg`,
+            };
+          } else if (message.message?.videoMessage) {
+            mediaData = {
+              buffer: await this.whatsAppClient.socket.downloadMediaMessage(
+                message
+              ),
+              mediaType: "video",
+              mimetype: message.message.videoMessage.mimetype || "video/mp4",
+              filename: `video_${Date.now()}.mp4`,
+            };
+          } else if (message.message?.audioMessage) {
+            mediaData = {
+              buffer: await this.whatsAppClient.socket.downloadMediaMessage(
+                message
+              ),
+              mediaType: message.message.audioMessage.ptt ? "ptt" : "audio",
+              mimetype: message.message.audioMessage.mimetype || "audio/ogg",
+              filename: `audio_${Date.now()}.ogg`,
+            };
+          } else if (message.message?.documentMessage) {
+            mediaData = {
+              buffer: await this.whatsAppClient.socket.downloadMediaMessage(
+                message
+              ),
+              mediaType: "document",
+              mimetype:
+                message.message.documentMessage.mimetype ||
+                "application/octet-stream",
+              filename:
+                message.message.documentMessage.fileName ||
+                `document_${Date.now()}.bin`,
+            };
+          } else if (message.message?.stickerMessage) {
+            mediaData = {
+              buffer: await this.whatsAppClient.socket.downloadMediaMessage(
+                message
+              ),
+              mediaType: "sticker",
+              mimetype: "image/webp",
+              filename: `sticker_${Date.now()}.webp`,
+            };
+          }
+        }
+
+        // If still no media data, handle gracefully
+        if (!mediaData || !mediaData.buffer) {
+          console.error(
+            `[WhatsAppHandler:${this.instanceId}] Failed to download media, sending just the caption`
+          );
+
+          // Forward just the caption
+          if (caption) {
+            await this.ticketManager.forwardUserMessage(
+              sender,
+              `**${username}**: ${caption} [${mediaType} attachment could not be downloaded]`,
+              false
+            );
+          } else {
+            await this.ticketManager.forwardUserMessage(
+              sender,
+              `**${username}**: [${mediaType} attachment could not be downloaded]`,
+              false
+            );
+          }
+          return;
+        }
       } catch (downloadError) {
         console.error(
-          `[WhatsAppHandler:${this.instanceId}] Failed to download media:`,
+          `[WhatsAppHandler:${this.instanceId}] Error downloading media:`,
           downloadError
         );
-        
-        // Forward just the caption if we couldn't download the media
+
+        // Forward just the caption if download failed
         if (caption) {
           await this.ticketManager.forwardUserMessage(
             sender,
-            `[Failed to download ${mediaType}] ${caption}`,
+            `**${username}**: ${caption} [Failed to download ${mediaType}]`,
             false
           );
         } else {
           await this.ticketManager.forwardUserMessage(
             sender,
-            `[Failed to download ${mediaType}]`,
+            `**${username}**: [Failed to download ${mediaType}]`,
             false
           );
         }
         return;
       }
-  
-      // If no media data, handle gracefully
-      if (!media || !media.buffer) {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] No media data for ${mediaType} message`
-        );
-  
-        // Forward just the caption if we have one
-        if (caption) {
-          await this.ticketManager.forwardUserMessage(
-            sender,
-            `[${mediaType} attachment - no data] ${caption}`,
-            false
-          );
-        } else {
-          await this.ticketManager.forwardUserMessage(
-            sender,
-            `[${mediaType} attachment - no data]`,
-            false
-          );
-        }
-        return;
-      }
-  
+
       // Create a temporary file to store the media with proper extension
       const timestamp = Date.now();
-      const extension = media.mimetype ? 
-        this.getExtensionFromMimeType(media.mimetype) : 
-        this.getDefaultExtension(mediaType);
-      
-      const filename = media.filename || `${timestamp}_${sender.replace(/[^\w]/g, "_")}_${mediaType}${extension}`;
+      const extension = mediaData.mimetype
+        ? this.getExtensionFromMimeType(mediaData.mimetype)
+        : this.getDefaultExtension(mediaType);
+
+      const filename =
+        mediaData.filename ||
+        `${timestamp}_${sender.replace(
+          /[^\w]/g,
+          "_"
+        )}_${mediaType}${extension}`;
       const filepath = path.join(this.tempDir, filename);
-  
+
       // Write the media to file
-      fs.writeFileSync(filepath, media.buffer);
-  
+      fs.writeFileSync(filepath, mediaData.buffer);
+
       // Create content with username and caption
       const contentPrefix = caption
         ? `${caption}`
         : `[${mediaType.toUpperCase()}]`;
       const formattedContent = `**${username}**: ${contentPrefix}`;
-  
+
       // Forward the media to Discord
-      await this.ticketManager.forwardUserMessage(
+      const success = await this.ticketManager.forwardUserMessage(
         sender,
         {
           content: formattedContent,
@@ -759,7 +842,7 @@ class WhatsAppHandler {
         },
         true
       );
-  
+
       // Update the user's status and last activity
       if (userCard) {
         userCard.lastMessage = caption || `[${mediaType}]`;
@@ -767,7 +850,7 @@ class WhatsAppHandler {
         userCard.status = "active";
         this.userCardManager.updateUserCard(sender, userCard);
       }
-  
+
       // Cleanup temp file after delay to ensure Discord has time to process it
       setTimeout(() => {
         try {
@@ -781,24 +864,33 @@ class WhatsAppHandler {
           );
         }
       }, 60000); // 1 minute delay
+
+      return success;
     } catch (error) {
       console.error(
         `[WhatsAppHandler:${this.instanceId}] Error handling ${mediaType} message:`,
         error
       );
+      return false;
     }
   }
 
+  /**
+   * Get default file extension based on media type
+   * @param {string} mediaType - Media type
+   * @returns {string} - File extension with dot
+   */
   getDefaultExtension(mediaType) {
-    switch (mediaType.toLowerCase()) {
-      case 'image': return '.jpg';
-      case 'video': return '.mp4';
-      case 'audio': return '.mp3';
-      case 'ptt': return '.ogg';
-      case 'sticker': return '.webp';
-      case 'document': return '.bin';
-      default: return '.bin';
-    }
+    const typeToExt = {
+      image: ".jpg",
+      video: ".mp4",
+      audio: ".mp3",
+      ptt: ".ogg",
+      sticker: ".webp",
+      document: ".bin",
+    };
+
+    return typeToExt[mediaType] || ".bin";
   }
 
   /**

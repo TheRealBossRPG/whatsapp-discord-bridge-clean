@@ -1,4 +1,4 @@
-// modules/clients/baileys/BaileysMedia.js
+// modules/clients/baileys/BaileysMedia.js - FIXED version
 const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
@@ -15,11 +15,11 @@ class BaileysMedia {
     return new Promise((resolve) => {
       exec('ffmpeg -version', (error) => {
         if (error) {
-          console.error(`[BaileysMedia:${this.client.instanceId}] FFmpeg is not installed or not in PATH`);
+          console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] FFmpeg is not installed or not in PATH`);
           resolve(false);
           return;
         }
-        console.log(`[BaileysMedia:${this.client.instanceId}] FFmpeg is installed and available`);
+        console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] FFmpeg is installed and available`);
         resolve(true);
       });
     });
@@ -48,7 +48,7 @@ class BaileysMedia {
         );
       }
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Converting GIF to MP4: ${gifPath} -> ${outputPath}`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Converting GIF to MP4: ${gifPath} -> ${outputPath}`);
       
       return new Promise((resolve, reject) => {
         // Use more compatible ffmpeg settings
@@ -61,31 +61,31 @@ class BaileysMedia {
           }
           
           if (error) {
-            console.error(`[BaileysMedia:${this.client.instanceId}] FFmpeg error:`, error);
+            console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] FFmpeg error:`, error);
             
             // Try a more basic conversion as fallback
             const fallbackCommand = `ffmpeg -i "${gifPath}" -c:v libx264 -f mp4 "${outputPath}"`;
             
             exec(fallbackCommand, (fallbackError, fallbackStdout, fallbackStderr) => {
               if (fallbackError) {
-                console.error(`[BaileysMedia:${this.client.instanceId}] Fallback FFmpeg error:`, fallbackError);
+                console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Fallback FFmpeg error:`, fallbackError);
                 reject(fallbackError);
                 return;
               }
               
-              console.log(`[BaileysMedia:${this.client.instanceId}] GIF to MP4 fallback conversion complete: ${outputPath}`);
+              console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] GIF to MP4 fallback conversion complete: ${outputPath}`);
               resolve(outputPath);
             });
             
             return;
           }
           
-          console.log(`[BaileysMedia:${this.client.instanceId}] GIF to MP4 conversion complete: ${outputPath}`);
+          console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] GIF to MP4 conversion complete: ${outputPath}`);
           resolve(outputPath);
         });
       });
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error in convertGifToMp4:`, error);
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error in convertGifToMp4:`, error);
       throw error;
     }
   }
@@ -93,7 +93,7 @@ class BaileysMedia {
   // Download media from URL to a local file
   async downloadMediaFromUrl(url, filename) {
     try {
-      console.log(`[BaileysMedia:${this.client.instanceId}] Downloading media from URL: ${url}`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Downloading media from URL: ${url}`);
       
       // Generate temporary filename if not provided
       if (!filename) {
@@ -102,7 +102,7 @@ class BaileysMedia {
       }
       
       // Create a file path in the temp directory
-      const tempPath = path.join(this.client.tempDir, `dl_${Date.now()}_${filename}`);
+      const tempPath = path.join(this.client?.tempDir || './temp', `dl_${Date.now()}_${filename}`);
       
       // Download the file
       const response = await axios({
@@ -114,14 +114,14 @@ class BaileysMedia {
       // Write the file to disk
       fs.writeFileSync(tempPath, Buffer.from(response.data));
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Media downloaded to: ${tempPath}`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Media downloaded to: ${tempPath}`);
       return {
         path: tempPath,
         data: Buffer.from(response.data),
         mimetype: response.headers['content-type']
       };
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error downloading media from URL:`, error);
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error downloading media from URL:`, error);
       throw error;
     }
   }
@@ -129,10 +129,10 @@ class BaileysMedia {
   // Send a GIF
   async sendGif(recipient, gifInput, caption = '') {
     try {
-      console.log(`[BaileysMedia:${this.client.instanceId}] Preparing to send GIF to ${recipient}...`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Preparing to send GIF to ${recipient}...`);
       
       // Ensure initialized
-      if (!this.client.isReady) {
+      if (this.client && !this.client.isReady) {
         console.log(`[BaileysMedia:${this.client.instanceId}] Client not ready, initializing...`);
         const initialized = await this.client.initialize();
         if (!initialized) {
@@ -141,7 +141,7 @@ class BaileysMedia {
       }
       
       // Format recipient
-      const jid = this.client.formatJid ? 
+      const jid = this.client && this.client.formatJid ? 
                  this.client.formatJid(recipient) : 
                  (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
       
@@ -155,16 +155,21 @@ class BaileysMedia {
       const ffmpegInstalled = await this.checkFfmpeg();
       
       if (!ffmpegInstalled) {
-        console.warn(`[BaileysMedia:${this.client.instanceId}] FFmpeg not found, sending as regular video`);
+        console.warn(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] FFmpeg not found, sending as regular video`);
         
         // If ffmpeg isn't available, try sending as regular video
         if (Buffer.isBuffer(gifInput)) {
-          const gifPath = path.join(this.client.tempDir, `baileys_gif_${Date.now()}.gif`);
+          const gifPath = path.join(this.client?.tempDir || './temp', `baileys_gif_${Date.now()}.gif`);
           fs.writeFileSync(gifPath, gifInput);
           gifInput = gifPath;
         }
         
         // Send as regular video without conversion
+        // FIXED: Use socket directly, not auth.sock
+        if (!this.client || !this.client.socket) {
+          throw new Error('WhatsApp client socket is not available');
+        }
+        
         const result = await this.client.socket.sendMessage(jid, {
           video: fs.readFileSync(gifInput),
           caption: caption || undefined,
@@ -178,6 +183,11 @@ class BaileysMedia {
       const mp4Path = await this.convertGifToMp4(gifInput);
       
       // Send as GIF with proper attributes
+      // FIXED: Use socket directly, not auth.sock
+      if (!this.client || !this.client.socket) {
+        throw new Error('WhatsApp client socket is not available');
+      }
+      
       const result = await this.client.socket.sendMessage(jid, {
         video: fs.readFileSync(mp4Path),
         caption: caption || undefined,
@@ -190,25 +200,25 @@ class BaileysMedia {
       try {
         fs.unlinkSync(mp4Path);
       } catch (e) {
-        console.error(`[BaileysMedia:${this.client.instanceId}] Error cleaning up temp file:`, e);
+        console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error cleaning up temp file:`, e);
       }
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] GIF sent successfully!`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] GIF sent successfully!`);
       return result;
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending GIF:`, error);
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error sending GIF:`, error);
       throw error;
     }
   }
 
   async generateThumbnail(videoPath) {
     try {
-      const thumbnailPath = path.join(this.client.tempDir, `thumb_${Date.now()}.jpg`);
+      const thumbnailPath = path.join(this.client?.tempDir || './temp', `thumb_${Date.now()}.jpg`);
       
       return new Promise((resolve, reject) => {
         exec(`ffmpeg -i "${videoPath}" -ss 0.0 -frames:v 1 "${thumbnailPath}"`, (error) => {
           if (error) {
-            console.error(`[BaileysMedia:${this.client.instanceId}] Error generating thumbnail:`, error);
+            console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error generating thumbnail:`, error);
             resolve(null); // Continue without thumbnail
             return;
           }
@@ -218,13 +228,13 @@ class BaileysMedia {
             fs.unlinkSync(thumbnailPath); // Clean up
             resolve(thumbBuffer);
           } catch (readError) {
-            console.error(`[BaileysMedia:${this.client.instanceId}] Error reading thumbnail:`, readError);
+            console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error reading thumbnail:`, readError);
             resolve(null);
           }
         });
       });
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error in generateThumbnail:`, error);
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error in generateThumbnail:`, error);
       return null;
     }
   }
@@ -232,10 +242,10 @@ class BaileysMedia {
   // Send a sticker
   async sendSticker(recipient, stickerInput) {
     try {
-      console.log(`[BaileysMedia:${this.client.instanceId}] Preparing to send sticker to ${recipient}...`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Preparing to send sticker to ${recipient}...`);
       
       // Ensure initialized
-      if (!this.client.isReady) {
+      if (this.client && !this.client.isReady) {
         const initialized = await this.client.initialize();
         if (!initialized) {
           throw new Error('Failed to initialize Baileys connection');
@@ -243,7 +253,7 @@ class BaileysMedia {
       }
       
       // Format recipient
-      const jid = this.client.formatJid ? 
+      const jid = this.client && this.client.formatJid ? 
                 this.client.formatJid(recipient) : 
                 (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
       
@@ -267,9 +277,10 @@ class BaileysMedia {
         throw new Error('Empty sticker data');
       }
       
-      // For better compatibility, ensure it's webp format
-      // If input isn't webp, we could convert it using sharp or another library
-      // But for now, we'll just send it as is to keep complexity manageable
+      // FIXED: Use socket directly, not auth.sock
+      if (!this.client || !this.client.socket) {
+        throw new Error('WhatsApp client socket is not available');
+      }
       
       // Send as sticker
       const result = await this.client.socket.sendMessage(jid, {
@@ -277,10 +288,10 @@ class BaileysMedia {
         mimetype: 'image/webp'
       });
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Sticker sent successfully!`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Sticker sent successfully!`);
       return result;
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending sticker:`, error);
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error sending sticker:`, error);
       throw error;
     }
   }
@@ -289,7 +300,7 @@ class BaileysMedia {
   async sendVideo(recipient, videoPath, caption = '') {
     try {
       // Ensure initialized
-      if (!this.client.isReady) {
+      if (this.client && !this.client.isReady) {
         const initialized = await this.client.initialize();
         if (!initialized) {
           throw new Error('Failed to initialize Baileys connection');
@@ -297,11 +308,11 @@ class BaileysMedia {
       }
       
       // Format recipient
-      const jid = this.client.formatJid ? 
+      const jid = this.client && this.client.formatJid ? 
                 this.client.formatJid(recipient) : 
                 (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Sending video to ${jid}...`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Sending video to ${jid}...`);
       
       // If the input is a URL, download it first
       let videoBuffer;
@@ -316,16 +327,21 @@ class BaileysMedia {
         throw new Error('Invalid video input type');
       }
       
+      // FIXED: Use socket directly, not auth.sock
+      if (!this.client || !this.client.socket) {
+        throw new Error('WhatsApp client socket is not available');
+      }
+      
       // Send as video
-      const result = await this.client.auth.sock.sendMessage(jid, {
+      const result = await this.client.socket.sendMessage(jid, {
         video: videoBuffer,
         caption: caption || undefined,
       });
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Video sent successfully!`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Video sent successfully!`);
       return result;
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending video:`, error);
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error sending video:`, error);
       throw error;
     }
   }
@@ -334,7 +350,7 @@ class BaileysMedia {
   async sendAudio(recipient, audioPath, isVoiceNote = false) {
     try {
       // Ensure initialized
-      if (!this.client.isReady) {
+      if (this.client && !this.client.isReady) {
         const initialized = await this.client.initialize();
         if (!initialized) {
           throw new Error('Failed to initialize Baileys connection');
@@ -342,11 +358,11 @@ class BaileysMedia {
       }
       
       // Format recipient
-      const jid = this.client.formatJid ? 
+      const jid = this.client && this.client.formatJid ? 
                 this.client.formatJid(recipient) : 
                 (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
       
-      console.log(`[BaileysMedia:${this.instanceId}] Sending ${isVoiceNote ? 'voice note' : 'audio'} to ${jid}...`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Sending ${isVoiceNote ? 'voice note' : 'audio'} to ${jid}...`);
       
       // Handle different input types
       let audioBuffer;
@@ -376,8 +392,8 @@ class BaileysMedia {
         // WhatsApp voice notes typically work better as OGG/OPUS
         if (mimetype !== 'audio/ogg' && await this.checkFfmpeg()) {
           try {
-            const tempInput = path.join(this.client.tempDir, `voice_in_${Date.now()}`);
-            const tempOutput = path.join(this.client.tempDir, `voice_out_${Date.now()}.ogg`);
+            const tempInput = path.join(this.client?.tempDir || './temp', `voice_in_${Date.now()}`);
+            const tempOutput = path.join(this.client?.tempDir || './temp', `voice_out_${Date.now()}.ogg`);
             
             fs.writeFileSync(tempInput, audioBuffer);
             
@@ -385,7 +401,7 @@ class BaileysMedia {
               // Convert to OGG/OPUS - optimal for voice notes
               exec(`ffmpeg -i "${tempInput}" -c:a libopus -b:a 24k "${tempOutput}"`, (error) => {
                 if (error) {
-                  console.error(`[BaileysMedia:${this.client.instanceId}] Error converting voice note:`, error);
+                  console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error converting voice note:`, error);
                   resolve(); // Continue with original format
                 } else {
                   try {
@@ -393,7 +409,7 @@ class BaileysMedia {
                     mimetype = 'audio/ogg; codecs=opus';
                     resolve();
                   } catch (readError) {
-                    console.error(`[BaileysMedia:${this.client.instanceId}] Error reading converted voice note:`, readError);
+                    console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error reading converted voice note:`, readError);
                     resolve(); // Continue with original format
                   }
                 }
@@ -406,10 +422,15 @@ class BaileysMedia {
               });
             });
           } catch (convError) {
-            console.error(`[BaileysMedia:${this.client.instanceId}] Voice conversion error:`, convError);
+            console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Voice conversion error:`, convError);
             // Continue with original format
           }
         }
+      }
+      
+      // FIXED: Use socket directly, not auth.sock
+      if (!this.client || !this.client.socket) {
+        throw new Error('WhatsApp client socket is not available');
       }
       
       // Send the audio or voice note
@@ -420,10 +441,10 @@ class BaileysMedia {
         seconds: 0, // Baileys will calculate duration if not provided
       });
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] ${isVoiceNote ? 'Voice note' : 'Audio'} sent successfully!`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] ${isVoiceNote ? 'Voice note' : 'Audio'} sent successfully!`);
       return result;
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending ${isVoiceNote ? 'voice note' : 'audio'}:`, error);
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error sending ${isVoiceNote ? 'voice note' : 'audio'}:`, error);
       throw error;
     }
   }
@@ -432,7 +453,7 @@ class BaileysMedia {
   async sendDocument(recipient, documentPath, filename, caption = '') {
     try {
       // Ensure initialized
-      if (!this.client.isReady) {
+      if (this.client && !this.client.isReady) {
         const initialized = await this.client.initialize();
         if (!initialized) {
           throw new Error('Failed to initialize Baileys connection');
@@ -440,11 +461,11 @@ class BaileysMedia {
       }
       
       // Format recipient
-      const jid = this.client.formatJid ? 
+      const jid = this.client && this.client.formatJid ? 
                 this.client.formatJid(recipient) : 
                 (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Sending document to ${jid}...`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Sending document to ${jid}...`);
       
       // Handle various input types
       let documentBuffer;
@@ -488,18 +509,84 @@ class BaileysMedia {
       else if (ext === '.zip') mimetype = 'application/zip';
       else if (ext === '.rar') mimetype = 'application/x-rar-compressed';
       
+      // FIXED: Use socket directly, not auth.sock
+      if (!this.client || !this.client.socket) {
+        throw new Error('WhatsApp client socket is not available');
+      }
+      
       // Send document
-      const result = await this.client.auth.sock.sendMessage(jid, {
+      const result = await this.client.socket.sendMessage(jid, {
         document: documentBuffer,
         mimetype: mimetype,
         fileName: filename,
         caption: caption || undefined
       });
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Document sent successfully!`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Document sent successfully!`);
       return result;
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending document:`, error);
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error sending document:`, error);
+      throw error;
+    }
+  }
+  
+  // Send an image
+  async sendImage(recipient, imagePath, caption = '') {
+    try {
+      // Ensure initialized
+      if (this.client && !this.client.isReady) {
+        const initialized = await this.client.initialize();
+        if (!initialized) {
+          throw new Error('Failed to initialize Baileys connection');
+        }
+      }
+      
+      // Format recipient
+      const jid = this.client && this.client.formatJid ? 
+                this.client.formatJid(recipient) : 
+                (recipient.includes('@s.whatsapp.net') ? recipient : `${recipient}@s.whatsapp.net`);
+      
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Sending image to ${jid}...`);
+      
+      // If the input is a URL, download it first
+      let imageBuffer;
+      let mimetype = 'image/jpeg';
+      
+      if (typeof imagePath === 'string' && (imagePath.startsWith('http://') || imagePath.startsWith('https://'))) {
+        const downloadedMedia = await this.downloadMediaFromUrl(imagePath);
+        imageBuffer = downloadedMedia.data;
+        mimetype = downloadedMedia.mimetype || mimetype;
+      } else if (Buffer.isBuffer(imagePath)) {
+        imageBuffer = imagePath;
+      } else if (typeof imagePath === 'string' && fs.existsSync(imagePath)) {
+        imageBuffer = fs.readFileSync(imagePath);
+        
+        // Try to determine mimetype from filename extension
+        const ext = path.extname(imagePath).toLowerCase();
+        if (ext === '.png') mimetype = 'image/png';
+        else if (ext === '.jpg' || ext === '.jpeg') mimetype = 'image/jpeg';
+        else if (ext === '.webp') mimetype = 'image/webp';
+        else if (ext === '.gif') mimetype = 'image/gif';
+      } else {
+        throw new Error('Invalid image input type');
+      }
+      
+      // FIXED: Use socket directly, not auth.sock
+      if (!this.client || !this.client.socket) {
+        throw new Error('WhatsApp client socket is not available');
+      }
+      
+      // Send as image
+      const result = await this.client.socket.sendMessage(jid, {
+        image: imageBuffer,
+        mimetype: mimetype,
+        caption: caption || undefined,
+      });
+      
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Image sent successfully!`);
+      return result;
+    } catch (error) {
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error sending image:`, error);
       throw error;
     }
   }
@@ -507,7 +594,7 @@ class BaileysMedia {
   // Send media from URL
   async sendMediaFromUrl(recipient, url, mediaType = 'auto', filename = null, caption = '') {
     try {
-      console.log(`[BaileysMedia:${this.client.instanceId}] Sending media from URL: ${url}`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Sending media from URL: ${url}`);
       
       // Download the media from the URL
       const downloadedMedia = await this.downloadMediaFromUrl(url, filename);
@@ -537,17 +624,14 @@ class BaileysMedia {
         filename = urlParts[urlParts.length - 1].split('?')[0];
       }
       
-      // Send based on detected type
+      // FIXED: Use local methods for each media type
       let result;
       switch (detectedType.toLowerCase()) {
         case 'image':
-          result = await this.client.auth.sock.sendMessage(
-            this.client.formatJid ? this.client.formatJid(recipient) : `${recipient}@s.whatsapp.net`,
-            {
-              image: downloadedMedia.data,
-              caption: caption || undefined,
-              mimetype: downloadedMedia.mimetype
-            }
+          result = await this.sendImage(
+            recipient,
+            downloadedMedia.data,
+            caption
           );
           break;
         
@@ -578,24 +662,29 @@ class BaileysMedia {
       try {
         fs.unlinkSync(downloadedMedia.path);
       } catch (e) {
-        console.error(`[BaileysMedia:${this.client.instanceId}] Error cleaning up temp file:`, e);
+        console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error cleaning up temp file:`, e);
       }
       
       return result;
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error sending media from URL:`, error);
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error sending media from URL:`, error);
       throw error;
     }
   }
   
   // Download media from a message
-  async downloadMedia(message) {
+  async downloadMedia(message, options = {}) {
     try {
-      console.log(`[BaileysMedia:${this.client.instanceId}] Downloading media from message`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Downloading media from message`);
       
       if (!message) {
-        console.error(`[BaileysMedia:${this.client.instanceId}] No message provided for media download`);
+        console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] No message provided for media download`);
         return null;
+      }
+      
+      // Make sure we have socket available
+      if (!this.client || !this.client.socket) {
+        throw new Error('WhatsApp client socket is not available');
       }
       
       // Get the message properly depending on baileys structure
@@ -615,7 +704,7 @@ class BaileysMedia {
       );
       
       if (!buffer || buffer.length === 0) {
-        console.error(`[BaileysMedia:${this.client.instanceId}] Downloaded buffer is empty`);
+        console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Downloaded buffer is empty`);
         return null;
       }
       
@@ -624,7 +713,7 @@ class BaileysMedia {
       let mimetype = this.getMimeType(message, mediaType);
       let filename = this.getFilename(message, mediaType, mimetype);
       
-      console.log(`[BaileysMedia:${this.client.instanceId}] Successfully downloaded ${buffer.length} bytes of ${mediaType} media`);
+      console.log(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Successfully downloaded ${buffer.length} bytes of ${mediaType} media`);
       
       return {
         buffer,
@@ -634,7 +723,7 @@ class BaileysMedia {
         size: buffer.length
       };
     } catch (error) {
-      console.error(`[BaileysMedia:${this.client.instanceId}] Error downloading media:`, error);
+      console.error(`[BaileysMedia:${this.client?.instanceId || 'unknown'}] Error downloading media:`, error);
       return null;
     }
   }
@@ -686,6 +775,28 @@ class BaileysMedia {
     // Generate appropriate extension based on mimetype
     const ext = this.getExtensionFromMimetype(mimetype);
     return `${mediaType}_${timestamp}${ext}`;
+  }
+
+  getExtensionFromMimetype(mimetype) {
+    const mimeToExt = {
+      'image/jpeg': '.jpg',
+      'image/png': '.png',
+      'image/gif': '.gif',
+      'image/webp': '.webp',
+      'video/mp4': '.mp4',
+      'video/quicktime': '.mov',
+      'audio/ogg': '.ogg',
+      'audio/mp4': '.m4a',
+      'audio/mpeg': '.mp3',
+      'application/pdf': '.pdf',
+      'application/vnd.ms-excel': '.xls',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+      'application/msword': '.doc',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+      'application/zip': '.zip'
+    };
+    
+    return mimeToExt[mimetype] || '.bin';
   }
 }
 

@@ -51,6 +51,11 @@ class BaileysClient extends EventEmitter {
     );
   }
 
+  /**
+   * Download media from a message
+   * @param {Object} message - WhatsApp message object
+   * @returns {Promise<Object|null>} - Media data or null if download failed
+   */
   async downloadMedia(message) {
     try {
       if (!this.isReady || !this.socket) {
@@ -63,14 +68,14 @@ class BaileysClient extends EventEmitter {
         this.media = new BaileysMedia(this);
       }
 
-      // Call through to the media helper with better handling
-      return await this.media.downloadMedia(null, null, message);
+      // Call the media helper's downloadMedia with correct parameters
+      return await this.media.downloadMedia(message);
     } catch (error) {
       console.error(
         `[BaileysClient:${this.instanceId}] Error downloading media:`,
         error
       );
-      throw error;
+      return null;
     }
   }
 
