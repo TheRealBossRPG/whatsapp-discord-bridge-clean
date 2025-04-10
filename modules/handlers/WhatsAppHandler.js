@@ -1,6 +1,7 @@
 // modules/handlers/WhatsAppHandler.js
 const fs = require("fs");
 const path = require("path");
+const axios = require('axios');
 
 /**
  * WhatsAppHandler class for handling WhatsApp interactions
@@ -152,6 +153,13 @@ class WhatsAppHandler {
           // CRITICAL FIX: Better handle existing user case
           // Check if user has an active ticket channel
           let channelId = this.channelManager.getUserChannel(userId);
+
+          if (channelId) {
+            // Channel exists - use it regardless of userState
+            userState.hasTicket = true; // Update userState to reflect reality
+            console.log(`[WhatsAppHandler:${this.instanceId}] Using existing channel ${channelId} for ${userId}`);
+            return await this.processMessage(message, userId, channelId);
+          }
 
           if (!channelId || !userState.hasTicket) {
             // Get username - prefer userState, fallback to stored info
@@ -475,219 +483,80 @@ class WhatsAppHandler {
   }
 
   /**
-   * Handle sticker message with enhanced download and conversion
-   * @param {Object} message - WhatsApp message
-   * @param {string} sender - Sender ID
-   * @param {string} channelId - Discord channel ID
-   * @param {string} caption - Optional caption text
-   * @returns {Promise<boolean>} - Success status
-   */
-  async handleStickerMessage(message, sender, channelId, caption = "") {
+ * Ultra-simplified sticker handler
+ * @param {Object} message - WhatsApp message
+ * @param {string} sender - Sender ID
+ * @param {string} channelId - Discord channel ID
+ * @param {string} caption - Optional caption text
+ * @returns {Promise<boolean>} - Success status
+ */
+async handleStickerMessage(message, sender, channelId, caption = "") {
+  try {
+    console.log(`[WhatsAppHandler:${this.instanceId}] Processing sticker message - simplified approach`);
+
+    // Get user info
+    const userInfo = this.userCardManager.getUserInfo(sender);
+    const username = userInfo?.username || "Unknown User";
+
+    // Let's skip the placeholder message to eliminate any possible interference
+    
+    // Use the simplest approach possible - just use the WhatsApp client directly
+    if (!this.whatsAppClient) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] WhatsApp client not available`);
+      return false;
+    }
+    
     try {
-      console.log(
-        `[WhatsAppHandler:${this.instanceId}] Processing sticker message`
-      );
-
-      // Get user info
-      const userInfo = this.userCardManager.getUserInfo(sender);
-      const username = userInfo?.username || "Unknown User";
-
-      // Create a waiting message to notify that sticker is being processed
-      const placeholderId = await this.ticketManager.forwardUserMessage(
-        sender,
-        `**${username}**: ${caption ? caption : ""} *[sticker downloading...]*`,
-        false
-      );
-
-      // Extract message details for debugging
-      console.log(
-        `[WhatsAppHandler:${this.instanceId}] Sticker message details:`,
-        message.message?.stickerMessage
-          ? {
-              mimetype: message.message.stickerMessage.mimetype,
-              isAnimated: message.message.stickerMessage.isAnimated || false,
-              hasMediaKey: !!message.message.stickerMessage.mediaKey,
-            }
-          : "No sticker details available"
-      );
-
-      // Try downloading the sticker directly first
-      let mediaData = null;
-      let directDownloadSuccess = false;
-
-      try {
-        if (!this.whatsAppClient) {
-          throw new Error("WhatsApp client is not available");
-        }
-
-        console.log(
-          `[WhatsAppHandler:${this.instanceId}] Attempting to download sticker...`
-        );
-        mediaData = await this.whatsAppClient.downloadMedia(message);
-
-        if (mediaData && mediaData.buffer && mediaData.buffer.length > 0) {
-          directDownloadSuccess = true;
-          console.log(
-            `[WhatsAppHandler:${this.instanceId}] Successfully downloaded sticker: ${mediaData.buffer.length} bytes`
-          );
-        } else {
-          console.log(
-            `[WhatsAppHandler:${this.instanceId}] Direct download returned no data, trying alternative methods...`
-          );
-        }
-      } catch (downloadError) {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] Error in direct sticker download:`,
-          downloadError.message
-        );
-      }
-
-      // If direct download failed, try alternative method
-      if (!directDownloadSuccess) {
-        try {
-          console.log(
-            `[WhatsAppHandler:${this.instanceId}] Trying alternative sticker download method...`
-          );
-
-          // Advanced handling for stickers
-          if (message.message?.stickerMessage && this.whatsAppClient.socket) {
-            // Get the socket from the client
-            const socket = this.whatsAppClient.socket;
-
-            // Try using direct socket API to download media if available
-            if (typeof socket.downloadMediaMessage === "function") {
-              console.log(
-                `[WhatsAppHandler:${this.instanceId}] Using socket.downloadMediaMessage for sticker`
-              );
-              const buffer = await socket.downloadMediaMessage(message);
-
-              if (buffer && buffer.length > 0) {
-                mediaData = {
-                  buffer: buffer,
-                  mediaType: "sticker",
-                  mimetype: "image/webp",
-                  filename: `sticker_${Date.now()}.webp`,
-                };
-                console.log(
-                  `[WhatsAppHandler:${this.instanceId}] Alternative download succeeded: ${buffer.length} bytes`
-                );
-              }
-            }
-          }
-        } catch (altError) {
-          console.error(
-            `[WhatsAppHandler:${this.instanceId}] Alternative sticker download failed:`,
-            altError.message
-          );
-        }
-      }
-
-      // If we still failed to get media data, report error and return
+      // Just get the raw buffer from client with no options
+      const mediaData = await this.whatsAppClient.downloadMedia(message);
+      
       if (!mediaData || !mediaData.buffer || mediaData.buffer.length === 0) {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] All sticker download methods failed`
-        );
-        await this.ticketManager.forwardUserMessage(
-          sender,
-          `**${username}**: ${
-            caption || ""
-          } *[Sticker download failed - please try sending it again]*`,
-          false
-        );
-        return false;
+        throw new Error("Empty sticker data received");
       }
-
-      // Ensure we have .webp extension
-      const timestamp = Date.now();
-      const filename = `sticker_${timestamp}_${sender.replace(
-        /[^\w]/g,
-        "_"
-      )}.webp`;
-      const filepath = path.join(this.tempDir, filename);
-
-      // Log the data we're about to write
-      console.log(
-        `[WhatsAppHandler:${this.instanceId}] Writing sticker to file: ${filepath} (${mediaData.buffer.length} bytes)`
-      );
-
-      // Write the sticker to file
-      fs.writeFileSync(filepath, mediaData.buffer);
-
-      // Verify the file was written correctly
-      if (!fs.existsSync(filepath)) {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] Failed to write sticker file`
-        );
-        return false;
-      }
-
-      const fileStats = fs.statSync(filepath);
-      console.log(
-        `[WhatsAppHandler:${this.instanceId}] Sticker file written: ${fileStats.size} bytes`
-      );
-
-      // Create content with username and caption
-      const formattedContent = `**${username}**: ${caption || ""} [Sticker]`;
-
-      // Forward the sticker to Discord
-      console.log(
-        `[WhatsAppHandler:${this.instanceId}] Sending sticker to Discord...`
-      );
+      
+      // Write to file with minimal code
+      const tempFilePath = path.join(this.tempDir, `sticker_${Date.now()}.webp`);
+      fs.writeFileSync(tempFilePath, mediaData.buffer);
+      
+      // Create content string
+      const content = `**${username}**: ${caption || ""} [Sticker]`;
+      
+      // Forward to Discord
       const success = await this.ticketManager.forwardUserMessage(
         sender,
         {
-          content: formattedContent,
-          files: [filepath],
+          content: content,
+          files: [tempFilePath]
         },
         true
       );
-
-      // Log success or failure
-      if (success) {
-        console.log(
-          `[WhatsAppHandler:${this.instanceId}] Successfully sent sticker to Discord`
-        );
-      } else {
-        console.error(
-          `[WhatsAppHandler:${this.instanceId}] Failed to send sticker to Discord`
-        );
+      
+      // Cleanup immediately after forwarding (no delay)
+      try {
+        fs.unlinkSync(tempFilePath);
+      } catch (e) {
+        // Ignore cleanup errors
       }
-
-      // Update user's status and last activity if successful
-      if (userInfo && success) {
-        this.userCardManager.setUserInfo(sender, username, {
-          lastMessage: caption || "[Sticker]",
-          lastActivity: Date.now(),
-          status: "active",
-        });
-      }
-
-      // Cleanup temp file with short delay to ensure Discord has time to process it
-      setTimeout(() => {
-        try {
-          if (fs.existsSync(filepath)) {
-            fs.unlinkSync(filepath);
-            console.log(
-              `[WhatsAppHandler:${this.instanceId}] Cleaned up sticker temp file: ${filepath}`
-            );
-          }
-        } catch (unlinkError) {
-          console.error(
-            `[WhatsAppHandler:${this.instanceId}] Error deleting sticker temp file:`,
-            unlinkError
-          );
-        }
-      }, 30000); // 30 seconds delay
-
+      
       return success;
-    } catch (error) {
-      console.error(
-        `[WhatsAppHandler:${this.instanceId}] Error handling sticker:`,
-        error
+    } catch (innerError) {
+      console.error(`[WhatsAppHandler:${this.instanceId}] Sticker processing failed:`, innerError);
+      
+      // Just send a text message indicating sticker was received
+      await this.ticketManager.forwardUserMessage(
+        sender,
+        `**${username}**: ${caption || ""} [Sticker - could not be displayed]`,
+        false
       );
-      return false;
+      
+      // Still return true since we did handle the message in some way
+      return true;
     }
+  } catch (error) {
+    console.error(`[WhatsAppHandler:${this.instanceId}] Sticker handler error:`, error);
+    return false;
   }
+}
 
   /**
    * Handle text message
