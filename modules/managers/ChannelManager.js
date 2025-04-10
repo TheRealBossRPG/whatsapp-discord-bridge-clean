@@ -73,6 +73,96 @@ class ChannelManager {
   }
 
   /**
+   * Save instance settings
+   * @param {string} instanceId - Instance ID
+   * @param {Object} settings - Settings to save
+   * @returns {Promise<boolean>} - Success
+   */
+  async saveInstanceSettings(instanceId, settings) {
+    try {
+      const settingsPath = path.join(
+        __dirname,
+        "../../instances",
+        instanceId,
+        "settings.json"
+      );
+
+      // Create directory if it doesn't exist
+      const dir = path.dirname(settingsPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      // Read existing settings if available
+      let existingSettings = {};
+      if (fs.existsSync(settingsPath)) {
+        try {
+          const content = fs.readFileSync(settingsPath, "utf8");
+          existingSettings = JSON.parse(content);
+        } catch (readError) {
+          console.error(
+            `[ChannelManager:${this.instanceId}] Error reading settings:`,
+            readError
+          );
+        }
+      }
+
+      // Merge with new settings
+      const mergedSettings = {
+        ...existingSettings,
+        ...settings,
+      };
+
+      // Write updated settings
+      fs.writeFileSync(
+        settingsPath,
+        JSON.stringify(mergedSettings, null, 2),
+        "utf8"
+      );
+      console.log(
+        `[ChannelManager:${this.instanceId}] Saved settings for instance ${instanceId}`
+      );
+
+      return true;
+    } catch (error) {
+      console.error(
+        `[ChannelManager:${this.instanceId}] Error saving instance settings:`,
+        error
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Get instance settings
+   * @param {string} instanceId - Instance ID
+   * @returns {Promise<Object>} - Settings
+   */
+  async getInstanceSettings(instanceId) {
+    try {
+      const settingsPath = path.join(
+        __dirname,
+        "../../instances",
+        instanceId,
+        "settings.json"
+      );
+
+      if (fs.existsSync(settingsPath)) {
+        const content = fs.readFileSync(settingsPath, "utf8");
+        return JSON.parse(content);
+      }
+
+      return {};
+    } catch (error) {
+      console.error(
+        `[ChannelManager:${this.instanceId}] Error getting instance settings:`,
+        error
+      );
+      return {};
+    }
+  }
+
+  /**
    * Save channel mappings to disk
    */
   saveMappings() {
@@ -131,17 +221,24 @@ class ChannelManager {
     try {
       const cleanPhone = this.cleanPhoneNumber(phoneNumber);
       const channelId = this.channelMap.get(cleanPhone);
-      
+
       // IMPROVED: Add logging
       if (channelId) {
-        console.log(`[ChannelManager:${this.instanceId}] Found channel ${channelId} for user ${cleanPhone}`);
+        console.log(
+          `[ChannelManager:${this.instanceId}] Found channel ${channelId} for user ${cleanPhone}`
+        );
       } else {
-        console.log(`[ChannelManager:${this.instanceId}] No channel found for user ${cleanPhone}`);
+        console.log(
+          `[ChannelManager:${this.instanceId}] No channel found for user ${cleanPhone}`
+        );
       }
-      
+
       return channelId || null;
     } catch (error) {
-      console.error(`[ChannelManager:${this.instanceId}] Error in getUserChannel:`, error);
+      console.error(
+        `[ChannelManager:${this.instanceId}] Error in getUserChannel:`,
+        error
+      );
       return null;
     }
   }
@@ -164,20 +261,29 @@ class ChannelManager {
   removeChannel(phoneNumber) {
     try {
       const cleanPhone = this.cleanPhoneNumber(phoneNumber);
-      console.log(`[ChannelManager:${this.instanceId}] Removing channel for ${cleanPhone}`);
-      
+      console.log(
+        `[ChannelManager:${this.instanceId}] Removing channel for ${cleanPhone}`
+      );
+
       const result = this.channelMap.delete(cleanPhone);
-      
+
       if (result) {
         this.saveMappings();
-        console.log(`[ChannelManager:${this.instanceId}] Successfully removed channel mapping for ${cleanPhone}`);
+        console.log(
+          `[ChannelManager:${this.instanceId}] Successfully removed channel mapping for ${cleanPhone}`
+        );
       } else {
-        console.log(`[ChannelManager:${this.instanceId}] No channel mapping found for ${cleanPhone}`);
+        console.log(
+          `[ChannelManager:${this.instanceId}] No channel mapping found for ${cleanPhone}`
+        );
       }
-      
+
       return result;
     } catch (error) {
-      console.error(`[ChannelManager:${this.instanceId}] Error removing channel:`, error);
+      console.error(
+        `[ChannelManager:${this.instanceId}] Error removing channel:`,
+        error
+      );
       return false;
     }
   }

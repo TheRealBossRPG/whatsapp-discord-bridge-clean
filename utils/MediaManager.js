@@ -345,164 +345,165 @@ class MediaManager {
         `[MediaManager:${this.instanceId}] Trying to rename directory: ${oldDir} -> ${newDir}`
       );
 
-      // Check if old directory exists - direct approach first
-      if (fs.existsSync(oldDir)) {
-        console.log(
-          `[MediaManager:${this.instanceId}] Found exact match directory: ${oldDir}`
-        );
+      // IMPROVED: First collect all possible old directories
+      let possibleOldDirs = [
+        oldDir, // Format: username(phone)
+        path.join(this.baseDir, safeOldDirName), // Format: just username
+        path.join(this.baseDir, cleanPhone), // Format: just phone
+      ];
 
-        // Make sure parent dir exists
-        const parentDir = path.dirname(newDir);
-        if (!fs.existsSync(parentDir)) {
-          fs.mkdirSync(parentDir, { recursive: true });
+      // Find direct match first - exact format
+      let foundOldDir = null;
+      for (const dirToCheck of possibleOldDirs) {
+        if (fs.existsSync(dirToCheck)) {
+          console.log(
+            `[MediaManager:${this.instanceId}] Found exact match directory: ${dirToCheck}`
+          );
+          foundOldDir = dirToCheck;
+          break;
         }
+      }
 
-        // IMPORTANT: Make sure the target directory doesn't already exist
-        if (fs.existsSync(newDir)) {
-          console.log(
-            `[MediaManager:${this.instanceId}] Target directory already exists: ${newDir}`
-          );
-          console.log(
-            `[MediaManager:${this.instanceId}] Will merge contents instead of renaming`
-          );
-
-          // Get all files from old directory
-          const files = fs.readdirSync(oldDir);
-
-          // Copy each file to the new directory
-          for (const file of files) {
-            const oldFilePath = path.join(oldDir, file);
-            const newFilePath = path.join(newDir, file);
-
-            if (!fs.existsSync(newFilePath)) {
-              fs.copyFileSync(oldFilePath, newFilePath);
-              console.log(
-                `[MediaManager:${this.instanceId}] Copied file: ${file}`
-              );
-            }
-          }
-
-          // Delete the old directory after copying all files
-          try {
-            console.log(
-              `[MediaManager:${this.instanceId}] Removing old directory after merge: ${oldDir}`
-            );
-            fs.rmdirSync(oldDir, { recursive: true });
-          } catch (rmError) {
-            console.error(
-              `[MediaManager:${this.instanceId}] Error removing old directory: ${rmError.message}`
-            );
-          }
-        } else {
-          // No conflict, just rename the directory
-          console.log(
-            `[MediaManager:${this.instanceId}] Renaming directory: ${oldDir} -> ${newDir}`
-          );
-          fs.renameSync(oldDir, newDir);
-          console.log(
-            `[MediaManager:${this.instanceId}] Directory renamed successfully from ${oldDirWithPhone} to ${newDirWithPhone}`
-          );
-        }
-      } else {
-        // If exact match not found, search for approximate matches
-        console.log(
-          `[MediaManager:${this.instanceId}] Exact directory not found: ${oldDir}`
-        );
-        console.log(
-          `[MediaManager:${this.instanceId}] Searching for phone number in directory names...`
-        );
-
-        let foundOldDir = false;
-
+      // If none of the standard formats match, search for any directory containing this phone number
+      if (!foundOldDir) {
         try {
-          // Search for a directory containing the phone number
+          // Make sure baseDir exists
+          if (!fs.existsSync(this.baseDir)) {
+            fs.mkdirSync(this.baseDir, { recursive: true });
+            console.log(
+              `[MediaManager:${this.instanceId}] Created base directory: ${this.baseDir}`
+            );
+            // No old directories to process
+            return;
+          }
+
+          console.log(
+            `[MediaManager:${this.instanceId}] Searching for directories with phone number: ${cleanPhone}`
+          );
           const baseItems = fs.readdirSync(this.baseDir);
 
           for (const item of baseItems) {
-            if (
-              item.includes(`(${cleanPhone})`) &&
-              fs.statSync(path.join(this.baseDir, item)).isDirectory()
-            ) {
-              const foundDir = path.join(this.baseDir, item);
-              console.log(
-                `[MediaManager:${this.instanceId}] Found directory with matching phone: ${foundDir}`
-              );
-
-              // Make sure target directory parent exists
-              const parentDir = path.dirname(newDir);
-              if (!fs.existsSync(parentDir)) {
-                fs.mkdirSync(parentDir, { recursive: true });
+            const fullPath = path.join(this.baseDir, item);
+            if (fs.statSync(fullPath).isDirectory()) {
+              if (item.includes(`(${cleanPhone})`) || item === cleanPhone) {
+                console.log(
+                  `[MediaManager:${this.instanceId}] Found directory with matching phone: ${fullPath}`
+                );
+                foundOldDir = fullPath;
+                break;
               }
-
-              // Check if target already exists
-              if (fs.existsSync(newDir)) {
-                console.log(
-                  `[MediaManager:${this.instanceId}] Target directory already exists: ${newDir}`
-                );
-                console.log(
-                  `[MediaManager:${this.instanceId}] Will merge contents instead of renaming`
-                );
-
-                // Copy files
-                const files = fs.readdirSync(foundDir);
-                for (const file of files) {
-                  const oldFilePath = path.join(foundDir, file);
-                  const newFilePath = path.join(newDir, file);
-
-                  if (!fs.existsSync(newFilePath)) {
-                    fs.copyFileSync(oldFilePath, newFilePath);
-                    console.log(
-                      `[MediaManager:${this.instanceId}] Copied file: ${file}`
-                    );
-                  }
-                }
-
-                // Remove old directory
-                try {
-                  console.log(
-                    `[MediaManager:${this.instanceId}] Removing old directory after merge: ${foundDir}`
-                  );
-                  fs.rmdirSync(foundDir, { recursive: true });
-                } catch (rmError) {
-                  console.error(
-                    `[MediaManager:${this.instanceId}] Error removing old directory: ${rmError.message}`
-                  );
-                }
-              } else {
-                // Rename directory
-                console.log(
-                  `[MediaManager:${this.instanceId}] Renaming matched directory: ${foundDir} -> ${newDir}`
-                );
-                fs.renameSync(foundDir, newDir);
-                console.log(
-                  `[MediaManager:${this.instanceId}] Directory renamed successfully from ${item} to ${newDirWithPhone}`
-                );
-              }
-
-              foundOldDir = true;
-              break;
             }
           }
         } catch (searchError) {
           console.error(
-            `[MediaManager:${this.instanceId}] Error searching for matching directories: ${searchError.message}`
+            `[MediaManager:${this.instanceId}] Error searching for matching directories:`,
+            searchError
           );
-        }
-
-        // If no matching directory found, create new directory structure
-        if (!foundOldDir) {
-          console.log(
-            `[MediaManager:${this.instanceId}] No matching directory found, creating new directory structure`
-          );
-          this.ensureUserDirectories(cleanPhone, newUsername);
         }
       }
+
+      // Make sure parent dir exists for new location
+      const parentDir = path.dirname(newDir);
+      if (!fs.existsSync(parentDir)) {
+        fs.mkdirSync(parentDir, { recursive: true });
+      }
+
+      // Process found directory (if any)
+      if (foundOldDir) {
+        try {
+          // Check if target already exists
+          if (fs.existsSync(newDir)) {
+            console.log(
+              `[MediaManager:${this.instanceId}] Target directory already exists: ${newDir}`
+            );
+            console.log(
+              `[MediaManager:${this.instanceId}] Will merge contents instead of renaming`
+            );
+
+            // Copy files from old to new directory
+            const files = fs.readdirSync(foundOldDir);
+            for (const file of files) {
+              const oldFilePath = path.join(foundOldDir, file);
+              const newFilePath = path.join(newDir, file);
+
+              // Skip if file already exists in target
+              if (fs.existsSync(newFilePath)) {
+                console.log(
+                  `[MediaManager:${this.instanceId}] File already exists in target: ${file}`
+                );
+                continue;
+              }
+
+              try {
+                // Copy the file
+                fs.copyFileSync(oldFilePath, newFilePath);
+                console.log(
+                  `[MediaManager:${this.instanceId}] Copied file: ${file} to new location`
+                );
+              } catch (copyError) {
+                console.error(
+                  `[MediaManager:${this.instanceId}] Error copying file ${file}:`,
+                  copyError
+                );
+              }
+            }
+
+            // Remove old directory after copying all files
+            try {
+              console.log(
+                `[MediaManager:${this.instanceId}] Removing old directory after merge: ${foundOldDir}`
+              );
+              fs.rmdirSync(foundOldDir, { recursive: true });
+              console.log(
+                `[MediaManager:${this.instanceId}] Old directory removed successfully`
+              );
+            } catch (rmError) {
+              console.error(
+                `[MediaManager:${this.instanceId}] Error removing old directory:`,
+                rmError
+              );
+            }
+          } else {
+            // No conflict, just rename the directory
+            console.log(
+              `[MediaManager:${this.instanceId}] Renaming directory: ${foundOldDir} -> ${newDir}`
+            );
+            fs.renameSync(foundOldDir, newDir);
+            console.log(
+              `[MediaManager:${this.instanceId}] Directory renamed successfully`
+            );
+          }
+        } catch (processError) {
+          console.error(
+            `[MediaManager:${this.instanceId}] Error processing directory:`,
+            processError
+          );
+        }
+      } else {
+        // No old directory found, create new directory structure
+        console.log(
+          `[MediaManager:${this.instanceId}] No matching directory found, creating: ${newDir}`
+        );
+        fs.mkdirSync(newDir, { recursive: true });
+      }
+
+      console.log(
+        `[MediaManager:${this.instanceId}] Username directory update complete: ${phoneNumber}`
+      );
     } catch (error) {
       console.error(
-        `[MediaManager:${this.instanceId}] Error renaming user directory: ${error.message}`
+        `[MediaManager:${this.instanceId}] Error renaming user directory:`,
+        error
       );
-      // Try to create new directories anyway
-      this.ensureUserDirectories(phoneNumber, newUsername);
+      // Try to create new directories anyway as a fallback
+      try {
+        this.ensureUserDirectories(phoneNumber, newUsername);
+      } catch (createError) {
+        console.error(
+          `[MediaManager:${this.instanceId}] Error creating user directories:`,
+          createError
+        );
+      }
     }
   }
 
