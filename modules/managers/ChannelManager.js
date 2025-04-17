@@ -539,7 +539,7 @@ class ChannelManager {
   }
 
   /**
-   * Map a user to a channel
+   * Map a user to a channel - Fixed version with additional safety checks
    * @param {string} userId - User ID or phone number
    * @param {string} channelId - Discord channel ID
    * @param {string} [username] - Optional username
@@ -554,7 +554,16 @@ class ChannelManager {
         return false;
       }
 
+      // Initialize channelMap if it doesn't exist
+      if (!this.channelMap) {
+        console.log(
+          `[ChannelManager:${this.instanceId}] Initializing channelMap`
+        );
+        this.channelMap = new Map();
+      }
+
       // Clean phone number if it's a phone number
+      let cleanUserId = userId;
       if (
         typeof userId === "string" &&
         (userId.includes("@") || /^\+?\d+$/.test(userId))
@@ -564,10 +573,10 @@ class ChannelManager {
           this.helpers &&
           typeof this.helpers.cleanPhoneNumber === "function"
         ) {
-          userId = this.helpers.cleanPhoneNumber(userId);
+          cleanUserId = this.helpers.cleanPhoneNumber(userId);
         } else {
           // Basic cleaning if helper not available
-          userId = userId
+          cleanUserId = userId
             .replace(/@s\.whatsapp\.net/g, "")
             .replace(/@c\.us/g, "")
             .replace(/@g\.us/g, "")
@@ -576,12 +585,26 @@ class ChannelManager {
         }
       }
 
-      // Save the mapping
-      this.channelMap.set(userId, channelId);
+      // Save the mapping (with additional safety check)
+      if (this.channelMap instanceof Map) {
+        this.channelMap.set(cleanUserId, channelId);
+        console.log(
+          `[ChannelManager:${this.instanceId}] Mapped user ${cleanUserId} to channel ${channelId}`
+        );
+      } else {
+        console.error(
+          `[ChannelManager:${this.instanceId}] channelMap is not a Map, recreating it`
+        );
+        this.channelMap = new Map();
+        this.channelMap.set(cleanUserId, channelId);
+      }
 
-      // Also store username if provided
-      if (username) {
-        this.usernameMap.set(userId, username);
+      // Also store username if provided and usernameMap exists
+      if (username && this.usernameMap instanceof Map) {
+        this.usernameMap.set(cleanUserId, username);
+      } else if (username && !this.usernameMap) {
+        this.usernameMap = new Map();
+        this.usernameMap.set(cleanUserId, username);
       }
 
       // Save to disk if persistence is enabled
@@ -589,9 +612,6 @@ class ChannelManager {
         this.saveMappings();
       }
 
-      console.log(
-        `[ChannelManager:${this.instanceId}] Mapped user ${userId} to channel ${channelId}`
-      );
       return true;
     } catch (error) {
       console.error(
