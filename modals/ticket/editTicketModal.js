@@ -1,6 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
 const Modal = require('../../templates/Modal');
-const InteractionTracker = require('../../utils/InteractionTracker');
 const InstanceManager = require('../../core/InstanceManager');
 
 class EditTicketModal extends Modal {
@@ -13,197 +12,236 @@ class EditTicketModal extends Modal {
   
   async execute(interaction, instance) {
     try {
-      await InteractionTracker.safeDefer(interaction, { ephemeral: true });
+      // Always defer reply first
+      await interaction.deferReply({ ephemeral: true });
       
       // Extract phone number from modal ID
       const phoneNumber = interaction.customId.replace('edit_ticket_modal_', '');
+      console.log(`[EditTicketModal] Processing update for phone: ${phoneNumber}`);
       
-      // Get updated data
-      const newUsername = interaction.fields.getTextInputValue('ticket_username');
-      const newNotes = interaction.fields.getTextInputValue('ticket_notes') || 'No notes provided.';
+      // Get updated data from the form with safety checks
+      let newUsername = '';
+      let newNotes = 'No notes provided.';
       
+      try {
+        newUsername = interaction.fields.getTextInputValue('ticket_username');
+      } catch (error) {
+        console.error(`[EditTicketModal] Error getting username:`, error);
+        newUsername = 'Unknown User';
+      }
+      
+      try {
+        const notesValue = interaction.fields.getTextInputValue('ticket_notes');
+        if (notesValue && notesValue.trim() !== '') {
+          newNotes = notesValue.trim();
+        }
+      } catch (error) {
+        console.log(`[EditTicketModal] No notes provided or error:`, error);
+        // Keep default notes
+      }
+
       // Get instance if not provided
       if (!instance) {
         instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
-        console.log(`[EditTicketModal] Got instance from manager:`, instance?.instanceId || 'Not found');
       }
       
-      // IMPROVED: More robust instance checking
-      console.log(`[EditTicketModal] Instance structure:`, 
-        instance ? 
-        Object.keys(instance).join(', ') : 
-        'Instance is null or undefined');
-      
-      if (!instance) {
-        await InteractionTracker.safeEdit(interaction, {
-          content: "❌ System error: Instance not available.",
-        });
-        return false;
-      }
-      
-      // Try multiple paths to find the necessary managers
-      let userCardManager = null;
-      let channelManager = null;
-      
+      // Log instance availability for debugging
+      console.log(`[EditTicketModal] Instance available: ${instance ? "Yes" : "No"}`);
       if (instance) {
-        // Try direct paths
-        if (instance.userCardManager) {
-          userCardManager = instance.userCardManager;
-          console.log(`[EditTicketModal] Found userCardManager directly on instance`);
-        } 
-        else if (instance.managers && instance.managers.userCardManager) {
-          userCardManager = instance.managers.userCardManager;
-          console.log(`[EditTicketModal] Found userCardManager in instance.managers`);
-        }
-        
-        if (instance.channelManager) {
-          channelManager = instance.channelManager;
-          console.log(`[EditTicketModal] Found channelManager directly on instance`);
-        }
-        else if (instance.managers && instance.managers.channelManager) {
-          channelManager = instance.managers.channelManager;
-          console.log(`[EditTicketModal] Found channelManager in instance.managers`);
+        console.log(`[EditTicketModal] Instance ID: ${instance.instanceId}`);
+        console.log(`[EditTicketModal] Has channelManager: ${instance.channelManager ? "Yes" : "No"}`);
+        if (instance.managers) {
+          console.log(`[EditTicketModal] Has managers.channelManager: ${instance.managers.channelManager ? "Yes" : "No"}`);
         }
       }
       
-      // Handle username change
+      // Handle username update if we can
       let usernameUpdated = false;
-      if (newUsername && phoneNumber && userCardManager && typeof userCardManager.setUserInfo === 'function') {
-        // Get old username
-        let oldUsername = 'Unknown User';
-        if (typeof userCardManager.getUserInfo === 'function') {
-          const oldUserInfo = userCardManager.getUserInfo(phoneNumber);
-          if (oldUserInfo && oldUserInfo.username) {
-            oldUsername = oldUserInfo.username;
+      if (instance && newUsername) {
+        try {
+          // Find user manager
+          let userCardManager = null;
+          if (instance.userCardManager) {
+            userCardManager = instance.userCardManager;
+          } else if (instance.managers && instance.managers.userCardManager) {
+            userCardManager = instance.managers.userCardManager;
           }
-        }
-        
-        if (oldUsername !== newUsername) {
-          console.log(`[EditTicketModal] Updating username from "${oldUsername}" to "${newUsername}"`);
-          await userCardManager.setUserInfo(phoneNumber, newUsername);
-          usernameUpdated = true;
           
-          // Update channel name if we have channelManager
-          if (channelManager && typeof channelManager.getChannelId === 'function') {
-            const channelId = channelManager.getChannelId(phoneNumber);
-            if (channelId) {
-              const channel = interaction.client.channels.cache.get(channelId);
-              if (channel) {
-                // Format new channel name
-                const formattedUsername = newUsername.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').substring(0, 25);
-                const newChannelName = `📋-${formattedUsername}`;
-                
-                if (channel.name !== newChannelName) {
-                  console.log(`[EditTicketModal] Updating channel name to: ${newChannelName}`);
-                  await channel.setName(newChannelName, 'Updated username');
-                }
-              }
-            }
+          if (userCardManager && typeof userCardManager.setUserInfo === 'function') {
+            await userCardManager.setUserInfo(phoneNumber, newUsername);
+            usernameUpdated = true;
+            console.log(`[EditTicketModal] Username updated to: ${newUsername}`);
           }
+        } catch (userError) {
+          console.error(`[EditTicketModal] Error updating user:`, userError);
+          // Continue anyway
         }
-      } else {
-        console.log(`[EditTicketModal] Unable to update username: UserCardManager not available or missing setUserInfo method`);
+        
+        // Now try to update the channel name - more robust approach
+        await this.updateChannelName(interaction, instance, phoneNumber, newUsername);
       }
       
-      // Find the embed message using multiple strategies
+      // Look for pinned ticket embed
       let embedMessage = null;
-      const channelId = interaction.channelId;
-      
-      // First try: Load pinned messages (most efficient as ticket info is pinned)
-      const pinnedMessages = await interaction.channel.messages.fetchPinned();
-      embedMessage = pinnedMessages.find(m => 
-        m.embeds.length > 0 && 
-        m.embeds[0].title === 'Ticket Tool'
-      );
-      
-      if (embedMessage) {
-        console.log(`[EditTicketModal] Found ticket embed in pinned messages`);
-      }
-      
-      // Second try: Check if we have stored the message ID in settings
-      if (!embedMessage && instance.customSettings?.ticketInfoMessages) {
-        const messageId = instance.customSettings.ticketInfoMessages[channelId];
-        if (messageId) {
-          try {
-            embedMessage = await interaction.channel.messages.fetch(messageId);
-            console.log(`[EditTicketModal] Found ticket embed using stored message ID`);
-          } catch (fetchError) {
-            console.error(`[EditTicketModal] Error fetching stored message:`, fetchError);
+      try {
+        const pinnedMessages = await interaction.channel.messages.fetchPinned();
+        for (const [id, message] of pinnedMessages) {
+          if (message.embeds && message.embeds.length > 0 && 
+              message.embeds[0].title === 'Ticket Tool') {
+            embedMessage = message;
+            break;
           }
         }
+      } catch (pinnedError) {
+        console.error(`[EditTicketModal] Error fetching pinned messages:`, pinnedError);
       }
       
-      // Third try: Load more messages (fallback)
+      // If not found, try last 50 messages
       if (!embedMessage) {
-        console.log(`[EditTicketModal] Searching for ticket embed in channel history`);
-        const messages = await interaction.channel.messages.fetch({ limit: 50 });
-        embedMessage = messages.find(
-          m => m.embeds.length > 0 && 
-          m.embeds[0].title === 'Ticket Tool'
-        );
-        
-        if (embedMessage) {
-          console.log(`[EditTicketModal] Found ticket embed in channel history`);
-        }
-      }
-      
-      // Update the embed if found
-      if (embedMessage) {
-        const originalEmbed = embedMessage.embeds[0];
-        
-        // Create updated embed with the exact format specified
-        const updatedEmbed = new EmbedBuilder()
-          .setColor(0x00AE86)
-          .setTitle('Ticket Tool')
-          .setDescription(`\`\`\`${newUsername}\`\`\` \`\`\`${phoneNumber}\`\`\``)
-          .addFields(
-            { name: 'Opened Ticket', value: `${new Date(embedMessage.createdTimestamp).toLocaleString()}`, inline: false },
-            { 
-              name: 'Notes',
-              value: `\`\`\`${newNotes}\`\`\``,
-              inline: false
+        try {
+          const messages = await interaction.channel.messages.fetch({ limit: 50 });
+          for (const [id, message] of messages) {
+            if (message.embeds && message.embeds.length > 0 && 
+                message.embeds[0].title === 'Ticket Tool') {
+              embedMessage = message;
+              break;
             }
-          )
-          .setTimestamp(originalEmbed.timestamp);
-        
-        console.log(`[EditTicketModal] Updating embed with new information`);
-        
-        // Preserve the original button components
-        await embedMessage.edit({
-          embeds: [updatedEmbed],
-          components: embedMessage.components
-        });
-        
-        // Update the reply message
-        let replyMessage = '✅ Ticket information updated successfully!';
-        if (usernameUpdated) {
-          replyMessage += '\n\nUsername has been updated, which might affect where conversation history is stored. If needed, staff can search both old and new usernames for transcripts.';
+          }
+        } catch (messagesError) {
+          console.error(`[EditTicketModal] Error fetching messages:`, messagesError);
         }
-        
-        await InteractionTracker.safeEdit(interaction, {
-          content: replyMessage,
-        });
-      } else {
-        console.error(`[EditTicketModal] Could not find the ticket embed message`);
-        await InteractionTracker.safeEdit(interaction, {
-          content: '❌ Could not find ticket information message to update. Please try the following:\n' +
-                   '1. Check if the ticket information message was deleted or unpinned\n' +
-                   '2. Try closing this ticket and creating a new one\n' +
-                   '3. Contact support if the issue persists',
-        });
-        return false;
       }
       
-      return true;
+      // Update the embed if found using a more direct approach
+      if (embedMessage) {
+        try {
+          // Build completely new, simplified embed
+          const embed = new EmbedBuilder()
+            .setColor(0x00AE86)
+            .setTitle('Ticket Tool')
+            .setDescription(`\`\`\`${newUsername}\`\`\` \`\`\`${phoneNumber}\`\`\``)
+            .addFields(
+              { 
+                name: 'Opened Ticket', 
+                value: new Date(embedMessage.createdTimestamp).toLocaleString(),
+                inline: false 
+              },
+              { 
+                name: 'Notes', 
+                value: `\`\`\`${newNotes}\`\`\``, 
+                inline: false 
+              }
+            )
+            .setTimestamp(embedMessage.embeds[0].timestamp);
+          
+          // Update message with the new embed, preserving components
+          await embedMessage.edit({ 
+            embeds: [embed],
+            components: embedMessage.components
+          });
+          
+          // Success!
+          await interaction.editReply({
+            content: `✅ Ticket information updated successfully!`,
+            ephemeral: true
+          });
+          
+          return true;
+        } catch (embedError) {
+          console.error(`[EditTicketModal] Error updating embed:`, embedError);
+          throw new Error(`Could not update ticket info: ${embedError.message}`);
+        }
+      } else {
+        // No embed found
+        throw new Error('Could not find the ticket information message to update');
+      }
     } catch (error) {
-      console.error(`[EditTicketModal] Error handling edit ticket modal:`, error);
+      console.error(`[EditTicketModal] Error in modal handler:`, error);
       
-      await InteractionTracker.safeReply(interaction, {
-        content: `❌ Error: ${error.message}`,
-        ephemeral: true
-      });
+      // Always ensure we reply
+      try {
+        if (interaction.deferred) {
+          await interaction.editReply({
+            content: `❌ Error: ${error.message}`,
+            ephemeral: true
+          });
+        } else {
+          await interaction.reply({
+            content: `❌ Error: ${error.message}`,
+            ephemeral: true
+          });
+        }
+      } catch (replyError) {
+        console.error(`[EditTicketModal] Could not send error reply:`, replyError);
+      }
       
       return false;
+    }
+  }
+  
+  /**
+   * Dedicated function to update channel name with better error handling and logging
+   */
+  async updateChannelName(interaction, instance, phoneNumber, newUsername) {
+    try {
+      console.log(`[UpdateChannelName] Starting channel rename attempt`);
+      
+      // Try current channel first (most reliable)
+      const currentChannelId = interaction.channelId;
+      console.log(`[UpdateChannelName] Current channel ID: ${currentChannelId}`);
+      
+      // Format new channel name
+      const formattedUsername = newUsername
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "-")
+        .replace(/-+/g, "-")
+        .substring(0, 25);
+      const newChannelName = `📋-${formattedUsername}`;
+      console.log(`[UpdateChannelName] New channel name would be: ${newChannelName}`);
+      
+      // Get current channel
+      let channel = interaction.channel;
+      console.log(`[UpdateChannelName] Current channel name: ${channel.name}`);
+      
+      // Check if name actually needs to change
+      if (channel.name === newChannelName) {
+        console.log(`[UpdateChannelName] Channel name already matches, no update needed`);
+        return;
+      }
+      
+      // Check if we have permission to update the channel
+      const botMember = interaction.guild.members.me;
+      const hasPermission = channel.permissionsFor(botMember).has('ManageChannels');
+      console.log(`[UpdateChannelName] Bot has ManageChannels permission: ${hasPermission}`);
+      
+      if (!hasPermission) {
+        console.log(`[UpdateChannelName] Cannot update channel name - missing permission`);
+        return;
+      }
+      
+      // Try to rename the channel
+      console.log(`[UpdateChannelName] Attempting to rename to: ${newChannelName}`);
+      await channel.setName(newChannelName, "Updated username");
+      console.log(`[UpdateChannelName] Channel renamed successfully`);
+      
+      // Also update the channelManager mapping if available
+      try {
+        let channelManager = null;
+        if (instance.channelManager) {
+          channelManager = instance.channelManager;
+        } else if (instance.managers && instance.managers.channelManager) {
+          channelManager = instance.managers.channelManager;
+        }
+        
+        if (channelManager && typeof channelManager.mapUserToChannel === 'function') {
+          await channelManager.mapUserToChannel(phoneNumber, currentChannelId, newUsername);
+          console.log(`[UpdateChannelName] Updated channel mapping in channel manager`);
+        }
+      } catch (mappingError) {
+        console.error(`[UpdateChannelName] Error updating channel mapping:`, mappingError);
+      }
+    } catch (error) {
+      console.error(`[UpdateChannelName] Channel rename failed:`, error);
     }
   }
 }

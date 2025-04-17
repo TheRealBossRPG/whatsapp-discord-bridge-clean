@@ -1,6 +1,5 @@
 const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
-const InteractionTracker = require('../../utils/InteractionTracker');
 const InstanceManager = require('../../core/InstanceManager');
 
 class EditUserButton extends Button {
@@ -13,64 +12,53 @@ class EditUserButton extends Button {
   
   async execute(interaction, instance) {
     try {
+      console.log(`[EditUserButton] Processing edit button interaction: ${interaction.customId}`);
+      
       // Extract phone number from button ID
       const phoneNumber = interaction.customId.replace('edit-user-', '');
       
       // Get instance if not provided
       if (!instance) {
         instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
-        console.log(`[EditUserButton] Got instance from manager:`, instance?.instanceId || 'Not found');
       }
       
-      // IMPROVED: More robust instance checking
-      console.log(`[EditUserButton] Instance structure:`, 
-        instance ? 
-        Object.keys(instance).join(', ') : 
-        'Instance is null or undefined');
-      
-      // Try multiple paths to find the user manager
+      // Try to find user info through multiple paths
+      let username = 'Unknown User';
       let userCardManager = null;
       
+      // More robust instance checking with fallbacks
       if (instance) {
-        // Try direct path
+        // This logs all available properties to help with debugging
+        console.log(`[EditUserButton] Instance available with ID: ${instance.instanceId || 'unknown'}`);
+        
+        // Try multiple paths to find userCardManager
         if (instance.userCardManager) {
           userCardManager = instance.userCardManager;
-          console.log(`[EditUserButton] Found userCardManager directly on instance`);
-        }
-        // Try managers path
-        else if (instance.managers && instance.managers.userCardManager) {
+        } else if (instance.managers && instance.managers.userCardManager) {
           userCardManager = instance.managers.userCardManager;
-          console.log(`[EditUserButton] Found userCardManager in instance.managers`);
         }
-        // Try handlers path
-        else if (instance.handlers && instance.handlers.userCardManager) {
-          userCardManager = instance.handlers.userCardManager;
-          console.log(`[EditUserButton] Found userCardManager in instance.handlers`);
-        }
+      } else {
+        console.warn(`[EditUserButton] No instance available for guild ${interaction.guild.id}`);
       }
       
-      if (!userCardManager) {
-        console.error(`[EditUserButton] UserCardManager not found in instance`);
-        await InteractionTracker.safeReply(interaction, {
-          content: "❌ System error: User manager not available. Please contact support.",
-          ephemeral: true
-        });
-        
-        // Try to continue with basic functionality without user info
-        console.log(`[EditUserButton] Continuing with default values`);
-      }
-      
-      // Get user info if possible
-      let username = 'Unknown User';
+      // Try to get user info if userCardManager is available
       if (userCardManager && typeof userCardManager.getUserInfo === 'function') {
-        const userInfo = userCardManager.getUserInfo(phoneNumber);
-        if (userInfo && userInfo.username) {
-          username = userInfo.username;
+        try {
+          const userInfo = userCardManager.getUserInfo(phoneNumber);
+          if (userInfo && userInfo.username) {
+            username = userInfo.username;
+            console.log(`[EditUserButton] Found username: ${username}`);
+          }
+        } catch (userInfoError) {
+          console.error(`[EditUserButton] Error getting user info:`, userInfoError);
+          // Continue with default username
         }
+      } else {
+        console.log(`[EditUserButton] UserCardManager not available, using default username`);
       }
       
-      // Find the embed message in pinned messages
-      let currentNotes = 'No notes provided yet.';
+      // Find the embed message for current notes - try pinned messages first
+      let currentNotes = '';
       try {
         const pinnedMessages = await interaction.channel.messages.fetchPinned();
         const embedMessage = pinnedMessages.find(
@@ -88,9 +76,13 @@ class EditUserButton extends Button {
               currentNotes = '';
             }
           }
+          console.log(`[EditUserButton] Found existing notes from embed`);
+        } else {
+          console.log(`[EditUserButton] No pinned ticket embed found`);
         }
       } catch (error) {
         console.error(`[EditUserButton] Error fetching pinned messages:`, error);
+        // Continue with empty notes
       }
       
       // Create modal      
@@ -106,13 +98,14 @@ class EditUserButton extends Button {
         .setValue(username)
         .setRequired(true);
       
-      // Notes input
+      // Notes input - IMPORTANT: Make this NOT required
       const notesInput = new TextInputBuilder()
         .setCustomId('ticket_notes')
         .setLabel('Notes')
         .setStyle(TextInputStyle.Paragraph)
         .setValue(currentNotes)
-        .setPlaceholder('Add notes about this support ticket here');
+        .setRequired(false) // Make notes optional
+        .setPlaceholder('Add notes about this support ticket here (optional)');
       
       const firstRow = new ActionRowBuilder().addComponents(usernameInput);
       const secondRow = new ActionRowBuilder().addComponents(notesInput);

@@ -453,7 +453,10 @@ class MediaManager {
               console.log(
                 `[MediaManager:${this.instanceId}] Removing old directory after merge: ${foundOldDir}`
               );
-              fs.rmdirSync(foundOldDir, { recursive: true });
+
+              // FIXED: Use fs.rm instead of fs.rmdir
+              fs.rmSync(foundOldDir, { recursive: true, force: true });
+
               console.log(
                 `[MediaManager:${this.instanceId}] Old directory removed successfully`
               );
