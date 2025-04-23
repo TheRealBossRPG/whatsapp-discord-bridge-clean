@@ -1,58 +1,106 @@
+// buttons/closeTicket.js
+
 const Button = require('../../templates/Button');
-const InteractionTracker = require('../../utils/InteractionTracker');
 const InstanceManager = require('../../core/InstanceManager');
 
+/**
+ * Button handler for closing tickets
+ */
 class CloseTicketButton extends Button {
   constructor() {
     super({
-      customId: 'close-ticket',
-      regex: /^close-ticket-(.+)$/
+      // The button will handle both formats of close button IDs
+      customId: 'close',
+      regex: /^(close|close-ticket|close-ticket-.+|close_ticket)$/
     });
   }
   
   async execute(interaction, instance) {
     try {
-      await InteractionTracker.safeDefer(interaction, { ephemeral: true });
+      console.log(`[CloseTicketButton] Processing close ticket interaction: ${interaction.customId}`);
       
-      // IMPORTANT: Use the current channel ID instead of extracting from button ID
-      // This is more reliable since we're closing the channel we're currently in
+      // Defer reply immediately to prevent timeouts
+      await interaction.deferReply({ ephemeral: true });
+      
+      // Get the current channel ID - we'll always close the current channel
       const channelId = interaction.channelId;
-      
-      console.log(`[CloseTicketButton] Closing ticket for channel: ${channelId}`);
+      console.log(`[CloseTicketButton] Closing ticket in channel: ${channelId}`);
       
       // Get instance if not provided
       if (!instance) {
+        console.log(`[CloseTicketButton] Instance not provided, fetching from InstanceManager`);
         instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
+        
+        if (!instance) {
+          console.error(`[CloseTicketButton] Could not find instance for guild ${interaction.guild.id}`);
+          await interaction.editReply({
+            content: "❌ System error: Could not find WhatsApp bridge instance for this server."
+          });
+          return false;
+        }
       }
       
-      if (!instance || !instance.ticketManager) {
-        await InteractionTracker.safeEdit(interaction, {
-          content: "❌ System error: Ticket manager not available.",
+      // Find the ticketManager - check multiple locations
+      let ticketManager = null;
+      
+      if (instance.ticketManager) {
+        console.log(`[CloseTicketButton] Found ticketManager directly on instance`);
+        ticketManager = instance.ticketManager;
+      } else if (instance.managers && instance.managers.ticketManager) {
+        console.log(`[CloseTicketButton] Found ticketManager in instance.managers`);
+        ticketManager = instance.managers.ticketManager;
+      } else {
+        console.error(`[CloseTicketButton] Could not find ticketManager in instance`);
+        await interaction.editReply({
+          content: "❌ System error: Ticket manager not available."
         });
         return false;
       }
       
-      // Try to close the ticket - pass the current channel ID, not the extracted one
-      const success = await instance.ticketManager.closeTicket(channelId, instance.customSettings?.sendClosingMessage !== false, interaction);
+      // Verify ticketManager has the required method
+      if (typeof ticketManager.closeTicket !== 'function') {
+        console.error(`[CloseTicketButton] ticketManager does not have closeTicket method`);
+        await interaction.editReply({
+          content: "❌ System error: Ticket manager is invalid or corrupted."
+        });
+        return false;
+      }
       
+      // Close the ticket
+      console.log(`[CloseTicketButton] Calling closeTicket method for channel ${channelId}`);
+      const shouldSendClosingMessage = instance.customSettings?.sendClosingMessage !== false;
+      const success = await ticketManager.closeTicket(channelId, shouldSendClosingMessage, interaction);
+      
+      // Handle the result
       if (!success) {
-        await InteractionTracker.safeEdit(interaction, {
-          content: '❌ Failed to close ticket. Please try again or check logs.',
+        console.error(`[CloseTicketButton] closeTicket returned false`);
+        await interaction.editReply({
+          content: "❌ Failed to close ticket. Please try again or check logs."
         });
         return false;
       }
       
-      await InteractionTracker.safeEdit(interaction, {
-        content: '✅ Ticket closed successfully!',
-      });
+      // Success! Note that the channel will be deleted so this message might not be seen
+      console.log(`[CloseTicketButton] Ticket closed successfully`);
+      try {
+        await interaction.editReply({
+          content: "✅ Ticket closed successfully!"
+        });
+      } catch (replyError) {
+        console.log(`[CloseTicketButton] Could not send success message (channel likely deleted): ${replyError.message}`);
+      }
+      
       return true;
     } catch (error) {
-      console.error(`[CloseTicketButton] Error handling close ticket button:`, error);
+      console.error(`[CloseTicketButton] Error handling close ticket:`, error);
       
-      await InteractionTracker.safeReply(interaction, {
-        content: `❌ Error: ${error.message}`,
-        ephemeral: true
-      });
+      try {
+        await interaction.editReply({
+          content: `❌ Error closing ticket: ${error.message}`
+        });
+      } catch (replyError) {
+        console.error(`[CloseTicketButton] Error sending error message:`, replyError);
+      }
       
       return false;
     }

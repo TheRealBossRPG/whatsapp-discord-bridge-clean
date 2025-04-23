@@ -243,13 +243,14 @@ class TicketManager {
         .setTimestamp();
 
       // Create button row with edit and close buttons with specific IDs
+      // IMPORTANT: Use consistent and simplified button IDs
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`edit-user-${phoneNumber}`)
           .setLabel("Edit")
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
-          .setCustomId(`close-ticket-${channel.id}`)
+          .setCustomId(`close`) // Changed to just 'close' for simplicity
           .setLabel("Close")
           .setStyle(ButtonStyle.Danger)
       );
@@ -649,179 +650,183 @@ class TicketManager {
   }
 
   /**
- * Close a ticket
- * @param {string} channelId - Channel ID
- * @param {boolean} sendMessage - Whether to send closing message
- * @param {Object} [interaction] - Optional interaction for updating
- * @returns {Promise<boolean>} - Success
- */
-async closeTicket(channelId, sendMessage = true, interaction = null) {
-  try {
-    console.log(`[TicketManager:${this.instanceId}] Closing ticket, channel: ${channelId}`);
-    
-    // Get the guild by ID
-    const guild = this.discordClient.guilds.cache.get(this.guildId);
-    if (!guild) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Guild not found: ${this.guildId}`
-      );
-      return false;
-    }
-
-    // Get the channel by ID
-    const channel = guild.channels.cache.get(channelId);
-    if (!channel) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Channel not found: ${channelId}`
-      );
-      return false;
-    }
-
-    // Get phone number from channel
-    const phoneNumber = await this.channelManager.getPhoneNumberByChannelId(
-      channelId
-    );
-    if (!phoneNumber) {
-      console.error(
-        `[TicketManager:${this.instanceId}] No phone number found for channel: ${channelId}`
-      );
-      return false;
-    }
-
-    // Get user info from manager if available
-    let username = "Unknown User";
-    if (this.userCardManager) {
-      const userCard = await this.userCardManager.getUserInfo(phoneNumber);
-      if (userCard && userCard.username) {
-        username = userCard.username;
-      }
-    }
-
-    // ADDED: Reply to the interaction first if one was provided
-    let interactionReplied = false;
+   * Close a ticket
+   * @param {string} channelId - Channel ID
+   * @param {boolean} sendMessage - Whether to send closing message
+   * @param {Object} [interaction] - Optional interaction for updating
+   * @returns {Promise<boolean>} - Success
+   */
+  async closeTicket(channelId, sendMessage = true, interaction = null) {
     try {
-      if (interaction && typeof interaction.editReply === "function") {
-        await interaction.editReply({
-          content:
-            "✅ Ticket will be closed in 5 seconds. Creating transcript...",
-        });
-        interactionReplied = true;
-      }
-    } catch (interactionError) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error replying to interaction:`,
-        interactionError
+      console.log(
+        `[TicketManager:${this.instanceId}] Closing ticket, channel: ${channelId}`
       );
-    }
 
-    // Send a warning message with 5 second countdown
-    await channel.send({
-      content: "⚠️ This ticket will be closed in 5 seconds...",
-    });
-
-    // Wait 5 seconds
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-
-    // Create transcript if manager available
-    let transcriptPath = null;
-    if (this.transcriptManager && !this.transcriptManager.isDisabled) {
-      try {
-        console.log(
-          `[TranscriptManager:${this.instanceId}] Creating transcript for ${username} (${phoneNumber})`
-        );
-        transcriptPath = await this.transcriptManager.createAndSaveTranscript(
-          channel,
-          username,
-          phoneNumber
-        );
-      } catch (transcriptError) {
+      // Get the guild by ID
+      const guild = this.discordClient.guilds.cache.get(this.guildId);
+      if (!guild) {
         console.error(
-          `[TicketManager:${this.instanceId}] Error creating transcript:`,
-          transcriptError
+          `[TicketManager:${this.instanceId}] Guild not found: ${this.guildId}`
+        );
+        return false;
+      }
+
+      // Get the channel by ID
+      const channel = guild.channels.cache.get(channelId);
+      if (!channel) {
+        console.error(
+          `[TicketManager:${this.instanceId}] Channel not found: ${channelId}`
+        );
+        return false;
+      }
+
+      // Get phone number from channel
+      const phoneNumber = await this.channelManager.getPhoneNumberByChannelId(
+        channelId
+      );
+      if (!phoneNumber) {
+        console.error(
+          `[TicketManager:${this.instanceId}] No phone number found for channel: ${channelId}`
+        );
+        return false;
+      }
+
+      // Get user info from manager if available
+      let username = "Unknown User";
+      if (this.userCardManager) {
+        const userCard = await this.userCardManager.getUserInfo(phoneNumber);
+        if (userCard && userCard.username) {
+          username = userCard.username;
+        }
+      }
+
+      // ADDED: Reply to the interaction first if one was provided
+      let interactionReplied = false;
+      try {
+        if (interaction && typeof interaction.editReply === "function") {
+          await interaction.editReply({
+            content:
+              "✅ Ticket will be closed in 5 seconds. Creating transcript...",
+          });
+          interactionReplied = true;
+        }
+      } catch (interactionError) {
+        console.error(
+          `[TicketManager:${this.instanceId}] Error replying to interaction:`,
+          interactionError
         );
       }
-    }
 
-    // Check settings before sending closing message
-    // First check instance settings, then parameter
-    const shouldSendMessage =
-      this.customSettings?.sendClosingMessage !== false &&
-      sendMessage !== false;
+      // Send a warning message with 5 second countdown
+      await channel.send({
+        content: "⚠️ This ticket will be closed in 5 seconds...",
+      });
 
-    // Send closing message to WhatsApp if enabled
-    if (shouldSendMessage) {
-      // Get closing message
-      let closeMessage = this.getCloseMessage();
+      // Wait 5 seconds
+      await new Promise((resolve) => setTimeout(resolve, 5000));
 
-      // Replace placeholders
-      closeMessage = closeMessage
-        .replace(/{name}/g, username)
-        .replace(/{phoneNumber}/g, phoneNumber);
-
-      // Send message to WhatsApp
-      if (this.channelManager && this.channelManager.whatsAppClient) {
+      // Create transcript if manager available
+      let transcriptPath = null;
+      if (this.transcriptManager && !this.transcriptManager.isDisabled) {
         try {
-          await this.channelManager.whatsAppClient.sendTextMessage(
-            phoneNumber,
-            closeMessage
-          );
           console.log(
-            `[TicketManager:${this.instanceId}] Sent closing message to ${phoneNumber}`
+            `[TicketManager:${this.instanceId}] Creating transcript for ${username} (${phoneNumber})`
           );
-        } catch (whatsappError) {
+          transcriptPath = await this.transcriptManager.createAndSaveTranscript(
+            channel,
+            username,
+            phoneNumber
+          );
+        } catch (transcriptError) {
           console.error(
-            `[TicketManager:${this.instanceId}] Error sending closing message:`,
-            whatsappError
+            `[TicketManager:${this.instanceId}] Error creating transcript:`,
+            transcriptError
           );
         }
       }
-    } else {
-      console.log(
-        `[TicketManager:${this.instanceId}] Closing message skipped (disabled in settings)`
-      );
-    }
 
-    // IMPORTANT: Remove from channel manager BEFORE deleting the channel
-    await this.channelManager.removeChannel(phoneNumber);
+      // Check settings before sending closing message
+      // First check instance settings, then parameter
+      const shouldSendMessage =
+        this.customSettings?.sendClosingMessage !== false &&
+        sendMessage !== false;
 
-    // Delete the channel
-    try {
-      await channel.delete(`Ticket closed by support agent`);
-      console.log(
-        `[TicketManager:${this.instanceId}] Ticket channel deleted: ${channelId}`
-      );
-    } catch (deleteError) {
-      console.error(
-        `[TicketManager:${this.instanceId}] Error deleting channel:`,
-        deleteError
-      );
-    }
+      // Send closing message to WhatsApp if enabled
+      if (shouldSendMessage) {
+        // Get closing message
+        let closeMessage = this.getCloseMessage();
 
-    // ADDED: Update interaction reply if we replied earlier
-    if (interactionReplied) {
-      try {
-        await interaction.editReply({
-          content: "✅ Ticket closed successfully!",
-        }).catch((err) => {
-          // Silent catch - this is just a bonus notification
-          console.log(
-            `[TicketManager:${this.instanceId}] Couldn't update final interaction: ${err.message}`
-          );
-        });
-      } catch (finalUpdateError) {
-        // This is just a bonus, so we'll silently catch errors
+        // Replace placeholders
+        closeMessage = closeMessage
+          .replace(/{name}/g, username)
+          .replace(/{phoneNumber}/g, phoneNumber);
+
+        // Send message to WhatsApp
+        if (this.channelManager && this.channelManager.whatsAppClient) {
+          try {
+            await this.channelManager.whatsAppClient.sendTextMessage(
+              phoneNumber,
+              closeMessage
+            );
+            console.log(
+              `[TicketManager:${this.instanceId}] Sent closing message to ${phoneNumber}`
+            );
+          } catch (whatsappError) {
+            console.error(
+              `[TicketManager:${this.instanceId}] Error sending closing message:`,
+              whatsappError
+            );
+          }
+        }
+      } else {
+        console.log(
+          `[TicketManager:${this.instanceId}] Closing message skipped (disabled in settings)`
+        );
       }
-    }
 
-    return true;
-  } catch (error) {
-    console.error(
-      `[TicketManager:${this.instanceId}] Error closing ticket:`,
-      error
-    );
-    return false;
+      // IMPORTANT: Remove from channel manager BEFORE deleting the channel
+      await this.channelManager.removeChannel(phoneNumber);
+
+      // Delete the channel
+      try {
+        await channel.delete(`Ticket closed by support agent`);
+        console.log(
+          `[TicketManager:${this.instanceId}] Ticket channel deleted: ${channelId}`
+        );
+      } catch (deleteError) {
+        console.error(
+          `[TicketManager:${this.instanceId}] Error deleting channel:`,
+          deleteError
+        );
+      }
+
+      // ADDED: Update interaction reply if we replied earlier
+      if (interactionReplied) {
+        try {
+          await interaction
+            .editReply({
+              content: "✅ Ticket closed successfully!",
+            })
+            .catch((err) => {
+              // Silent catch - this is just a bonus notification
+              console.log(
+                `[TicketManager:${this.instanceId}] Couldn't update final interaction: ${err.message}`
+              );
+            });
+        } catch (finalUpdateError) {
+          // This is just a bonus, so we'll silently catch errors
+        }
+      }
+
+      return true;
+    } catch (error) {
+      console.error(
+        `[TicketManager:${this.instanceId}] Error closing ticket:`,
+        error
+      );
+      return false;
+    }
   }
-}
 }
 
 module.exports = TicketManager;
