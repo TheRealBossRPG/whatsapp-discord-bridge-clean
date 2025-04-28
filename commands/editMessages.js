@@ -1,6 +1,6 @@
+// commands/editMessages.js
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
 const Command = require('../templates/Command');
-const InstanceManager = require('../core/InstanceManager');
 
 class EditMessagesCommand extends Command {
   constructor() {
@@ -12,35 +12,42 @@ class EditMessagesCommand extends Command {
   }
 
   async execute(interaction, instance) {
-    // The interaction should already be deferred by the InteractionHandler
-    // But let's ensure it's deferred to be safe
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ ephemeral: true }).catch(err => {
-        console.error(`Error deferring edit-messages command: ${err.message}`);
-      });
-    }
-
     try {
       // Check if interaction has a valid guild
       if (!interaction.guild) {
-        await interaction.editReply({
+        await interaction.reply({
           content: "❌ This command can only be used in a server, not in DMs.",
-          components: []
+          ephemeral: true
         });
         return;
+      }
+
+      // Make sure the interaction is deferred
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferReply({ ephemeral: true });
       }
 
       // Check if an instance exists
       if (!instance) {
-        instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
-      }
-      
-      if (!instance) {
-        await interaction.editReply({
-          content: "❌ No WhatsApp bridge is configured for this server. Use `/setup` to set one up.",
-          components: []
-        });
-        return;
+        // Try to get instance from Discord client route map first
+        if (interaction.client._instanceRoutes) {
+          // Look through all routes to find matching guild
+          for (const [_, routeInfo] of interaction.client._instanceRoutes.entries()) {
+            if (routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
+              instance = routeInfo.instance;
+              console.log(`Found instance from route map with ID: ${instance?.instanceId || 'unknown'}`);
+              break;
+            }
+          }
+        }
+        
+        if (!instance) {
+          await interaction.editReply({
+            content: "❌ No WhatsApp bridge is configured for this server. Use `/setup` to set one up.",
+            components: []
+          });
+          return;
+        }
       }
 
       // Get current settings with proper defaults
@@ -102,10 +109,20 @@ class EditMessagesCommand extends Command {
       });
     } catch (error) {
       console.error(`Error in edit-messages command:`, error);
-      await interaction.editReply({
-        content: `❌ Error: ${error.message}`,
-        components: []
-      });
+      
+      // Make sure we respond even on error
+      if (interaction.deferred) {
+        await interaction.editReply({
+          content: `❌ Error: ${error.message}`,
+          components: []
+        });
+      } else if (!interaction.replied) {
+        await interaction.reply({
+          content: `❌ Error: ${error.message}`,
+          components: [],
+          ephemeral: true
+        });
+      }
     }
   }
 }

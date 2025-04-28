@@ -1,15 +1,153 @@
-// core/interactionHandler.js - FIXED for button handling
+// core/interactionHandler.js
 const ModuleLoader = require('./ModuleLoader');
-const InstanceManager = require('./InstanceManager');
 const InteractionTracker = require('../utils/InteractionTracker');
 
 /**
- * Main Discord interaction handler
+ * Main Discord interaction handler (FIXED)
+ * Resolves circular dependency issues and improves command handling
  */
 class InteractionHandler {
   constructor() {
     // Cache handler modules
     this.moduleLoader = ModuleLoader;
+    
+    // Initialize direct access to handlers via customId
+    this.buttonHandlers = new Map();
+    this.regexButtonHandlers = [];
+    this.modalHandlers = new Map();
+    this.regexModalHandlers = [];
+    
+    // Initialize handlers for direct access
+    this.initializeButtonHandlers();
+    this.initializeModalHandlers();
+    
+    console.log('[InteractionHandler] Initialized with direct component access');
+  }
+  
+  /**
+   * Initialize button handlers for direct access to avoid circular dependencies
+   */
+  initializeButtonHandlers() {
+    try {
+      const { readdirSync, existsSync } = require('fs');
+      const { join } = require('path');
+      
+      // Main buttons directory
+      const buttonsDir = join(__dirname, '..', 'buttons');
+      if (!existsSync(buttonsDir)) {
+        console.warn('[InteractionHandler] Buttons directory not found.');
+        return;
+      }
+      
+      // Load button handlers from main directory
+      const mainButtonFiles = readdirSync(buttonsDir, { withFileTypes: true });
+      
+      // Process files and directories
+      for (const item of mainButtonFiles) {
+        const itemPath = join(buttonsDir, item.name);
+        
+        if (item.isFile() && item.name.endsWith('.js')) {
+          // Load button from file
+          try {
+            const button = require(itemPath);
+            if (button && button.customId) {
+              this.buttonHandlers.set(button.customId, button);
+              console.log(`[InteractionHandler] Registered button handler: ${button.customId}`);
+            } else if (button && (button.regex || typeof button.matches === 'function')) {
+              this.regexButtonHandlers.push(button);
+              console.log(`[InteractionHandler] Registered regex button handler from: ${item.name}`);
+            }
+          } catch (error) {
+            console.error(`[InteractionHandler] Error loading button handler ${item.name}:`, error);
+          }
+        } else if (item.isDirectory()) {
+          // Process subdirectory
+          try {
+            const subdirFiles = readdirSync(itemPath).filter(file => file.endsWith('.js'));
+            
+            for (const file of subdirFiles) {
+              try {
+                const buttonPath = join(itemPath, file);
+                const button = require(buttonPath);
+                
+                if (button && button.customId) {
+                  this.buttonHandlers.set(button.customId, button);
+                  console.log(`[InteractionHandler] Registered button from subdirectory: ${button.customId}`);
+                } else if (button && (button.regex || typeof button.matches === 'function')) {
+                  this.regexButtonHandlers.push(button);
+                  console.log(`[InteractionHandler] Registered regex button from subdirectory: ${item.name}/${file}`);
+                }
+              } catch (error) {
+                console.error(`[InteractionHandler] Error loading button from subdirectory ${item.name}/${file}:`, error);
+              }
+            }
+          } catch (subdirError) {
+            console.error(`[InteractionHandler] Error processing subdirectory ${item.name}:`, subdirError);
+          }
+        }
+      }
+      
+      console.log(`[InteractionHandler] Loaded ${this.buttonHandlers.size} direct buttons and ${this.regexButtonHandlers.length} regex buttons`);
+    } catch (error) {
+      console.error('[InteractionHandler] Error initializing button handlers:', error);
+    }
+  }
+  
+  /**
+   * Initialize modal handlers for direct access (similar to button handlers)
+   */
+  initializeModalHandlers() {
+    try {
+      const { readdirSync, existsSync } = require('fs');
+      const { join } = require('path');
+      
+      // Main modals directory
+      const modalsDir = join(__dirname, '..', 'modals');
+      if (!existsSync(modalsDir)) {
+        console.warn('[InteractionHandler] Modals directory not found.');
+        return;
+      }
+      
+      // Function to process a directory of modal handlers
+      const processDirectory = (directory, subpath = '') => {
+        try {
+          const items = readdirSync(directory, { withFileTypes: true });
+          
+          for (const item of items) {
+            const itemPath = join(directory, item.name);
+            
+            if (item.isFile() && item.name.endsWith('.js')) {
+              // Load modal from file
+              try {
+                const modal = require(itemPath);
+                
+                if (modal && modal.customId) {
+                  this.modalHandlers.set(modal.customId, modal);
+                  console.log(`[InteractionHandler] Registered modal handler: ${subpath}${item.name} with ID ${modal.customId}`);
+                } else if (modal && (modal.regex || typeof modal.matches === 'function')) {
+                  this.regexModalHandlers.push(modal);
+                  console.log(`[InteractionHandler] Registered regex modal handler from: ${subpath}${item.name}`);
+                }
+              } catch (error) {
+                console.error(`[InteractionHandler] Error loading modal handler ${subpath}${item.name}:`, error);
+              }
+            } else if (item.isDirectory()) {
+              // Process subdirectory recursively
+              processDirectory(itemPath, `${subpath}${item.name}/`);
+            }
+          }
+        } catch (error) {
+          console.error(`[InteractionHandler] Error processing modals in ${directory}:`, error);
+        }
+      };
+      
+      // Start processing from root modals directory
+      processDirectory(modalsDir);
+      
+      console.log(`[InteractionHandler] Loaded ${this.modalHandlers.size} direct modals and ${this.regexModalHandlers.length} regex modals`);
+    } catch (error) {
+      console.error('[InteractionHandler] Error initializing modal handlers:', error);
+    }
   }
   
   /**
@@ -23,7 +161,7 @@ class InteractionHandler {
     // IMPORTANT: Skip instance check for customize_messages_modal
     // This needs to be processed even without an instance
     if (interaction.isModalSubmit() && interaction.customId === "customize_messages_modal") {
-      console.log("Skipping instance check for customize_messages_modal");
+      console.log("[InteractionHandler] Skipping instance check for customize_messages_modal");
       return { customSettings: {}, isTemporary: true };
     }
     
@@ -35,16 +173,70 @@ class InteractionHandler {
         // Check if Discord client has instance routes
         if (interaction.client._instanceRoutes && interaction.client._instanceRoutes.has(categoryId)) {
           const routeInfo = interaction.client._instanceRoutes.get(categoryId);
-          return routeInfo.instance || InstanceManager.getInstanceByGuildId(interaction.guildId);
+          return routeInfo.instance;
         }
       }
       
-      // Fall back to guild ID matching
-      return InstanceManager.getInstanceByGuildId(interaction.guildId);
+      // Fall back to guild ID matching if needed 
+      if (interaction.client._instanceRoutes) {
+        // Look through all instances and find one with matching guild
+        for (const [categoryId, routeInfo] of interaction.client._instanceRoutes.entries()) {
+          if (routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
+            return routeInfo.instance;
+          }
+        }
+      }
+      
+      // No instance found, but we'll return null and let the command handle it
+      return null;
     } catch (error) {
-      console.error("Error getting instance for interaction:", error);
+      console.error("[InteractionHandler] Error getting instance for interaction:", error);
       return null;
     }
+  }
+  
+  /**
+   * Find button handler with direct access to avoid circular dependencies
+   * @param {string} customId - Button customId
+   * @returns {Object|null} - Button handler or null
+   */
+  findButtonHandler(customId) {
+    // First check for direct match
+    if (this.buttonHandlers.has(customId)) {
+      return this.buttonHandlers.get(customId);
+    }
+    
+    // Then check regex handlers
+    for (const handler of this.regexButtonHandlers) {
+      if ((handler.regex && handler.regex.test(customId)) ||
+          (typeof handler.matches === 'function' && handler.matches(customId))) {
+        return handler;
+      }
+    }
+    
+    return null;
+  }
+  
+  /**
+   * Find modal handler with direct access
+   * @param {string} customId - Modal customId
+   * @returns {Object|null} - Modal handler or null
+   */
+  findModalHandler(customId) {
+    // First check for direct match
+    if (this.modalHandlers.has(customId)) {
+      return this.modalHandlers.get(customId);
+    }
+    
+    // Then check regex handlers
+    for (const handler of this.regexModalHandlers) {
+      if ((handler.regex && handler.regex.test(customId)) ||
+          (typeof handler.matches === 'function' && handler.matches(customId))) {
+        return handler;
+      }
+    }
+    
+    return null;
   }
   
   /**
@@ -56,168 +248,159 @@ class InteractionHandler {
       // Get the server instance for this interaction
       const instance = this.getInstanceForInteraction(interaction);
       
-      // FIXED: Special handling for buttons to make sure we handle them properly
+      // IMPROVED: Handle buttons first through our direct access system
       if (interaction.isButton()) {
-        // Special direct handling for buttons to ensure they work reliably
-        const handler = this.findButtonHandler(interaction);
+        console.log(`[InteractionHandler] Processing button: ${interaction.customId}`);
+        
+        // Look for handler using our direct registry first
+        const handler = this.findButtonHandler(interaction.customId);
         
         if (handler && typeof handler.execute === 'function') {
           // Execute the button handler
-          await handler.execute(interaction, instance);
-          return true;
-        }
-      }
-      
-      // FIXED: Only use isStringSelectMenu() - no deprecated methods
-      if (interaction.isStringSelectMenu()) {
-        console.log(`Processing select menu interaction: ${interaction.customId}`);
-        
-        // Get the select menu handler
-        const handler = this.findSelectMenuHandler(interaction);
-        
-        if (handler && typeof handler.execute === 'function') {
           try {
-            // Try to defer the update if not already deferred
-            if (!interaction.deferred && !interaction.replied) {
-              try {
-                await interaction.deferUpdate();
-                console.log(`Deferred select menu update: ${interaction.customId}`);
-              } catch (deferError) {
-                console.error(`Error deferring select menu:`, deferError);
-                // Continue even if deferring fails
-              }
-            }
-            
-            // Execute the handler
             await handler.execute(interaction, instance);
             return true;
-          } catch (error) {
-            console.error(`Error in select menu handler ${interaction.customId}:`, error);
-            await this.safeReply(interaction, {
-              content: `Error processing selection: ${error.message}`,
+          } catch (buttonError) {
+            console.error(`[InteractionHandler] Error in button handler for ${interaction.customId}:`, buttonError);
+            
+            // Try to reply with error
+            await InteractionTracker.safeReply(interaction, {
+              content: `Error processing button: ${buttonError.message}`,
               ephemeral: true
             });
+            
             return false;
           }
         } else {
-          console.log(`No handler found for select menu: ${interaction.customId}`);
+          console.log(`[InteractionHandler] No handler found for button: ${interaction.customId}`);
         }
       }
       
-      // Try to find a handler using the module loader for other interaction types
-      const handler = this.moduleLoader.findHandler(interaction);
-      
-      if (handler && typeof handler.execute === 'function') {
-        // Execute the handler
-        try {
-          await handler.execute(interaction, instance);
-          return true;
-        } catch (handlerError) {
-          console.error(`Error in handler for ${interaction.customId || interaction.commandName}:`, handlerError);
+      // IMPROVED: Handle modal submissions with direct access
+      if (interaction.isModalSubmit()) {
+        console.log(`[InteractionHandler] Processing modal submission: ${interaction.customId}`);
+        
+        // Look for handler using our direct registry first
+        const handler = this.findModalHandler(interaction.customId);
+        
+        if (handler && typeof handler.execute === 'function') {
+          // Execute the modal handler
+          try {
+            await handler.execute(interaction, instance);
+            return true;
+          } catch (modalError) {
+            console.error(`[InteractionHandler] Error in modal handler for ${interaction.customId}:`, modalError);
+            
+            // Try to reply with error
+            await InteractionTracker.safeReply(interaction, {
+              content: `Error processing form: ${modalError.message}`,
+              ephemeral: true
+            });
+            
+            return false;
+          }
+        } else {
+          console.log(`[InteractionHandler] No direct handler found for modal: ${interaction.customId}`);
           
-          // Try to reply with error using the tracker's safe reply
-          await InteractionTracker.safeReply(interaction, {
-            content: `Error processing your request: ${handlerError.message}`,
-            ephemeral: true
-          });
-          
-          return false;
+          // Fallback to ModalLoader for backward compatibility
+          try {
+            const ModalLoader = require('./ModalLoader');
+            if (ModalLoader && typeof ModalLoader.handleInteraction === 'function') {
+              const handled = await ModalLoader.handleInteraction(interaction, instance);
+              if (handled) return true;
+            }
+          } catch (modalLoaderError) {
+            console.error(`[InteractionHandler] Error using ModalLoader fallback:`, modalLoaderError);
+          }
         }
       }
       
-      // If no handler found through module system, try fallback to instance handler
-      if (instance && instance.handlers && instance.handlers.discordHandler) {
-        try {
-          await instance.handlers.discordHandler.handleInteraction(interaction);
-          return true;
-        } catch (instanceError) {
-          console.error('Error in instance discordHandler:', instanceError);
-          
-          // Try to reply with error using the tracker
-          await InteractionTracker.safeReply(interaction, {
-            content: `Error processing your request: ${instanceError.message}`,
-            ephemeral: true
-          });
-          
-          return false;
+      // Handle commands
+      if (interaction.isCommand()) {
+        console.log(`[InteractionHandler] Processing command: ${interaction.commandName}`);
+        
+        // Look for command in client.commands first (from registerHandlers.js)
+        const clientCommand = interaction.client.commands?.get(interaction.commandName);
+        if (clientCommand && typeof clientCommand.execute === 'function') {
+          try {
+            await clientCommand.execute(interaction, instance);
+            return true;
+          } catch (commandError) {
+            console.error(`[InteractionHandler] Error in command handler for ${interaction.commandName}:`, commandError);
+            
+            // Try to reply with error
+            await InteractionTracker.safeReply(interaction, {
+              content: `Error processing command: ${commandError.message}`,
+              ephemeral: true
+            });
+            
+            return false;
+          }
+        } else {
+          console.log(`[InteractionHandler] Command not found in client.commands: ${interaction.commandName}`);
+        }
+        
+        // Try ModuleLoader as fallback
+        const moduleCommand = this.moduleLoader.getCommand(interaction.commandName);
+        if (moduleCommand && typeof moduleCommand.execute === 'function') {
+          try {
+            await moduleCommand.execute(interaction, instance);
+            return true;
+          } catch (moduleCommandError) {
+            console.error(`[InteractionHandler] Error in module command for ${interaction.commandName}:`, moduleCommandError);
+            
+            // Try to reply with error
+            await InteractionTracker.safeReply(interaction, {
+              content: `Error processing command: ${moduleCommandError.message}`,
+              ephemeral: true
+            });
+            
+            return false;
+          }
+        } else {
+          console.log(`[InteractionHandler] Command not found in ModuleLoader: ${interaction.commandName}`);
         }
       }
       
-      // No handler found - need to respond to prevent timeout
-      if (interaction.isCommand() && !interaction.replied) {
-        // Use the tracker to safely reply
+      // Handle select menus - KEEP THIS WORKING 
+      if (interaction.isStringSelectMenu()) {
+        console.log(`[InteractionHandler] Processing select menu: ${interaction.customId}`);
+        
+        // Use select menu loader if available
+        const SelectMenuLoader = require('./SelectMenuLoader');
+        if (SelectMenuLoader && typeof SelectMenuLoader.handleInteraction === 'function') {
+          const handled = await SelectMenuLoader.handleInteraction(interaction, instance);
+          if (handled) return true;
+        }
+      }
+      
+      // If we get here, no handler has successfully processed the interaction
+      console.log(`[InteractionHandler] No handler found for interaction type ${interaction.type} (${interaction.customId || interaction.commandName || 'unknown'})`);
+      
+      // For commands, send a polite response
+      if (interaction.isCommand() && !interaction.replied && !interaction.deferred) {
         await InteractionTracker.safeReply(interaction, {
           content: `Command '${interaction.commandName}' is still in development.`
         });
+        return false;
       }
       
-      console.log(`No handler found for interaction: ${interaction.customId || interaction.commandName || 'unknown'}`);
       return false;
     } catch (error) {
-      console.error("Error in interaction handler:", error);
+      console.error("[InteractionHandler] Error in interaction handler:", error);
       
-      // Try to send an error message using the tracker
+      // Try to send an error message
       try {
         await InteractionTracker.safeReply(interaction, {
           content: `An error occurred processing your request: ${error.message}`,
           ephemeral: true
         });
       } catch (replyError) {
-        console.error("Error sending error response:", replyError);
+        console.error("[InteractionHandler] Error sending error response:", replyError);
       }
       
       return false;
     }
-  }
-
-  /**
-   * Find a button handler
-   * @param {Interaction} interaction - Discord interaction
-   * @returns {Object|null} - Handler or null if not found
-   */
-  findButtonHandler(interaction) {
-    const customId = interaction.customId;
-    
-    // Look through all loaded buttons
-    for (const [_, handler] of this.moduleLoader.buttons) {
-      // Direct match by customId
-      if (handler.customId === customId) {
-        return handler;
-      }
-      
-      // Match via regex or matches function
-      if ((handler.regex && handler.regex.test(customId)) ||
-          (typeof handler.matches === 'function' && handler.matches(customId))) {
-        return handler;
-      }
-    }
-    
-    return null;
-  }
-
-  /**
-   * Find a select menu handler
-   * @param {Interaction} interaction - Discord interaction
-   * @returns {Object|null} - Handler or null if not found
-   */
-  findSelectMenuHandler(interaction) {
-    const customId = interaction.customId;
-    
-    // Look for direct handler match
-    for (const [key, handler] of this.moduleLoader.selectMenus.entries()) {
-      if (key === customId) {
-        return handler;
-      }
-    }
-    
-    // Look for regex match
-    for (const [key, handler] of this.moduleLoader.selectMenus.entries()) {
-      if (typeof handler.matches === 'function' && handler.matches(customId)) {
-        return handler;
-      }
-    }
-    
-    return null;
   }
   
   /**
@@ -244,7 +427,7 @@ class InteractionHandler {
             await handler.handleDiscordMessage(message);
             return true;
           } catch (handlerError) {
-            console.error(`Error in message handler for ${routeInfo.instanceId}:`, handlerError);
+            console.error(`[InteractionHandler] Error in message handler for ${routeInfo.instanceId}:`, handlerError);
           }
         }
         
@@ -254,63 +437,32 @@ class InteractionHandler {
             await instance.handlers.discordHandler.handleDiscordMessage(message);
             return true;
           } catch (instanceError) {
-            console.error(`Error in instance message handler for ${instance.instanceId}:`, instanceError);
+            console.error(`[InteractionHandler] Error in instance message handler for ${instance.instanceId}:`, instanceError);
           }
         }
       }
       
-      // Fall back to guild-based instance
-      const guildId = message.guild.id;
-      const instance = InstanceManager.getInstanceByGuildId(guildId);
-      
-      if (instance?.handlers?.discordHandler?.handleDiscordMessage) {
-        try {
-          await instance.handlers.discordHandler.handleDiscordMessage(message);
-          return true;
-        } catch (fallbackError) {
-          console.error(`Error in fallback message handler for ${guildId}:`, fallbackError);
+      // Look for any instance with matching guild ID as fallback
+      if (message.client._instanceRoutes) {
+        for (const [_, routeInfo] of message.client._instanceRoutes.entries()) {
+          if (routeInfo.instance && routeInfo.instance.guildId === message.guild.id) {
+            const instance = routeInfo.instance;
+            if (instance?.handlers?.discordHandler?.handleDiscordMessage) {
+              try {
+                await instance.handlers.discordHandler.handleDiscordMessage(message);
+                return true;
+              } catch (fallbackError) {
+                console.error(`[InteractionHandler] Error in fallback message handler for ${instance.instanceId}:`, fallbackError);
+              }
+            }
+          }
         }
       }
       
       return false;
     } catch (error) {
-      console.error('Error handling Discord message:', error);
+      console.error('[InteractionHandler] Error handling Discord message:', error);
       return false;
-    }
-  }
-  
-  /**
-   * Safely reply to an interaction
-   * @param {Interaction} interaction - Discord interaction
-   * @param {string|Object} content - Content to send
-   * @param {boolean} ephemeral - Whether the reply should be ephemeral
-   */
-  async safeReply(interaction, content, ephemeral = false) {
-    try {
-      // If interaction doesn't exist or is already handled, do nothing
-      if (!interaction || !interaction.id) return;
-      
-      const options = typeof content === 'string' 
-        ? { content, ephemeral } 
-        : { ...content, ephemeral: content.ephemeral ?? ephemeral };
-      
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply(options).catch(err => 
-          console.error(`Error in safeReply (reply):`, err)
-        );
-      } else if (interaction.deferred && !interaction.replied) {
-        // Can't set ephemeral after deferring
-        const { ephemeral, ...rest } = options;
-        await interaction.editReply(rest).catch(err => 
-          console.error(`Error in safeReply (editReply):`, err)
-        );
-      } else {
-        await interaction.followUp(options).catch(err => 
-          console.error(`Error in safeReply (followUp):`, err)
-        );
-      }
-    } catch (error) {
-      console.error("Error sending safe reply:", error);
     }
   }
 }

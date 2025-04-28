@@ -1,4 +1,4 @@
-// registerHandlers.js - Comprehensive module for registering all handlers
+// registerHandlers.js - Improved with better error handling and logs
 const fs = require('fs');
 const path = require('path');
 
@@ -61,59 +61,70 @@ function registerHandlers(client) {
     
     if (fs.existsSync(buttonsDir)) {
       // First load buttons in main directory
-      const mainButtonFiles = fs.readdirSync(buttonsDir)
-        .filter(file => file.endsWith('.js'));
+      const mainButtonFiles = fs.readdirSync(buttonsDir, { withFileTypes: true });
       
-      for (const file of mainButtonFiles) {
-        try {
-          const buttonPath = path.join(buttonsDir, file);
-          const button = require(buttonPath);
-          
-          if (button && (button.customId || (button.regex && button.matches))) {
-            // For regex-based buttons, use a special key format
-            const key = button.customId || `regex:${file}`;
-            client.buttons.set(key, button);
-            handlers.buttons.push(key);
-            console.log(`Registered button handler: ${key}`);
-          } else {
-            console.warn(`Invalid button handler in file: ${file}`);
-          }
-        } catch (buttonError) {
-          console.error(`Error loading button handler ${file}:`, buttonError);
-        }
-      }
-      
-      // Then check subdirectories
-      const subdirs = fs.readdirSync(buttonsDir, { withFileTypes: true })
-        .filter(dirent => dirent.isDirectory())
-        .map(dirent => dirent.name);
-      
-      console.log(`Found ${subdirs.length} subdirectories in buttons folder`);
-      
-      for (const subdir of subdirs) {
-        const subdirPath = path.join(buttonsDir, subdir);
-        
-        if (fs.existsSync(subdirPath)) {
-          const subdirFiles = fs.readdirSync(subdirPath)
-            .filter(file => file.endsWith('.js'));
-          
-          for (const file of subdirFiles) {
-            try {
-              const buttonPath = path.join(subdirPath, file);
-              const button = require(buttonPath);
-              
-              if (button && (button.customId || (button.regex && button.matches))) {
-                // For subdirectory buttons, include the subdirectory in the key
-                const key = button.customId || `regex:${subdir}/${file}`;
-                client.buttons.set(key, button);
-                handlers.buttons.push(`${subdir}/${file}`);
-                console.log(`Registered button handler from subdirectory: ${subdir}/${file}`);
-              } else {
-                console.warn(`Invalid button handler in subdirectory file: ${subdir}/${file}`);
+      for (const item of mainButtonFiles) {
+        if (item.isFile() && item.name.endsWith('.js')) {
+          try {
+            const buttonPath = path.join(buttonsDir, item.name);
+            const button = require(buttonPath);
+            
+            if (button && (button.customId || (button.regex || typeof button.matches === 'function'))) {
+              // For direct customId buttons
+              if (button.customId) {
+                client.buttons.set(button.customId, button);
+                handlers.buttons.push(button.customId);
+                console.log(`Registered direct button handler: ${button.customId}`);
               }
-            } catch (subdirButtonError) {
-              console.error(`Error loading button handler from subdirectory ${subdir}/${file}:`, subdirButtonError);
+              // For regex-based buttons
+              else if (button.regex || typeof button.matches === 'function') {
+                // Generate a special regex key
+                const regexKey = `regex:${item.name}`;
+                client.buttons.set(regexKey, button);
+                handlers.buttons.push(regexKey);
+                console.log(`Registered regex button handler from: ${item.name}`);
+              }
+            } else {
+              console.warn(`Invalid button handler in file: ${item.name}`);
             }
+          } catch (buttonError) {
+            console.error(`Error loading button handler ${item.name}:`, buttonError);
+          }
+        } else if (item.isDirectory()) {
+          // Process subdirectory
+          try {
+            const subdirPath = path.join(buttonsDir, item.name);
+            const subdirFiles = fs.readdirSync(subdirPath).filter(file => file.endsWith('.js'));
+            
+            for (const file of subdirFiles) {
+              try {
+                const buttonPath = path.join(subdirPath, file);
+                const button = require(buttonPath);
+                
+                if (button) {
+                  // For direct customId buttons
+                  if (button.customId) {
+                    client.buttons.set(button.customId, button);
+                    handlers.buttons.push(`${item.name}/${file}:${button.customId}`);
+                    console.log(`Registered subdirectory button: ${item.name}/${file} with ID ${button.customId}`);
+                  }
+                  // For regex-based buttons
+                  else if (button.regex || typeof button.matches === 'function') {
+                    // Generate a special regex key
+                    const regexKey = `regex:${item.name}/${file}`;
+                    client.buttons.set(regexKey, button);
+                    handlers.buttons.push(regexKey);
+                    console.log(`Registered regex button from subdirectory: ${item.name}/${file}`);
+                  } else {
+                    console.warn(`Invalid button handler in subdirectory file: ${item.name}/${file}`);
+                  }
+                }
+              } catch (subdirButtonError) {
+                console.error(`Error loading button from subdirectory ${item.name}/${file}:`, subdirButtonError);
+              }
+            }
+          } catch (subdirError) {
+            console.error(`Error processing button subdirectory ${item.name}:`, subdirError);
           }
         }
       }
@@ -125,59 +136,46 @@ function registerHandlers(client) {
     const modalsDir = path.join(__dirname, 'modals');
     
     if (fs.existsSync(modalsDir)) {
-      // First load modals in main directory
-      const mainModalFiles = fs.readdirSync(modalsDir)
-        .filter(file => file.endsWith('.js'));
-      
-      for (const file of mainModalFiles) {
-        try {
-          const modalPath = path.join(modalsDir, file);
-          const modal = require(modalPath);
-          
-          if (modal && (modal.customId || (modal.regex && modal.matches))) {
-            const key = modal.customId || `regex:${file}`;
-            client.modals.set(key, modal);
-            handlers.modals.push(key);
-            console.log(`Registered modal handler: ${key}`);
-          } else {
-            console.warn(`Invalid modal handler in file: ${file}`);
-          }
-        } catch (modalError) {
-          console.error(`Error loading modal handler ${file}:`, modalError);
-        }
-      }
-      
-      // Then check subdirectories
-      const subdirs = fs.readdirSync(modalsDir, { withFileTypes: true })
-        .filter(dirent => dirent.isDirectory())
-        .map(dirent => dirent.name);
-      
-      for (const subdir of subdirs) {
-        const subdirPath = path.join(modalsDir, subdir);
+      const processModalDirectory = (directory, subdirPath = '') => {
+        const items = fs.readdirSync(directory, { withFileTypes: true });
         
-        if (fs.existsSync(subdirPath)) {
-          const subdirFiles = fs.readdirSync(subdirPath)
-            .filter(file => file.endsWith('.js'));
+        for (const item of items) {
+          const itemPath = path.join(directory, item.name);
+          const relativePath = subdirPath ? `${subdirPath}/${item.name}` : item.name;
           
-          for (const file of subdirFiles) {
+          if (item.isFile() && item.name.endsWith('.js')) {
             try {
-              const modalPath = path.join(subdirPath, file);
-              const modal = require(modalPath);
+              const modal = require(itemPath);
               
-              if (modal && (modal.customId || (modal.regex && modal.matches))) {
-                const key = modal.customId || `regex:${subdir}/${file}`;
-                client.modals.set(key, modal);
-                handlers.modals.push(`${subdir}/${file}`);
-                console.log(`Registered modal handler from subdirectory: ${subdir}/${file}`);
-              } else {
-                console.warn(`Invalid modal handler in subdirectory file: ${subdir}/${file}`);
+              if (modal) {
+                // For direct customId modals
+                if (modal.customId) {
+                  client.modals.set(modal.customId, modal);
+                  handlers.modals.push(modal.customId);
+                  console.log(`Registered modal handler: ${relativePath} with ID ${modal.customId}`);
+                } 
+                // For regex-based modals
+                else if (modal.regex || typeof modal.matches === 'function') {
+                  const regexKey = `regex:${relativePath}`;
+                  client.modals.set(regexKey, modal);
+                  handlers.modals.push(regexKey);
+                  console.log(`Registered regex modal handler: ${relativePath}`);
+                } else {
+                  console.warn(`Invalid modal handler in file: ${relativePath}`);
+                }
               }
-            } catch (subdirModalError) {
-              console.error(`Error loading modal handler from subdirectory ${subdir}/${file}:`, subdirModalError);
+            } catch (modalError) {
+              console.error(`Error loading modal handler ${relativePath}:`, modalError);
             }
+          } else if (item.isDirectory()) {
+            // Process subdirectory recursively
+            processModalDirectory(itemPath, relativePath);
           }
         }
-      }
+      };
+      
+      // Start processing from the modals root directory
+      processModalDirectory(modalsDir);
     }
     console.log(`Registered ${handlers.modals.length} modal handlers`);
     
@@ -194,13 +192,22 @@ function registerHandlers(client) {
           const selectMenuPath = path.join(selectMenusDir, file);
           const selectMenu = require(selectMenuPath);
           
-          if (selectMenu && (selectMenu.customId || (selectMenu.regex && selectMenu.matches))) {
-            const key = selectMenu.customId || `regex:${file}`;
-            client.selectMenus.set(key, selectMenu);
-            handlers.selectMenus.push(key);
-            console.log(`Registered select menu handler: ${key}`);
-          } else {
-            console.warn(`Invalid select menu handler in file: ${file}`);
+          if (selectMenu) {
+            // For direct customId select menus
+            if (selectMenu.customId) {
+              client.selectMenus.set(selectMenu.customId, selectMenu);
+              handlers.selectMenus.push(selectMenu.customId);
+              console.log(`Registered select menu handler: ${file} with ID ${selectMenu.customId}`);
+            } 
+            // For regex-based select menus
+            else if (selectMenu.regex || typeof selectMenu.matches === 'function') {
+              const regexKey = `regex:${file}`;
+              client.selectMenus.set(regexKey, selectMenu);
+              handlers.selectMenus.push(regexKey);
+              console.log(`Registered regex select menu handler: ${file}`);
+            } else {
+              console.warn(`Invalid select menu handler in file: ${file}`);
+            }
           }
         } catch (selectMenuError) {
           console.error(`Error loading select menu handler ${file}:`, selectMenuError);
@@ -240,30 +247,55 @@ function registerHandlers(client) {
     }
     console.log(`Registered ${handlers.events.discord.length} Discord event handlers`);
     
-    // Check the close ticket button
+    // Look for and display ticket-related buttons - diagnostic information
     try {
-      const closeButtonPath = path.join(__dirname, 'buttons', 'closeTicket.js');
-      if (fs.existsSync(closeButtonPath)) {
-        const closeButton = require(closeButtonPath);
-        console.log(`Close ticket button in main directory: ${!!closeButton}`);
-        if (closeButton) {
-          console.log(`- Custom ID: ${closeButton.customId}`);
-          console.log(`- Has regex: ${!!closeButton.regex}`);
+      console.log('==== TICKET BUTTON DIAGNOSTICS ====');
+      
+      // Check for close ticket button
+      for (const [key, handler] of client.buttons.entries()) {
+        if (
+          key === 'close' || 
+          key === 'close-ticket' || 
+          (typeof key === 'string' && key.includes('close-ticket')) ||
+          (handler.customId === 'close' || handler.customId === 'close-ticket') || 
+          (handler.regex && String(handler.regex).includes('close'))
+        ) {
+          console.log(`Found ticket close button: ${key}`);
+          console.log(`- Custom ID: ${handler.customId || 'N/A'}`);
+          console.log(`- Has regex: ${!!handler.regex} ${handler.regex ? `(${handler.regex})` : ''}`);
+          console.log(`- Has matches function: ${typeof handler.matches === 'function'}`);
+        }
+        
+        if (
+          key === 'edit-user' || 
+          (typeof key === 'string' && key.includes('edit-user')) ||
+          (handler.customId === 'edit-user') || 
+          (handler.regex && String(handler.regex).includes('edit-user'))
+        ) {
+          console.log(`Found edit user button: ${key}`);
+          console.log(`- Custom ID: ${handler.customId || 'N/A'}`);
+          console.log(`- Has regex: ${!!handler.regex} ${handler.regex ? `(${handler.regex})` : ''}`);
+          console.log(`- Has matches function: ${typeof handler.matches === 'function'}`);
         }
       }
       
-      // Also check in ticket subdirectory
-      const ticketButtonPath = path.join(__dirname, 'buttons', 'ticket', 'closeTicket.js');
-      if (fs.existsSync(ticketButtonPath)) {
-        const ticketCloseButton = require(ticketButtonPath);
-        console.log(`Close ticket button in ticket subdirectory: ${!!ticketCloseButton}`);
-        if (ticketCloseButton) {
-          console.log(`- Custom ID: ${ticketCloseButton.customId}`);
-          console.log(`- Has regex: ${!!ticketCloseButton.regex}`);
+      // Check for edit ticket modal
+      for (const [key, handler] of client.modals.entries()) {
+        if (
+          (typeof key === 'string' && key.includes('edit_ticket_modal')) ||
+          (handler.customId && handler.customId.includes('edit_ticket_modal')) || 
+          (handler.regex && String(handler.regex).includes('edit_ticket_modal'))
+        ) {
+          console.log(`Found edit ticket modal: ${key}`);
+          console.log(`- Custom ID: ${handler.customId || 'N/A'}`);
+          console.log(`- Has regex: ${!!handler.regex} ${handler.regex ? `(${handler.regex})` : ''}`);
+          console.log(`- Has matches function: ${typeof handler.matches === 'function'}`);
         }
       }
-    } catch (error) {
-      console.error('Error checking close ticket buttons:', error);
+      
+      console.log('==== END TICKET BUTTON DIAGNOSTICS ====');
+    } catch (diagnosticError) {
+      console.error('Error running ticket button diagnostics:', diagnosticError);
     }
     
     console.log('==== ALL HANDLERS REGISTERED SUCCESSFULLY ====');

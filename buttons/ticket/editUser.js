@@ -1,8 +1,12 @@
+// buttons/ticket/editUser.js
+
 const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
-const InstanceManager = require('../../core/InstanceManager');
-const InteractionTracker = require('../../utils/InteractionTracker');
 
+/**
+ * Button handler for editing user information
+ * FIXED: Removed direct InstanceManager import to prevent circular dependency
+ */
 class EditUserButton extends Button {
   constructor() {
     super({
@@ -19,15 +23,25 @@ class EditUserButton extends Button {
       const phoneNumber = interaction.customId.replace('edit-user-', '');
       console.log(`[EditUserButton] Phone number from button: ${phoneNumber}`);
       
-      // Get instance if not provided
+      // Get instance if not provided - FIXED: Avoid circular dependency
       if (!instance) {
-        console.log(`[EditUserButton] No instance provided, retrieving from InstanceManager`);
-        instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
+        console.log(`[EditUserButton] Instance not provided, will use instance from route map`);
         
+        // Try to get instance from Discord client route map first
+        if (interaction.client._instanceRoutes) {
+          // Get the category ID for the current channel
+          const categoryId = interaction.channel.parentId;
+          if (categoryId && interaction.client._instanceRoutes.has(categoryId)) {
+            instance = interaction.client._instanceRoutes.get(categoryId).instance;
+            console.log(`[EditUserButton] Found instance from route map with ID: ${instance?.instanceId || 'unknown'}`);
+          }
+        }
+        
+        // If still no instance, send error
         if (!instance) {
-          console.error(`[EditUserButton] Failed to retrieve instance for guild ${interaction.guild.id}`);
+          console.error(`[EditUserButton] Could not find instance for this channel`);
           await interaction.reply({
-            content: '❌ System error: Could not find WhatsApp bridge instance for this server. Please try again or contact an administrator.',
+            content: '❌ System error: Could not find WhatsApp bridge instance for this channel.',
             ephemeral: true
           });
           return false;

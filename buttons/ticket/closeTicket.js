@@ -1,10 +1,10 @@
-// buttons/closeTicket.js
+// buttons/ticket/closeTicket.js
 
 const Button = require('../../templates/Button');
-const InstanceManager = require('../../core/InstanceManager');
 
 /**
  * Button handler for closing tickets
+ * FIXED: Removed direct InstanceManager import to prevent circular dependency
  */
 class CloseTicketButton extends Button {
   constructor() {
@@ -26,15 +26,25 @@ class CloseTicketButton extends Button {
       const channelId = interaction.channelId;
       console.log(`[CloseTicketButton] Closing ticket in channel: ${channelId}`);
       
-      // Get instance if not provided
+      // Get instance if not provided - FIXED: Avoid circular dependency
       if (!instance) {
-        console.log(`[CloseTicketButton] Instance not provided, fetching from InstanceManager`);
-        instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
+        console.log(`[CloseTicketButton] Instance not provided, will use instance from route map`);
         
+        // Try to get instance from Discord client route map first
+        if (interaction.client._instanceRoutes) {
+          // Get the category ID for the current channel
+          const categoryId = interaction.channel.parentId;
+          if (categoryId && interaction.client._instanceRoutes.has(categoryId)) {
+            instance = interaction.client._instanceRoutes.get(categoryId).instance;
+            console.log(`[CloseTicketButton] Found instance from route map with ID: ${instance?.instanceId || 'unknown'}`);
+          }
+        }
+        
+        // If still no instance, send error
         if (!instance) {
-          console.error(`[CloseTicketButton] Could not find instance for guild ${interaction.guild.id}`);
+          console.error(`[CloseTicketButton] Could not find instance for this channel`);
           await interaction.editReply({
-            content: "❌ System error: Could not find WhatsApp bridge instance for this server."
+            content: "❌ System error: Could not find WhatsApp bridge instance for this channel."
           });
           return false;
         }
