@@ -11,25 +11,46 @@ class ToggleVouchesButton extends Button {
   
   async execute(interaction, instance) {
     try {
-      await interaction.deferUpdate();
+      // First defer the update to prevent timeout
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferUpdate().catch(err => {
+          console.error(`Error deferring toggle vouches:`, err);
+        });
+      }
       
-      // Get instance
+      console.log(`[ToggleVouches] Processing with instance: ${instance ? 'provided' : 'not provided'}`);
+      
+      // Get instance if not provided
       if (!instance) {
-        // Try to get instance from Discord client route map first
-        if (interaction.client._instanceRoutes) {
-          // Look through all routes to find matching guild
+        // First try getting instance from client's route map via category
+        if (interaction.channel?.parentId && interaction.client._instanceRoutes) {
+          const categoryId = interaction.channel.parentId;
+          console.log(`[ToggleVouches] Checking category ID: ${categoryId}`);
+          
+          if (interaction.client._instanceRoutes.has(categoryId)) {
+            instance = interaction.client._instanceRoutes.get(categoryId).instance;
+            console.log(`[ToggleVouches] Found instance via category: ${instance?.instanceId || 'unknown'}`);
+          }
+        }
+        
+        // If not found by category, try finding by guild ID
+        if (!instance && interaction.client._instanceRoutes) {
+          console.log(`[ToggleVouches] Searching all routes for guild match: ${interaction.guildId}`);
+          
           for (const [_, routeInfo] of interaction.client._instanceRoutes.entries()) {
             if (routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
               instance = routeInfo.instance;
-              console.log(`Found instance from route map with ID: ${instance?.instanceId || 'unknown'}`);
+              console.log(`[ToggleVouches] Found instance via guild match: ${instance?.instanceId || 'unknown'}`);
               break;
             }
           }
         }
         
+        // If still no instance, show error
         if (!instance) {
+          console.error(`[ToggleVouches] No instance found for guild ${interaction.guildId}`);
           await interaction.editReply({
-            content: '❌ Could not find WhatsApp configuration.',
+            content: '❌ Could not find WhatsApp configuration. Please run `/setup` first.',
             components: []
           });
           return;
@@ -45,14 +66,28 @@ class ToggleVouchesButton extends Button {
       const currentEnabled = instance.customSettings.vouchEnabled !== false;
       const newEnabled = !currentEnabled;
       
+      console.log(`[ToggleVouches] Toggling vouches from ${currentEnabled} to ${newEnabled}`);
+      
       // Update settings
       instance.customSettings.vouchEnabled = newEnabled;
       
-      // Save settings directly without using InstanceManager
+      // Save settings directly without using InstanceManager to avoid circular dependencies
+      // Try multiple approaches to accommodate different instance structures
+      let saveSuccess = false;
+      
+      // Approach 1: Direct saveSettings method
       if (instance.saveSettings && typeof instance.saveSettings === 'function') {
-        await instance.saveSettings({ vouchEnabled: newEnabled });
-      } else {
-        // Try a different approach if saveSettings is not available
+        try {
+          await instance.saveSettings({ vouchEnabled: newEnabled });
+          console.log(`[ToggleVouches] Saved settings using instance.saveSettings`);
+          saveSuccess = true;
+        } catch (saveError) {
+          console.error(`[ToggleVouches] Error using instance.saveSettings:`, saveError);
+        }
+      }
+      
+      // Approach 2: Use channelManager if available
+      if (!saveSuccess) {
         try {
           const channelManager = instance.channelManager || (instance.managers && instance.managers.channelManager);
           if (channelManager && typeof channelManager.saveInstanceSettings === 'function') {
@@ -60,24 +95,28 @@ class ToggleVouchesButton extends Button {
               instance.instanceId || interaction.guild.id,
               { vouchEnabled: newEnabled }
             );
+            console.log(`[ToggleVouches] Saved settings using channelManager.saveInstanceSettings`);
+            saveSuccess = true;
           }
-        } catch (saveError) {
-          console.error(`Error saving instance settings:`, saveError);
+        } catch (channelManagerError) {
+          console.error(`[ToggleVouches] Error using channelManager.saveInstanceSettings:`, channelManagerError);
         }
       }
       
       // Apply settings to the vouch handler if available
       if (instance.vouchHandler) {
         instance.vouchHandler.isDisabled = !newEnabled;
-        console.log(`Set vouchHandler.isDisabled to ${!newEnabled}`);
+        console.log(`[ToggleVouches] Set vouchHandler.isDisabled to ${!newEnabled}`);
       } else if (instance.handlers && instance.handlers.vouchHandler) {
         instance.handlers.vouchHandler.isDisabled = !newEnabled;
-        console.log(`Set handlers.vouchHandler.isDisabled to ${!newEnabled}`);
+        console.log(`[ToggleVouches] Set handlers.vouchHandler.isDisabled to ${!newEnabled}`);
       }
       
       // Get message and current components
       const message = await interaction.fetchReply();
       const components = [...message.components];
+      
+      console.log(`[ToggleVouches] Updating UI components`);
       
       // Find the feature row
       const featureRowIndex = components.findIndex(row => 
@@ -118,6 +157,7 @@ class ToggleVouchesButton extends Button {
         
         // Update the message with new components
         await interaction.editReply({ components });
+        console.log(`[ToggleVouches] Updated UI components successfully`);
         
         // Notify success
         await interaction.followUp({
@@ -125,6 +165,8 @@ class ToggleVouchesButton extends Button {
           ephemeral: true
         });
       } else {
+        console.log(`[ToggleVouches] Could not find feature row in components`);
+        
         // Couldn't find the feature row - just update settings
         await interaction.editReply({
           content: `Settings updated. Vouches: ${newEnabled ? 'Enabled' : 'Disabled'}`,
@@ -133,10 +175,26 @@ class ToggleVouchesButton extends Button {
       }
     } catch (error) {
       console.error('Error handling toggle vouches:', error);
-      await interaction.followUp({
-        content: `❌ Error: ${error.message}`,
-        ephemeral: true
-      });
+      
+      try {
+        await interaction.followUp({
+          content: `❌ Error: ${error.message}`,
+          ephemeral: true
+        });
+      } catch (followUpError) {
+        console.error(`Error sending error message:`, followUpError);
+        
+        // Try edit reply as a last resort
+        try {
+          if (!interaction.replied) {
+            await interaction.editReply({
+              content: `❌ Error: ${error.message}`
+            });
+          }
+        } catch (finalError) {
+          console.error(`Final error attempt failed:`, finalError);
+        }
+      }
     }
   }
 }

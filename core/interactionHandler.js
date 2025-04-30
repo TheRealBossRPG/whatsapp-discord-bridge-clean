@@ -151,41 +151,52 @@ class InteractionHandler {
   }
   
   /**
-   * Get instance for an interaction
+   * Get instance for an interaction directly from client routes
+   * (Avoids circular dependency with InstanceManager)
    * @param {Interaction} interaction - Discord interaction 
    * @returns {Object} - Server instance
    */
   getInstanceForInteraction(interaction) {
     if (!interaction.guildId) return null;
     
-    // IMPORTANT: Skip instance check for customize_messages_modal
-    // This needs to be processed even without an instance
+    // Special case for customize_messages_modal
     if (interaction.isModalSubmit() && interaction.customId === "customize_messages_modal") {
       console.log("[InteractionHandler] Skipping instance check for customize_messages_modal");
       return { customSettings: {}, isTemporary: true };
     }
     
     try {
+      console.log(`[InteractionHandler] Finding instance for guild ${interaction.guildId}, channel parent ${interaction.channel?.parentId || 'none'}`);
+      
       // Check channel parent ID first for more specific matching
       if (interaction.channel && interaction.channel.parentId) {
         const categoryId = interaction.channel.parentId;
+        console.log(`[InteractionHandler] Checking category ID: ${categoryId}`);
         
         // Check if Discord client has instance routes
         if (interaction.client._instanceRoutes && interaction.client._instanceRoutes.has(categoryId)) {
           const routeInfo = interaction.client._instanceRoutes.get(categoryId);
-          return routeInfo.instance;
+          if (routeInfo && routeInfo.instance) {
+            console.log(`[InteractionHandler] Found instance via category match: ${routeInfo.instance.instanceId || 'unknown'}`);
+            return routeInfo.instance;
+          }
         }
       }
       
       // Fall back to guild ID matching if needed 
       if (interaction.client._instanceRoutes) {
+        console.log(`[InteractionHandler] Searching for instance with matching guild ID: ${interaction.guildId}`);
+        
         // Look through all instances and find one with matching guild
-        for (const [categoryId, routeInfo] of interaction.client._instanceRoutes.entries()) {
-          if (routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
+        for (const [catId, routeInfo] of interaction.client._instanceRoutes.entries()) {
+          if (routeInfo && routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
+            console.log(`[InteractionHandler] Found instance via guild ID match: ${routeInfo.instance.instanceId || 'unknown'}`);
             return routeInfo.instance;
           }
         }
       }
+      
+      console.log(`[InteractionHandler] No instance found for guild ${interaction.guildId}`);
       
       // No instance found, but we'll return null and let the command handle it
       return null;
@@ -245,10 +256,10 @@ class InteractionHandler {
    */
   async handleInteraction(interaction) {
     try {
-      // Get the server instance for this interaction
-      const instance = this.getInstanceForInteraction(interaction);
+      // Get the instance now, but handle cases where we need to delay getting it
+      let instance = null;
       
-      // IMPROVED: Handle buttons first through our direct access system
+      // Handle buttons - get instance only after finding a valid handler
       if (interaction.isButton()) {
         console.log(`[InteractionHandler] Processing button: ${interaction.customId}`);
         
@@ -256,7 +267,10 @@ class InteractionHandler {
         const handler = this.findButtonHandler(interaction.customId);
         
         if (handler && typeof handler.execute === 'function') {
-          // Execute the button handler
+          // Now that we have a handler, we can safely get the instance
+          instance = this.getInstanceForInteraction(interaction);
+          
+          console.log(`[InteractionHandler] Found handler for button ${interaction.customId}, executing...`);
           try {
             await handler.execute(interaction, instance);
             return true;
@@ -273,10 +287,22 @@ class InteractionHandler {
           }
         } else {
           console.log(`[InteractionHandler] No handler found for button: ${interaction.customId}`);
+          
+          // Try using ButtonLoader for backwards compatibility
+          try {
+            const ButtonLoader = require('./ButtonLoader');
+            if (ButtonLoader && typeof ButtonLoader.handleInteraction === 'function') {
+              instance = this.getInstanceForInteraction(interaction);
+              const handled = await ButtonLoader.handleInteraction(interaction, instance);
+              if (handled) return true;
+            }
+          } catch (buttonLoaderError) {
+            console.error(`[InteractionHandler] Error using ButtonLoader fallback:`, buttonLoaderError);
+          }
         }
       }
       
-      // IMPROVED: Handle modal submissions with direct access
+      // Handle modal submissions - same pattern as buttons
       if (interaction.isModalSubmit()) {
         console.log(`[InteractionHandler] Processing modal submission: ${interaction.customId}`);
         
@@ -284,7 +310,15 @@ class InteractionHandler {
         const handler = this.findModalHandler(interaction.customId);
         
         if (handler && typeof handler.execute === 'function') {
-          // Execute the modal handler
+          // Special case for customize_messages_modal
+          if (interaction.customId === "customize_messages_modal") {
+            instance = { customSettings: {}, isTemporary: true };
+            console.log(`[InteractionHandler] Using temporary instance for customize_messages_modal`);
+          } else {
+            // Now that we have a handler, we can safely get the instance
+            instance = this.getInstanceForInteraction(interaction);
+          }
+          
           try {
             await handler.execute(interaction, instance);
             return true;
@@ -306,6 +340,7 @@ class InteractionHandler {
           try {
             const ModalLoader = require('./ModalLoader');
             if (ModalLoader && typeof ModalLoader.handleInteraction === 'function') {
+              instance = this.getInstanceForInteraction(interaction);
               const handled = await ModalLoader.handleInteraction(interaction, instance);
               if (handled) return true;
             }
@@ -322,6 +357,7 @@ class InteractionHandler {
         // Look for command in client.commands first (from registerHandlers.js)
         const clientCommand = interaction.client.commands?.get(interaction.commandName);
         if (clientCommand && typeof clientCommand.execute === 'function') {
+          instance = this.getInstanceForInteraction(interaction);
           try {
             await clientCommand.execute(interaction, instance);
             return true;
@@ -343,6 +379,7 @@ class InteractionHandler {
         // Try ModuleLoader as fallback
         const moduleCommand = this.moduleLoader.getCommand(interaction.commandName);
         if (moduleCommand && typeof moduleCommand.execute === 'function') {
+          instance = this.getInstanceForInteraction(interaction);
           try {
             await moduleCommand.execute(interaction, instance);
             return true;
@@ -362,15 +399,20 @@ class InteractionHandler {
         }
       }
       
-      // Handle select menus - KEEP THIS WORKING 
+      // Handle select menus
       if (interaction.isStringSelectMenu()) {
         console.log(`[InteractionHandler] Processing select menu: ${interaction.customId}`);
         
         // Use select menu loader if available
-        const SelectMenuLoader = require('./SelectMenuLoader');
-        if (SelectMenuLoader && typeof SelectMenuLoader.handleInteraction === 'function') {
-          const handled = await SelectMenuLoader.handleInteraction(interaction, instance);
-          if (handled) return true;
+        try {
+          const SelectMenuLoader = require('./SelectMenuLoader');
+          if (SelectMenuLoader && typeof SelectMenuLoader.handleInteraction === 'function') {
+            instance = this.getInstanceForInteraction(interaction);
+            const handled = await SelectMenuLoader.handleInteraction(interaction, instance);
+            if (handled) return true;
+          }
+        } catch (selectMenuError) {
+          console.error(`[InteractionHandler] Error with select menu loader:`, selectMenuError);
         }
       }
       
