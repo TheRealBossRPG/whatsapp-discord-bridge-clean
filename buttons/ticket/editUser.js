@@ -5,14 +5,22 @@ const Button = require('../../templates/Button');
 
 /**
  * Button handler for editing user information
- * FIXED: Removed direct InstanceManager import to prevent circular dependency
+ * FIXED: Better regex matching and error handling
  */
 class EditUserButton extends Button {
   constructor() {
     super({
-      customId: 'edit-user',
       regex: /^edit-user-(.+)$/
     });
+  }
+  
+  /**
+   * Custom matching function to handle the edit-user pattern
+   * @param {string} customId - The button's customId
+   * @returns {boolean} - Whether this handler should handle the button
+   */
+  matches(customId) {
+    return customId.startsWith('edit-user-');
   }
   
   async execute(interaction, instance) {
@@ -34,6 +42,17 @@ class EditUserButton extends Button {
           if (categoryId && interaction.client._instanceRoutes.has(categoryId)) {
             instance = interaction.client._instanceRoutes.get(categoryId).instance;
             console.log(`[EditUserButton] Found instance from route map with ID: ${instance?.instanceId || 'unknown'}`);
+          }
+          
+          // If not found, check all instances for matching guild ID
+          if (!instance) {
+            for (const [_, routeInfo] of interaction.client._instanceRoutes.entries()) {
+              if (routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
+                instance = routeInfo.instance;
+                console.log(`[EditUserButton] Found instance via guild ID match: ${instance?.instanceId || 'unknown'}`);
+                break;
+              }
+            }
           }
         }
         
