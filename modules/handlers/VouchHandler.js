@@ -1,4 +1,4 @@
-// modules/handlers/VouchHandler.js - Completely Fixed Version
+// modules/handlers/VouchHandler.js - Fixed for @whiskeysockets/baileys compatibility
 const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
@@ -80,7 +80,7 @@ class VouchHandler {
   /**
    * Check if a Discord message mentions the vouch channel
    * @param {Object} message - Discord message
-   * @returns {boolean} - Whether the message mentions the vouch channel
+   * @returns {Promise<boolean>} - Whether the message mentions the vouch channel
    */
   async checkForVouchChannelMention(message) {
     try {
@@ -95,7 +95,7 @@ class VouchHandler {
       // Check if vouch channel is mentioned
       if (mentionedChannels.has(this.vouchChannelId)) {
         // Get user from the channel if it's tied to a WhatsApp user
-        const phoneNumber = await this.channelManager.getPhoneNumberByChannelId(message.channel.id);
+        const phoneNumber = await this.channelManager?.getPhoneNumberByChannelId(message.channel.id);
         if (!phoneNumber) return false;
         
         // Get user card
@@ -108,8 +108,16 @@ class VouchHandler {
         
         // Send a message with the channel name and instructions
         try {
+          // Replace all channel mentions with just the channel name
+          const modifiedContent = message.content.replace(/<#(\d+)>/g, (match, channelId) => {
+            if (channelId === this.vouchChannelId) {
+              return `#${channelName}`;
+            }
+            return match;
+          });
+          
           await message.channel.send({
-            content: `**Vouch Channel: #${channelName}**\n\n${message.content.replace(/<#\d+>/g, '')}`,
+            content: modifiedContent,
           });
           
           // Send vouch instructions
@@ -143,7 +151,7 @@ class VouchHandler {
       }
       
       // Get phone number from channel
-      const phoneNumber = await this.channelManager.getPhoneNumberByChannelId(message.channel.id);
+      const phoneNumber = await this.channelManager?.getPhoneNumberByChannelId(message.channel.id);
       if (!phoneNumber) {
         console.log(`[VouchHandler:${this.instanceId}] No phone number found for channel ${message.channel.id}`);
         
@@ -256,8 +264,17 @@ class VouchHandler {
         return false;
       }
       
-      // Get user name
-      const name = userCard?.name || 'there';
+      // Get user name - try multiple methods to extract it
+      let name = 'there';
+      if (userCard) {
+        if (typeof userCard === 'string') {
+          name = userCard;
+        } else if (userCard.name) {
+          name = userCard.name;
+        } else if (userCard.username) {
+          name = userCard.username;
+        }
+      }
       
       // Format message
       const messageText = this.vouchMessage
@@ -265,7 +282,11 @@ class VouchHandler {
         .replace(/{phoneNumber}/g, phoneNumber);
       
       // Ensure the phoneNumber is in the correct format for WhatsApp
-      const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+      // Convert to string first in case it's a number
+      let cleanPhone = String(phoneNumber).replace(/\D/g, '');
+      // If it starts with '+', remove it
+      cleanPhone = cleanPhone.replace(/^\+/, '');
+      
       const recipientJid = `${cleanPhone}@s.whatsapp.net`;
       
       // Check if we need to send with media
@@ -274,18 +295,17 @@ class VouchHandler {
           // Read the media file
           const mediaBuffer = fs.readFileSync(mediaPath);
           const mediaType = mediaPath.endsWith('.gif') ? 'image/gif' : 'video/mp4';
-          const mediaFilename = path.basename(mediaPath);
           
-          // Send message with media
-          if (mediaType.startsWith('image/')) {
-            // Send as image
+          // Send with correct media type
+          if (mediaPath.endsWith('.gif')) {
+            // Send as image with @whiskeysockets/baileys
             await this.whatsAppClient.sendMessage(recipientJid, {
               image: mediaBuffer,
               caption: messageText,
               mimetype: mediaType
             });
           } else {
-            // Send as video
+            // Send as video with @whiskeysockets/baileys
             await this.whatsAppClient.sendMessage(recipientJid, {
               video: mediaBuffer,
               caption: messageText,
@@ -296,29 +316,100 @@ class VouchHandler {
           console.log(`[VouchHandler:${this.instanceId}] Sent vouch instructions with media to ${name} (${phoneNumber})`);
           return true;
         } catch (mediaError) {
-          console.error(`[VouchHandler:${this.instanceId}] Error sending with media, falling back to text:`, mediaError);
+          console.error(`[VouchHandler:${this.instanceId}] Error sending with media:`, mediaError);
+          console.error(`[VouchHandler:${this.instanceId}] Full error:`, mediaError.stack || mediaError);
           // Continue to text-only if media fails
         }
       }
       
-      // Send as text-only message
-      await this.whatsAppClient.sendMessage(recipientJid, {
-        text: messageText
-      });
-      
-      console.log(`[VouchHandler:${this.instanceId}] Sent vouch instructions to ${name} (${phoneNumber})`);
-      return true;
+      // Send as text-only message with @whiskeysockets/baileys
+      try {
+        await this.whatsAppClient.sendMessage(recipientJid, { text: messageText });
+        console.log(`[VouchHandler:${this.instanceId}] Sent vouch instructions to ${name} (${phoneNumber})`);
+        return true;
+      } catch (textError) {
+        console.error(`[VouchHandler:${this.instanceId}] Error sending text message:`, textError);
+        console.error(`[VouchHandler:${this.instanceId}] Full error stack:`, textError.stack || textError);
+        throw textError; // Re-throw for proper error handling
+      }
     } catch (error) {
       console.error(`[VouchHandler:${this.instanceId}] Error sending vouch instructions:`, error);
+      console.error(`[VouchHandler:${this.instanceId}] Error details:`, error.stack || error);
       return false;
     }
   }
   
   /**
-   * Handle a vouch message
-   * @param {string} phoneNumber - Phone number
-   * @param {Object} messageContent - Message content
-   * @param {Object} userCard - User card
+   * Extract text from WhatsApp message
+   * @param {Object} message - WhatsApp message
+   * @returns {string|null} - Message text or null if not found
+   */
+  extractMessageText(message) {
+    if (!message || !message.message) return null;
+    
+    // Check different message types
+    if (message.message.conversation) {
+      return message.message.conversation;
+    } else if (message.message.extendedTextMessage && message.message.extendedTextMessage.text) {
+      return message.message.extendedTextMessage.text;
+    } else if (message.message.imageMessage && message.message.imageMessage.caption) {
+      return message.message.imageMessage.caption;
+    } else if (message.message.videoMessage && message.message.videoMessage.caption) {
+      return message.message.videoMessage.caption;
+    } else if (message.message.documentMessage && message.message.documentMessage.caption) {
+      return message.message.documentMessage.caption;
+    }
+    
+    return null;
+  }
+  
+  /**
+   * Download media from WhatsApp message
+   * @param {Object} message - WhatsApp message
+   * @returns {Promise<Buffer|null>} - Media buffer or null if download failed
+   */
+  async downloadMedia(message) {
+    try {
+      if (!message || !message.message) {
+        console.log(`[VouchHandler:${this.instanceId}] No message to download media from`);
+        return null;
+      }
+      
+      // Try multiple methods to download media based on the WhatsApp client
+      try {
+        // Method 1: Try downloadMediaMessage (most common)
+        if (typeof this.whatsAppClient.downloadMediaMessage === 'function') {
+          return await this.whatsAppClient.downloadMediaMessage(message);
+        }
+        
+        // Method 2: Try downloadMedia
+        if (typeof this.whatsAppClient.downloadMedia === 'function') {
+          return await this.whatsAppClient.downloadMedia(message);
+        }
+        
+        // Method 3: Try download (older versions)
+        if (typeof this.whatsAppClient.download === 'function') {
+          return await this.whatsAppClient.download(message);
+        }
+        
+        console.error(`[VouchHandler:${this.instanceId}] No download method available`);
+        return null;
+      } catch (downloadError) {
+        console.error(`[VouchHandler:${this.instanceId}] Error downloading media:`, downloadError);
+        return null;
+      }
+    } catch (error) {
+      console.error(`[VouchHandler:${this.instanceId}] Error in downloadMedia:`, error);
+      return null;
+    }
+  }
+  
+  /**
+   * Handle a vouch from WhatsApp
+   * IMPORTANT: This is the original method name that's being called
+   * @param {string} phoneNumber - Sender's phone number
+   * @param {Object} messageContent - Content of the message
+   * @param {Object} userCard - User card from manager
    * @param {Object} originalMessage - Original WhatsApp message
    * @returns {Promise<boolean>} - Success status
    */
@@ -336,64 +427,113 @@ class VouchHandler {
         return false;
       }
       
-      // Get user info
-      const name = userCard?.name || 'Unknown User';
+      console.log(`[VouchHandler:${this.instanceId}] Processing vouch from ${phoneNumber}`);
       
-      // Extract vouch text
-      const vouchText = messageContent.text.replace(/^vouch!/i, '').trim();
+      // Extract message text
+      let vouchText = '';
       
+      // Make sure messageContent is properly processed
+      if (typeof messageContent === 'string') {
+        vouchText = messageContent.replace(/^vouch!/i, '').trim();
+      } else if (messageContent && messageContent.text) {
+        vouchText = messageContent.text.replace(/^vouch!/i, '').trim();
+      } else if (originalMessage) {
+        // Try to extract text from the original message
+        const extractedText = this.extractMessageText(originalMessage);
+        if (extractedText) {
+          vouchText = extractedText.replace(/^vouch!/i, '').trim();
+        }
+      }
+      
+      // Check if vouch text is substantial enough
       if (vouchText.length < 2) {
         // Vouch text too short - ask for more detail
-        const recipientJid = `${phoneNumber.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+        const cleanPhone = String(phoneNumber).replace(/\D/g, '').replace(/^\+/, '');
+        const recipientJid = `${cleanPhone}@s.whatsapp.net`;
+        
         await this.whatsAppClient.sendMessage(
           recipientJid,
           { text: "Please provide more details with your vouch! Just add your feedback after 'Vouch!'" }
         );
+        
+        console.log(`[VouchHandler:${this.instanceId}] Vouch text too short, requested more details`);
         return false;
       }
       
-      // Process media if present
+      // Get user name
+      let name = 'Unknown User';
+      if (userCard) {
+        if (typeof userCard === 'string') {
+          name = userCard;
+        } else if (userCard.name) {
+          name = userCard.name;
+        } else if (userCard.username) {
+          name = userCard.username;
+        }
+      }
+      
+      console.log(`[VouchHandler:${this.instanceId}] Processing vouch from ${name} (${phoneNumber}): "${vouchText.substring(0, 30)}..."`);
+      
+      // Handle media if present
       let mediaBuffer = null;
       let mediaType = null;
       let mediaFileName = null;
       
-      if (messageContent.type && messageContent.type !== 'text') {
+      if (originalMessage) {
         try {
-          // Download media
-          console.log(`[VouchHandler:${this.instanceId}] Processing media type: ${messageContent.type}`);
-          
-          // Ensure proper media download with Baileys
-          if (typeof this.whatsAppClient.downloadMedia === 'function') {
-            mediaBuffer = await this.whatsAppClient.downloadMedia(originalMessage);
-          } else if (typeof this.whatsAppClient.downloadMediaMessage === 'function') {
-            mediaBuffer = await this.whatsAppClient.downloadMediaMessage(originalMessage);
-          } else {
-            console.error(`[VouchHandler:${this.instanceId}] No media download function available`);
+          if (originalMessage.message?.imageMessage) {
+            mediaBuffer = await this.downloadMedia(originalMessage);
+            mediaType = 'image';
+            mediaFileName = `vouch-image-${Date.now()}.jpg`;
+          } else if (originalMessage.message?.videoMessage) {
+            mediaBuffer = await this.downloadMedia(originalMessage);
+            mediaType = 'video';
+            mediaFileName = `vouch-video-${Date.now()}.mp4`;
+          } else if (originalMessage.message?.documentMessage) {
+            mediaBuffer = await this.downloadMedia(originalMessage);
+            mediaType = 'document';
+            mediaFileName = originalMessage.message.documentMessage.fileName || `vouch-doc-${Date.now()}.bin`;
           }
           
-          mediaType = messageContent.type;
-          mediaFileName = messageContent.fileName || `vouch-media-${Date.now()}.${mediaType.split('/')[1] || 'bin'}`;
+          if (mediaBuffer) {
+            console.log(`[VouchHandler:${this.instanceId}] Vouch includes media of type: ${mediaType}`);
+          }
         } catch (mediaError) {
-          console.error(`[VouchHandler:${this.instanceId}] Error downloading media:`, mediaError);
+          console.error(`[VouchHandler:${this.instanceId}] Error processing media:`, mediaError);
+          // Continue without media
+        }
+      } else if (messageContent && messageContent.media) {
+        // Handle case where media is provided directly in messageContent
+        try {
+          mediaBuffer = messageContent.media;
+          mediaType = messageContent.mediaType || 'image';
+          mediaFileName = messageContent.fileName || `vouch-media-${Date.now()}.bin`;
+        } catch (error) {
+          console.error(`[VouchHandler:${this.instanceId}] Error with provided media:`, error);
           // Continue without media
         }
       }
       
-      // Post vouch to Discord
+      // Post to Discord
       const success = await this.postVouchToDiscord(name, phoneNumber, vouchText, mediaBuffer, mediaType, mediaFileName);
       
+      // Send confirmation message
       if (success) {
-        // Send success message back to user
-        const recipientJid = `${phoneNumber.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+        const cleanPhone = String(phoneNumber).replace(/\D/g, '').replace(/^\+/, '');
+        const recipientJid = `${cleanPhone}@s.whatsapp.net`;
+        
         await this.whatsAppClient.sendMessage(
           recipientJid,
           { text: this.vouchSuccessMessage }
         );
+        
+        console.log(`[VouchHandler:${this.instanceId}] Sent vouch success message to ${phoneNumber}`);
       }
       
       return success;
     } catch (error) {
       console.error(`[VouchHandler:${this.instanceId}] Error handling vouch:`, error);
+      console.error(error.stack);
       return false;
     }
   }
@@ -469,6 +609,48 @@ class VouchHandler {
       return true;
     } catch (error) {
       console.error(`[VouchHandler:${this.instanceId}] Error posting vouch to Discord:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Process incoming WhatsApp message to check if it's a vouch
+   * @param {Object} message - WhatsApp message
+   * @returns {Promise<boolean>} - Whether message was processed as vouch
+   */
+  async processWhatsAppVouch(message) {
+    try {
+      // Skip if disabled or no message
+      if (this.isDisabled || !message) return false;
+      
+      // Extract text from message
+      const messageText = this.extractMessageText(message);
+      if (!messageText) return false;
+      
+      // Check if it's a vouch message
+      if (!messageText.trim().toLowerCase().startsWith('vouch!')) {
+        return false;
+      }
+      
+      // Extract phone number from the message
+      const sender = message.key.remoteJid;
+      if (!sender) return false;
+      
+      const phoneNumber = sender.split('@')[0];
+      
+      // Get user info
+      const userCard = this.userCardManager ? 
+        await this.userCardManager.getUserInfo(phoneNumber) : null;
+      
+      // Process the vouch
+      return await this.handleVouch(
+        phoneNumber,
+        { text: messageText },
+        userCard,
+        message
+      );
+    } catch (error) {
+      console.error(`[VouchHandler:${this.instanceId}] Error processing WhatsApp vouch:`, error);
       return false;
     }
   }
