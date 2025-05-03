@@ -1,7 +1,8 @@
 // Updated selectMenus/vouchSelect.js
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const SelectMenu = require('../templates/SelectMenu');
-const InteractionTracker = require('../utils/InteractionTracker');
+const fs = require('fs');
+const path = require('path');
 
 class VouchSelectMenu extends SelectMenu {
   constructor() {
@@ -12,21 +13,36 @@ class VouchSelectMenu extends SelectMenu {
   
   async execute(interaction, instance) {
     try {
-      await interaction.deferUpdate();
+      console.log(`[VouchSelect] Processing selection`);
+      
+      // First defer the update to prevent timeout
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferUpdate().catch(err => {
+          console.error(`[VouchSelect] Error deferring update:`, err);
+        });
+      }
       
       // Get the selected option
       const selectedValue = interaction.values[0];
       
-      // Update setup params
+      // Get setup info directly from storage file
       const guildId = interaction.guild.id;
-      const setupParams = global.setupStorage.getSetupParams(guildId) || {};
+      let setupParams = {};
       
-      // Get instance manager for saving settings
-      let instanceManager;
+      // Load existing setup params directly from file
       try {
-        instanceManager = require('../core/InstanceManager');
-      } catch (err) {
-        console.error(`[VouchSelect] Error loading InstanceManager:`, err);
+        const setupStoragePath = path.join(__dirname, '..', 'setup_storage', `${guildId}_setup.json`);
+        if (fs.existsSync(setupStoragePath)) {
+          const setupData = fs.readFileSync(setupStoragePath, 'utf8');
+          setupParams = JSON.parse(setupData);
+          console.log(`[VouchSelect] Loaded setup params directly from file`);
+        } else if (global.setupStorage && typeof global.setupStorage.getSetupParams === 'function') {
+          const params = global.setupStorage.getSetupParams(guildId);
+          if (params) setupParams = params;
+          console.log(`[VouchSelect] Loaded setup params from global.setupStorage`);
+        }
+      } catch (loadError) {
+        console.error(`[VouchSelect] Error loading setup params:`, loadError);
       }
       
       // Handle special values
@@ -41,9 +57,7 @@ class VouchSelectMenu extends SelectMenu {
       } 
       else if (useSameAsTranscript) {
         // Use same channel as transcript
-        const transcriptChannelId = instance ? 
-          instance.transcriptChannelId : 
-          setupParams.transcriptChannelId;
+        const transcriptChannelId = setupParams.transcriptChannelId;
         
         if (!transcriptChannelId) {
           await interaction.editReply({
@@ -65,75 +79,48 @@ class VouchSelectMenu extends SelectMenu {
       // Set enable/disable flag
       const enableVouches = !disableVouches;
       
+      // Save setup params back to file directly
+      try {
+        const setupStoragePath = path.join(__dirname, '..', 'setup_storage', `${guildId}_setup.json`);
+        const storageDir = path.dirname(setupStoragePath);
+        
+        // Ensure directory exists
+        if (!fs.existsSync(storageDir)) {
+          fs.mkdirSync(storageDir, { recursive: true });
+        }
+        
+        // Write updated setup params
+        fs.writeFileSync(setupStoragePath, JSON.stringify(setupParams, null, 2), 'utf8');
+        console.log(`[VouchSelect] Saved setup params directly to file`);
+      } catch (saveError) {
+        console.error(`[VouchSelect] Error saving setup params directly:`, saveError);
+        
+        // Try fallback to global storage
+        if (global.setupStorage && typeof global.setupStorage.saveSetupParams === 'function') {
+          global.setupStorage.saveSetupParams(guildId, setupParams);
+          console.log(`[VouchSelect] Saved setup params using global.setupStorage`);
+        }
+      }
+      
+      // Try to save to instance settings if instance is available
       if (instance) {
-        // Update instance settings
         try {
-          // 1. Update instance properties directly
-          instance.vouchChannelId = finalVouchChannelId;
-          
-          // 2. Update the vouchHandler if it exists
-          if (instance.vouchHandler) {
-            instance.vouchHandler.vouchChannelId = finalVouchChannelId;
-            instance.vouchHandler.isDisabled = !enableVouches;
-            console.log(`[VouchSelect] Updated vouchHandler directly`);
-          } else if (instance.handlers && instance.handlers.vouchHandler) {
-            instance.handlers.vouchHandler.vouchChannelId = finalVouchChannelId;
-            instance.handlers.vouchHandler.isDisabled = !enableVouches;
-            console.log(`[VouchSelect] Updated handlers.vouchHandler`);
+          // Update instance properties directly
+          if (instance.vouchChannelId !== undefined) {
+            instance.vouchChannelId = finalVouchChannelId;
           }
           
-          // 3. Update custom settings
+          // Update instance settings
           if (!instance.customSettings) instance.customSettings = {};
           instance.customSettings.vouchChannelId = finalVouchChannelId;
           instance.customSettings.vouchEnabled = enableVouches;
           
-          // 4. Save via different methods based on availability
-          let saved = false;
+          console.log(`[VouchSelect] Updated instance properties directly`);
           
-          // Try instance.saveSettings first
-          if (typeof instance.saveSettings === 'function') {
-            await instance.saveSettings({ 
-              vouchChannelId: finalVouchChannelId,
-              vouchEnabled: enableVouches
-            });
-            saved = true;
-            console.log(`[VouchSelect] Saved settings via instance.saveSettings`);
-          }
-          
-          // Try instance manager if available and first attempt failed
-          if (!saved && instanceManager) {
-            await instanceManager.saveInstanceSettings(
-              instance.instanceId,
-              { 
-                vouchChannelId: finalVouchChannelId,
-                vouchEnabled: enableVouches
-              }
-            );
-            saved = true;
-            console.log(`[VouchSelect] Saved settings via instanceManager`);
-          }
-          
-          // Try directly saving if all else fails
-          if (!saved) {
-            // Direct save to file using fs and path
-            const fs = require('fs');
-            const path = require('path');
-            const settingsPath = path.join(__dirname, '..', 'instances', instance.instanceId, 'settings.json');
-            
-            // Read existing settings
-            let settings = {};
-            if (fs.existsSync(settingsPath)) {
-              try {
-                const data = fs.readFileSync(settingsPath, 'utf8');
-                settings = JSON.parse(data);
-              } catch (err) {
-                console.error(`[VouchSelect] Error reading settings:`, err);
-              }
-            }
-            
-            // Update settings
-            settings.vouchChannelId = finalVouchChannelId;
-            settings.vouchEnabled = enableVouches;
+          // Try to save instance settings to file directly
+          try {
+            const instanceId = instance.instanceId || guildId;
+            const settingsPath = path.join(__dirname, '..', 'instances', instanceId, 'settings.json');
             
             // Ensure directory exists
             const dir = path.dirname(settingsPath);
@@ -141,31 +128,35 @@ class VouchSelectMenu extends SelectMenu {
               fs.mkdirSync(dir, { recursive: true });
             }
             
+            // Read existing settings if available
+            let settings = {};
+            if (fs.existsSync(settingsPath)) {
+              try {
+                const data = fs.readFileSync(settingsPath, 'utf8');
+                settings = JSON.parse(data);
+              } catch (readError) {
+                console.error(`[VouchSelect] Error reading settings file:`, readError);
+              }
+            }
+            
+            // Update settings
+            settings.vouchChannelId = finalVouchChannelId;
+            settings.vouchEnabled = enableVouches;
+            
             // Write settings
             fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-            console.log(`[VouchSelect] Directly saved settings to file`);
+            console.log(`[VouchSelect] Saved instance settings directly to file`);
+          } catch (settingsError) {
+            console.error(`[VouchSelect] Error saving instance settings:`, settingsError);
           }
-          
-          const status = disableVouches ? 
-            "disabled" : 
-            (useSameAsTranscript ? "set to use transcript channel" : `set to ${finalVouchChannelId}`);
-          
-          console.log(`[VouchSelect] Vouches ${status} for instance ${instance.instanceId}`);
-        } catch (saveError) {
-          console.error(`[VouchSelect] Error saving settings:`, saveError);
+        } catch (instanceError) {
+          console.error(`[VouchSelect] Error updating instance:`, instanceError);
         }
+      } else {
+        console.log(`[VouchSelect] No instance available, skipping instance update`);
       }
       
-      // Save to setup params
-      global.setupStorage.saveSetupParams(guildId, setupParams);
-      
-      const status = disableVouches ? 
-        "disabled" : 
-        (useSameAsTranscript ? "set to use transcript channel" : `set to ${finalVouchChannelId}`);
-      
-      console.log(`[VouchSelect] Vouches ${status} for guild ${guildId}`);
-      
-      // Verify channel exists if it's a regular channel
+      // Verify channel existence for regular channel selection
       if (!disableVouches && !useSameAsTranscript) {
         const selectedChannel = interaction.guild.channels.cache.get(selectedValue);
         if (!selectedChannel) {
@@ -182,37 +173,70 @@ class VouchSelectMenu extends SelectMenu {
       if (disableVouches) {
         channelText = "Vouches disabled";
       } else if (useSameAsTranscript) {
-        const transcriptChannelId = instance ? 
-          instance.transcriptChannelId : 
-          setupParams.transcriptChannelId;
+        const transcriptChannelId = setupParams.transcriptChannelId;
         channelText = `Using transcript channel for vouches (<#${transcriptChannelId}>)`;
       } else {
         channelText = `Vouch channel: <#${selectedValue}>`;
       }
       
+      // Create customize options buttons
+      const customizeRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("customize_messages")
+          .setLabel("Customize Messages")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("continue_default")
+          .setLabel("Continue with Defaults")
+          .setStyle(ButtonStyle.Secondary)
+      );
+      
       await interaction.editReply({
-        content: `✅ Settings updated successfully!\n\n${channelText}`,
-        components: [],
+        content: `✅ Settings updated successfully!\n\n${channelText}\n\nWould you like to customize the messages users will see?\n\nYou can include \`{name}\` in messages to insert the user's name automatically and \`{phoneNumber}\` for their phone number.`,
+        components: [customizeRow],
       });
       
-      // Force update of instance configs
-      if (instanceManager && instanceManager.configs && instance.instanceId) {
-        if (!instanceManager.configs[instance.instanceId]) {
-          instanceManager.configs[instance.instanceId] = {};
+      // Try updating instance_configs.json directly
+      try {
+        const configPath = path.join(__dirname, '..', 'instance_configs.json');
+        if (fs.existsSync(configPath)) {
+          let configs = {};
+          try {
+            const data = fs.readFileSync(configPath, 'utf8');
+            configs = JSON.parse(data);
+          } catch (readConfigError) {
+            console.error(`[VouchSelect] Error reading instance configs:`, readConfigError);
+          }
+          
+          // Update config for this guild
+          const instanceId = instance?.instanceId || guildId;
+          if (!configs[instanceId]) {
+            configs[instanceId] = {
+              guildId: guildId
+            };
+          }
+          
+          configs[instanceId].vouchChannelId = finalVouchChannelId;
+          configs[instanceId].vouchEnabled = enableVouches;
+          
+          // Save updated configs
+          fs.writeFileSync(configPath, JSON.stringify(configs, null, 2), 'utf8');
+          console.log(`[VouchSelect] Updated instance configs directly`);
         }
-        
-        instanceManager.configs[instance.instanceId].vouchChannelId = finalVouchChannelId;
-        
-        instanceManager.saveConfigurations();
-        console.log(`[VouchSelect] Updated instance configs`);
+      } catch (configError) {
+        console.error(`[VouchSelect] Error updating instance configs:`, configError);
       }
     } catch (error) {
-      console.error("Error in vouch channel selection:", error);
+      console.error("[VouchSelect] Error in vouch channel selection:", error);
       
-      await interaction.editReply({
-        content: "Channel selection failed: " + error.message,
-        components: [],
-      });
+      try {
+        await interaction.editReply({
+          content: "Channel selection failed: " + error.message,
+          components: [],
+        });
+      } catch (replyError) {
+        console.error("[VouchSelect] Error sending error message:", replyError);
+      }
     }
   }
 }

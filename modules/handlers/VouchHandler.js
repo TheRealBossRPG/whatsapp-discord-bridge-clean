@@ -39,6 +39,9 @@ class VouchHandler {
     // Custom vouch success message
     this.vouchSuccessMessage = "✅ Thank you for your vouch! It has been posted to our community channel.";
     
+    // Error message for empty vouch
+    this.emptyVouchMessage = "Please provide more details with your vouch! Just add your feedback after 'Vouch!'";
+    
     // Create directories if they don't exist
     for (const dir of [this.tempDir, this.assetsDir]) {
       if (!fs.existsSync(dir)) {
@@ -331,65 +334,17 @@ class VouchHandler {
           
           // Send with correct media type
           if (mediaPath.endsWith('.gif')) {
-            // FIXED: Check for proper method to send media with @whiskeysockets/baileys
-            if (typeof this.whatsAppClient.sendMessage === 'function') {
-              // Standard method
-              await this.whatsAppClient.sendMessage(recipientJid, {
-                image: mediaBuffer,
-                caption: messageText,
-                mimetype: mediaType
-              });
-            } else if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.sendMessage === 'function') {
-              // If client has a sock property (common in newer baileys versions)
-              await this.whatsAppClient.sock.sendMessage(recipientJid, {
-                image: mediaBuffer,
-                caption: messageText,
-                mimetype: mediaType
-              });
-            } else if (this.whatsAppClient.send && typeof this.whatsAppClient.send.image === 'function') {
-              // Some clients use a send object with specific methods
-              await this.whatsAppClient.send.image(recipientJid, mediaBuffer, messageText);
-            } else {
-              // Fallback to looking for any send method
-              const sendMethod = this.findSendMethod(this.whatsAppClient);
-              if (sendMethod) {
-                await sendMethod(recipientJid, {
-                  image: mediaBuffer,
-                  caption: messageText,
-                  mimetype: mediaType
-                });
-              } else {
-                throw new Error("Could not find suitable send method on WhatsApp client");
-              }
-            }
+            await this.sendMediaMessage(recipientJid, {
+              image: mediaBuffer,
+              caption: messageText,
+              mimetype: mediaType
+            });
           } else {
-            // Similar pattern for video
-            if (typeof this.whatsAppClient.sendMessage === 'function') {
-              await this.whatsAppClient.sendMessage(recipientJid, {
-                video: mediaBuffer,
-                caption: messageText,
-                mimetype: mediaType
-              });
-            } else if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.sendMessage === 'function') {
-              await this.whatsAppClient.sock.sendMessage(recipientJid, {
-                video: mediaBuffer,
-                caption: messageText,
-                mimetype: mediaType
-              });
-            } else if (this.whatsAppClient.send && typeof this.whatsAppClient.send.video === 'function') {
-              await this.whatsAppClient.send.video(recipientJid, mediaBuffer, messageText);
-            } else {
-              const sendMethod = this.findSendMethod(this.whatsAppClient);
-              if (sendMethod) {
-                await sendMethod(recipientJid, {
-                  video: mediaBuffer,
-                  caption: messageText,
-                  mimetype: mediaType
-                });
-              } else {
-                throw new Error("Could not find suitable send method on WhatsApp client");
-              }
-            }
+            await this.sendMediaMessage(recipientJid, {
+              video: mediaBuffer,
+              caption: messageText,
+              mimetype: mediaType
+            });
           }
           
           console.log(`[VouchHandler:${this.instanceId}] Sent vouch instructions with media to ${name} (${phoneNumber})`);
@@ -403,21 +358,7 @@ class VouchHandler {
       
       // Send as text-only message
       try {
-        // FIXED: Check for proper method to send text with @whiskeysockets/baileys
-        if (typeof this.whatsAppClient.sendMessage === 'function') {
-          await this.whatsAppClient.sendMessage(recipientJid, { text: messageText });
-        } else if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.sendMessage === 'function') {
-          await this.whatsAppClient.sock.sendMessage(recipientJid, { text: messageText });
-        } else if (this.whatsAppClient.send && typeof this.whatsAppClient.send.text === 'function') {
-          await this.whatsAppClient.send.text(recipientJid, messageText);
-        } else {
-          const sendMethod = this.findSendMethod(this.whatsAppClient);
-          if (sendMethod) {
-            await sendMethod(recipientJid, { text: messageText });
-          } else {
-            throw new Error("Could not find suitable send method on WhatsApp client");
-          }
-        }
+        await this.sendTextMessage(recipientJid, messageText);
         
         console.log(`[VouchHandler:${this.instanceId}] Sent vouch instructions to ${name} (${phoneNumber})`);
         return true;
@@ -434,6 +375,147 @@ class VouchHandler {
   }
   
   /**
+   * Unified method to send text messages via WhatsApp
+   * @param {string} jid - Recipient JID
+   * @param {string} text - Message text
+   * @returns {Promise<boolean>} - Success status
+   */
+  async sendTextMessage(jid, text) {
+    try {
+      // Ensure the message is directly passed as text
+      const messageContent = { text };
+      
+      // Log the sending attempt with complete jid
+      console.log(`[VouchHandler:${this.instanceId}] Attempting to send text message to ${jid}: ${text.substring(0, 30)}...`);
+      
+      // Try multiple methods to send the message
+      
+      // Method 1: Check for socket direct access (most common in @whiskeysockets/baileys)
+      if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.sendMessage === 'function') {
+        await this.whatsAppClient.sock.sendMessage(jid, messageContent);
+        console.log(`[VouchHandler:${this.instanceId}] Message sent via sock.sendMessage`);
+        return true;
+      }
+      
+      // Method 2: Check for sendMessage on client (direct method)
+      if (typeof this.whatsAppClient.sendMessage === 'function') {
+        await this.whatsAppClient.sendMessage(jid, messageContent);
+        console.log(`[VouchHandler:${this.instanceId}] Message sent via client.sendMessage`);
+        return true;
+      }
+      
+      // Method 3: Check for specific text send method
+      if (this.whatsAppClient.send && typeof this.whatsAppClient.send.text === 'function') {
+        await this.whatsAppClient.send.text(jid, text);
+        console.log(`[VouchHandler:${this.instanceId}] Message sent via client.send.text`);
+        return true;
+      }
+      
+      // Method 4: Try to access _events.message if it's a function (sometimes used by baileys)
+      if (this.whatsAppClient._events && typeof this.whatsAppClient._events.message === 'function') {
+        await this.whatsAppClient._events.message(jid, messageContent);
+        console.log(`[VouchHandler:${this.instanceId}] Message sent via _events.message`);
+        return true;
+      }
+      
+      // Method 5: Look for any dynamic sendMessage function anywhere in the client
+      const sendMethod = this.findSendMethod(this.whatsAppClient);
+      if (sendMethod) {
+        await sendMethod(jid, messageContent);
+        console.log(`[VouchHandler:${this.instanceId}] Message sent via discovered sendMethod`);
+        return true;
+      }
+      
+      // Log all available methods for debugging
+      this.logAvailableMethods();
+      
+      throw new Error("Could not find suitable send method on WhatsApp client");
+    } catch (error) {
+      console.error(`[VouchHandler:${this.instanceId}] Error in sendTextMessage to ${jid}:`, error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Log available methods on the WhatsApp client for debugging
+   */
+  logAvailableMethods() {
+    try {
+      console.log(`[VouchHandler:${this.instanceId}] Client properties:`, Object.keys(this.whatsAppClient));
+      
+      if (this.whatsAppClient.sock) {
+        console.log(`[VouchHandler:${this.instanceId}] Client.sock properties:`, Object.keys(this.whatsAppClient.sock));
+      }
+      
+      if (this.whatsAppClient.send) {
+        console.log(`[VouchHandler:${this.instanceId}] Client.send properties:`, Object.keys(this.whatsAppClient.send));
+      }
+      
+      if (this.whatsAppClient._events) {
+        console.log(`[VouchHandler:${this.instanceId}] Client._events properties:`, Object.keys(this.whatsAppClient._events));
+      }
+    } catch (error) {
+      console.error(`[VouchHandler:${this.instanceId}] Error logging methods:`, error);
+    }
+  }
+  
+  /**
+   * Unified method to send media messages via WhatsApp
+   * @param {string} jid - Recipient JID
+   * @param {Object} content - Media content object
+   * @returns {Promise<boolean>} - Success status
+   */
+  async sendMediaMessage(jid, content) {
+    try {
+      console.log(`[VouchHandler:${this.instanceId}] Attempting to send media message to ${jid}`);
+      
+      // Check for socket direct access
+      if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.sendMessage === 'function') {
+        await this.whatsAppClient.sock.sendMessage(jid, content);
+        console.log(`[VouchHandler:${this.instanceId}] Media sent via sock.sendMessage`);
+        return true;
+      }
+      
+      // Check for sendMessage method
+      if (typeof this.whatsAppClient.sendMessage === 'function') {
+        await this.whatsAppClient.sendMessage(jid, content);
+        console.log(`[VouchHandler:${this.instanceId}] Media sent via client.sendMessage`);
+        return true;
+      }
+      
+      // Check for specific media send methods
+      if (this.whatsAppClient.send) {
+        if (content.image && typeof this.whatsAppClient.send.image === 'function') {
+          await this.whatsAppClient.send.image(jid, content.image, content.caption);
+          console.log(`[VouchHandler:${this.instanceId}] Media sent via client.send.image`);
+          return true;
+        }
+        if (content.video && typeof this.whatsAppClient.send.video === 'function') {
+          await this.whatsAppClient.send.video(jid, content.video, content.caption);
+          console.log(`[VouchHandler:${this.instanceId}] Media sent via client.send.video`);
+          return true;
+        }
+      }
+      
+      // Try to find any sendMessage method in the client
+      const sendMethod = this.findSendMethod(this.whatsAppClient);
+      if (sendMethod) {
+        await sendMethod(jid, content);
+        console.log(`[VouchHandler:${this.instanceId}] Media sent via discovered sendMethod`);
+        return true;
+      }
+      
+      // Log all available methods for debugging
+      this.logAvailableMethods();
+      
+      throw new Error("Could not find suitable send method on WhatsApp client");
+    } catch (error) {
+      console.error(`[VouchHandler:${this.instanceId}] Error in sendMediaMessage:`, error);
+      throw error;
+    }
+  }
+  
+  /**
    * Find an appropriate send method on the WhatsApp client
    * @param {Object} client - WhatsApp client
    * @returns {Function|null} - Send method or null if not found
@@ -446,7 +528,10 @@ class VouchHandler {
       'waSocket.sendMessage', 
       'wa.sendMessage',
       'whatsapp.sendMessage',
-      'baileys.sendMessage'
+      'baileys.sendMessage',
+      '_events.message',
+      'client.sendMessage',
+      'api.sendMessage'
     ];
     
     // Check each path
@@ -469,31 +554,48 @@ class VouchHandler {
       }
     }
     
-    // Log client keys for debugging
+    // Search deeply for any potential send methods
     try {
-      console.log(`[VouchHandler:${this.instanceId}] Available client properties: ${Object.keys(client).join(', ')}`);
+      console.log(`[VouchHandler:${this.instanceId}] Looking for any send method...`);
       
       // Check for any method that might be a send function
       for (const key of Object.keys(client)) {
+        // Skip internal or private properties
+        if (key.startsWith('_') && key !== '_events') continue;
+        
         if (typeof client[key] === 'function' && 
             (key.includes('send') || key.includes('message') || key.includes('chat'))) {
           console.log(`[VouchHandler:${this.instanceId}] Found potential send method: ${key}`);
           return client[key].bind(client);
         }
         
-        // Check one level deeper
+        // Check one level deeper for objects
         if (client[key] && typeof client[key] === 'object') {
           for (const subKey of Object.keys(client[key])) {
+            // Skip internal properties
+            if (subKey.startsWith('_') && subKey !== '_events') continue;
+            
             if (typeof client[key][subKey] === 'function' && 
                 (subKey.includes('send') || subKey.includes('message') || subKey.includes('chat'))) {
               console.log(`[VouchHandler:${this.instanceId}] Found potential nested send method: ${key}.${subKey}`);
               return client[key][subKey].bind(client[key]);
             }
+            
+            // Check one more level deeper
+            if (client[key][subKey] && typeof client[key][subKey] === 'object') {
+              for (const deepKey of Object.keys(client[key][subKey])) {
+                if (typeof client[key][subKey][deepKey] === 'function' && 
+                    (deepKey.includes('send') || deepKey.includes('message'))) {
+                  console.log(`[VouchHandler:${this.instanceId}] Found deep nested send method: ${key}.${subKey}.${deepKey}`);
+                  return client[key][subKey][deepKey].bind(client[key][subKey]);
+                }
+              }
+            }
           }
         }
       }
     } catch (error) {
-      console.error(`[VouchHandler:${this.instanceId}] Error inspecting client:`, error);
+      console.error(`[VouchHandler:${this.instanceId}] Error searching for send methods:`, error);
     }
     
     return null;
@@ -505,22 +607,103 @@ class VouchHandler {
    * @returns {string|null} - Message text or null if not found
    */
   extractMessageText(message) {
-    if (!message || !message.message) return null;
-    
-    // Check different message types
-    if (message.message.conversation) {
-      return message.message.conversation;
-    } else if (message.message.extendedTextMessage && message.message.extendedTextMessage.text) {
-      return message.message.extendedTextMessage.text;
-    } else if (message.message.imageMessage && message.message.imageMessage.caption) {
-      return message.message.imageMessage.caption;
-    } else if (message.message.videoMessage && message.message.videoMessage.caption) {
-      return message.message.videoMessage.caption;
-    } else if (message.message.documentMessage && message.message.documentMessage.caption) {
-      return message.message.documentMessage.caption;
+    // First do a sanity check on the message
+    if (!message) {
+      console.log(`[VouchHandler:${this.instanceId}] Message is null or undefined`);
+      return null;
     }
     
-    return null;
+    try {
+      // Handle direct string or text property
+      if (typeof message === 'string') {
+        return message;
+      }
+      
+      if (message.text) {
+        return message.text;
+      }
+      
+      if (message.caption) {
+        return message.caption;
+      }
+      
+      if (message.content) {
+        return message.content;
+      }
+      
+      // Handle @whiskeysockets/baileys message structure
+      if (message.message) {
+        // Standard text types
+        if (message.message.conversation) {
+          return message.message.conversation;
+        }
+        
+        if (message.message.extendedTextMessage && message.message.extendedTextMessage.text) {
+          return message.message.extendedTextMessage.text;
+        }
+        
+        // Media with captions
+        if (message.message.imageMessage && message.message.imageMessage.caption) {
+          return message.message.imageMessage.caption;
+        }
+        
+        if (message.message.videoMessage && message.message.videoMessage.caption) {
+          return message.message.videoMessage.caption;
+        }
+        
+        if (message.message.documentMessage && message.message.documentMessage.caption) {
+          return message.message.documentMessage.caption;
+        }
+        
+        // Button responses
+        if (message.message.buttonsResponseMessage && message.message.buttonsResponseMessage.selectedDisplayText) {
+          return message.message.buttonsResponseMessage.selectedDisplayText;
+        }
+        
+        if (message.message.listResponseMessage && message.message.listResponseMessage.title) {
+          return message.message.listResponseMessage.title;
+        }
+        
+        if (message.message.templateButtonReplyMessage) {
+          return message.message.templateButtonReplyMessage.selectedDisplayText || 
+                 message.message.templateButtonReplyMessage.selectedId;
+        }
+      }
+      
+      // Log message structure for debugging
+      console.log(`[VouchHandler:${this.instanceId}] Message structure for debugging:`, 
+                 JSON.stringify(message, null, 2).substring(0, 500) + '...');
+      
+      return null;
+    } catch (error) {
+      console.error(`[VouchHandler:${this.instanceId}] Error extracting message text:`, error);
+      return null;
+    }
+  }
+  
+  /**
+   * Check if message contains an image or other media
+   * @param {Object} message - WhatsApp message 
+   * @returns {boolean} - Whether the message contains media
+   */
+  hasMedia(message) {
+    if (!message || !message.message) return false;
+    
+    return !!(
+      message.message.imageMessage ||
+      message.message.videoMessage ||
+      message.message.documentMessage ||
+      message.message.stickerMessage ||
+      message.message.audioMessage ||
+      // Also check for any keys that might contain media
+      Object.keys(message.message).some(key => 
+        key.includes('image') || 
+        key.includes('video') || 
+        key.includes('media') || 
+        key.includes('document') ||
+        key.includes('sticker')
+      )
+    );
   }
   
   /**
@@ -535,34 +718,54 @@ class VouchHandler {
         return null;
       }
       
+      console.log(`[VouchHandler:${this.instanceId}] Attempting to download media from message`);
+      
       // Try multiple methods to download media based on the WhatsApp client
-      try {
-        // Method 1: Try downloadMediaMessage (most common)
-        if (typeof this.whatsAppClient.downloadMediaMessage === 'function') {
-          return await this.whatsAppClient.downloadMediaMessage(message);
-        }
-        
-        // Method 2: Try sock.downloadMediaMessage
-        if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.downloadMediaMessage === 'function') {
-          return await this.whatsAppClient.sock.downloadMediaMessage(message);
-        }
-        
-        // Method 3: Try downloadMedia
-        if (typeof this.whatsAppClient.downloadMedia === 'function') {
-          return await this.whatsAppClient.downloadMedia(message);
-        }
-        
-        // Method 4: Try download (older versions)
-        if (typeof this.whatsAppClient.download === 'function') {
-          return await this.whatsAppClient.download(message);
-        }
-        
-        console.error(`[VouchHandler:${this.instanceId}] No download method available`);
-        return null;
-      } catch (downloadError) {
-        console.error(`[VouchHandler:${this.instanceId}] Error downloading media:`, downloadError);
-        return null;
+      
+      // Method 1: Try sock.downloadMediaMessage (most common in @whiskeysockets/baileys)
+      if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.downloadMediaMessage === 'function') {
+        console.log(`[VouchHandler:${this.instanceId}] Trying sock.downloadMediaMessage`);
+        const buffer = await this.whatsAppClient.sock.downloadMediaMessage(message);
+        if (buffer) return buffer;
       }
+      
+      // Method 2: Try downloadMediaMessage on the client
+      if (typeof this.whatsAppClient.downloadMediaMessage === 'function') {
+        console.log(`[VouchHandler:${this.instanceId}] Trying client.downloadMediaMessage`);
+        const buffer = await this.whatsAppClient.downloadMediaMessage(message);
+        if (buffer) return buffer;
+      }
+      
+      // Method 3: Try downloadMedia
+      if (typeof this.whatsAppClient.downloadMedia === 'function') {
+        console.log(`[VouchHandler:${this.instanceId}] Trying client.downloadMedia`);
+        const buffer = await this.whatsAppClient.downloadMedia(message);
+        if (buffer) return buffer;
+      }
+      
+      // Method 4: Try download (older versions)
+      if (typeof this.whatsAppClient.download === 'function') {
+        console.log(`[VouchHandler:${this.instanceId}] Trying client.download`);
+        const buffer = await this.whatsAppClient.download(message);
+        if (buffer) return buffer;
+      }
+      
+      // Method 5: Check for additional methods specific to @whiskeysockets/baileys
+      if (this.whatsAppClient.downloadAndSaveMediaMessage) {
+        console.log(`[VouchHandler:${this.instanceId}] Trying client.downloadAndSaveMediaMessage`);
+        // Generate a temporary path
+        const tempPath = path.join(this.tempDir, `temp-media-${Date.now()}`);
+        await this.whatsAppClient.downloadAndSaveMediaMessage(message, tempPath);
+        if (fs.existsSync(tempPath)) {
+          const buffer = fs.readFileSync(tempPath);
+          // Clean up temp file
+          fs.unlinkSync(tempPath);
+          return buffer;
+        }
+      }
+      
+      console.error(`[VouchHandler:${this.instanceId}] No suitable download method found`);
+      return null;
     } catch (error) {
       console.error(`[VouchHandler:${this.instanceId}] Error in downloadMedia:`, error);
       return null;
@@ -571,7 +774,6 @@ class VouchHandler {
   
   /**
    * Handle a vouch from WhatsApp
-   * IMPORTANT: This is the original method name that's being called
    * @param {string} phoneNumber - Sender's phone number
    * @param {Object} messageContent - Content of the message
    * @param {Object} userCard - User card from manager
@@ -610,42 +812,22 @@ class VouchHandler {
         }
       }
       
+      // Ensure the phoneNumber is in the correct format for responses
+      let cleanPhone = String(phoneNumber).replace(/\D/g, '');
+      cleanPhone = cleanPhone.replace(/^\+/, '');
+      const recipientJid = `${cleanPhone}@s.whatsapp.net`;
+      
       // Check if vouch text is substantial enough
-      if (vouchText.length < 2) {
+      if (vouchText.length < 3) {
         // Vouch text too short - ask for more detail
-        const cleanPhone = String(phoneNumber).replace(/\D/g, '').replace(/^\+/, '');
-        const recipientJid = `${cleanPhone}@s.whatsapp.net`;
+        console.log(`[VouchHandler:${this.instanceId}] Empty vouch detected ("${vouchText}"), sending error message`);
         
-        // FIXED: Use the proper send method
         try {
-          if (typeof this.whatsAppClient.sendMessage === 'function') {
-            await this.whatsAppClient.sendMessage(recipientJid, { 
-              text: "Please provide more details with your vouch! Just add your feedback after 'Vouch!'" 
-            });
-          } else if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.sendMessage === 'function') {
-            await this.whatsAppClient.sock.sendMessage(recipientJid, { 
-              text: "Please provide more details with your vouch! Just add your feedback after 'Vouch!'" 
-            });
-          } else if (this.whatsAppClient.send && typeof this.whatsAppClient.send.text === 'function') {
-            await this.whatsAppClient.send.text(
-              recipientJid, 
-              "Please provide more details with your vouch! Just add your feedback after 'Vouch!'"
-            );
-          } else {
-            const sendMethod = this.findSendMethod(this.whatsAppClient);
-            if (sendMethod) {
-              await sendMethod(recipientJid, { 
-                text: "Please provide more details with your vouch! Just add your feedback after 'Vouch!'" 
-              });
-            } else {
-              throw new Error("Could not find suitable send method on WhatsApp client");
-            }
-          }
+          await this.sendTextMessage(recipientJid, this.emptyVouchMessage);
+          console.log(`[VouchHandler:${this.instanceId}] Sent empty vouch error message to ${phoneNumber}`);
         } catch (sendError) {
-          console.error(`[VouchHandler:${this.instanceId}] Error sending vouch details prompt:`, sendError);
+          console.error(`[VouchHandler:${this.instanceId}] Error sending empty vouch error message:`, sendError);
         }
-        
-        console.log(`[VouchHandler:${this.instanceId}] Vouch text too short, requested more details`);
         return false;
       }
       
@@ -667,29 +849,45 @@ class VouchHandler {
       let mediaBuffer = null;
       let mediaType = null;
       let mediaFileName = null;
+      let hasMediaMessage = false;
       
+      // Check if message has media directly
       if (originalMessage) {
-        try {
-          if (originalMessage.message?.imageMessage) {
-            mediaBuffer = await this.downloadMedia(originalMessage);
-            mediaType = 'image';
-            mediaFileName = `vouch-image-${Date.now()}.jpg`;
-          } else if (originalMessage.message?.videoMessage) {
-            mediaBuffer = await this.downloadMedia(originalMessage);
-            mediaType = 'video';
-            mediaFileName = `vouch-video-${Date.now()}.mp4`;
-          } else if (originalMessage.message?.documentMessage) {
-            mediaBuffer = await this.downloadMedia(originalMessage);
-            mediaType = 'document';
-            mediaFileName = originalMessage.message.documentMessage.fileName || `vouch-doc-${Date.now()}.bin`;
+        hasMediaMessage = this.hasMedia(originalMessage);
+        console.log(`[VouchHandler:${this.instanceId}] Message has media: ${hasMediaMessage}`);
+        
+        if (hasMediaMessage) {
+          try {
+            if (originalMessage.message?.imageMessage) {
+              mediaBuffer = await this.downloadMedia(originalMessage);
+              mediaType = 'image';
+              mediaFileName = `vouch-image-${Date.now()}.jpg`;
+            } else if (originalMessage.message?.videoMessage) {
+              mediaBuffer = await this.downloadMedia(originalMessage);
+              mediaType = 'video';
+              mediaFileName = `vouch-video-${Date.now()}.mp4`;
+            } else if (originalMessage.message?.documentMessage) {
+              mediaBuffer = await this.downloadMedia(originalMessage);
+              mediaType = 'document';
+              mediaFileName = originalMessage.message.documentMessage.fileName || `vouch-doc-${Date.now()}.bin`;
+            } else {
+              // Generic fallback for any media - try to detect type
+              mediaBuffer = await this.downloadMedia(originalMessage);
+              if (mediaBuffer) {
+                mediaType = 'image'; // Default to image if unknown
+                mediaFileName = `vouch-media-${Date.now()}.jpg`;
+              }
+            }
+            
+            if (mediaBuffer) {
+              console.log(`[VouchHandler:${this.instanceId}] Downloaded media of type: ${mediaType}`);
+            } else {
+              console.log(`[VouchHandler:${this.instanceId}] Failed to download media`);
+            }
+          } catch (mediaError) {
+            console.error(`[VouchHandler:${this.instanceId}] Error processing media:`, mediaError);
+            // Continue without media
           }
-          
-          if (mediaBuffer) {
-            console.log(`[VouchHandler:${this.instanceId}] Vouch includes media of type: ${mediaType}`);
-          }
-        } catch (mediaError) {
-          console.error(`[VouchHandler:${this.instanceId}] Error processing media:`, mediaError);
-          // Continue without media
         }
       } else if (messageContent && messageContent.media) {
         // Handle case where media is provided directly in messageContent
@@ -697,6 +895,7 @@ class VouchHandler {
           mediaBuffer = messageContent.media;
           mediaType = messageContent.mediaType || 'image';
           mediaFileName = messageContent.fileName || `vouch-media-${Date.now()}.bin`;
+          hasMediaMessage = true;
         } catch (error) {
           console.error(`[VouchHandler:${this.instanceId}] Error with provided media:`, error);
           // Continue without media
@@ -725,25 +924,13 @@ class VouchHandler {
       
       // Send confirmation message
       if (success) {
-        const cleanPhone = String(phoneNumber).replace(/\D/g, '').replace(/^\+/, '');
-        const recipientJid = `${cleanPhone}@s.whatsapp.net`;
-        
-        // FIXED: Use the proper send method
         try {
-          if (typeof this.whatsAppClient.sendMessage === 'function') {
-            await this.whatsAppClient.sendMessage(recipientJid, { text: this.vouchSuccessMessage });
-          } else if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.sendMessage === 'function') {
-            await this.whatsAppClient.sock.sendMessage(recipientJid, { text: this.vouchSuccessMessage });
-          } else if (this.whatsAppClient.send && typeof this.whatsAppClient.send.text === 'function') {
-            await this.whatsAppClient.send.text(recipientJid, this.vouchSuccessMessage);
-          } else {
-            const sendMethod = this.findSendMethod(this.whatsAppClient);
-            if (sendMethod) {
-              await sendMethod(recipientJid, { text: this.vouchSuccessMessage });
-            } else {
-              throw new Error("Could not find suitable send method on WhatsApp client");
-            }
-          }
+          // Different success message if media was included
+          const successMessage = hasMediaMessage 
+            ? `${this.vouchSuccessMessage} We've also included your media attachment.`
+            : this.vouchSuccessMessage;
+            
+          await this.sendTextMessage(recipientJid, successMessage);
           console.log(`[VouchHandler:${this.instanceId}] Sent vouch success message to ${phoneNumber}`);
         } catch (sendError) {
           console.error(`[VouchHandler:${this.instanceId}] Error sending vouch success message:`, sendError);
@@ -784,8 +971,8 @@ class VouchHandler {
         return false;
       }
       
-      // Format the "Vouch from X to Y" title
-      let vouchTitle;
+      // Format the recipient string - "Vouch from X to Y"
+      let recipientString;
       if (helpers.length > 0) {
         // Join multiple helpers with commas for more than 2, or with "and" for 2
         const helpersFormatted = helpers.length === 1 
@@ -794,25 +981,24 @@ class VouchHandler {
             ? `${helpers[0]} and ${helpers[1]}` 
             : `${helpers.slice(0, -1).join(', ')} and ${helpers[helpers.length - 1]}`;
         
-        vouchTitle = `📣 Vouch from ${name} to ${helpersFormatted}`;
+        recipientString = `${name} to ${helpersFormatted}`;
       } else {
-        vouchTitle = `📣 Vouch from ${name}`;
+        recipientString = name;
       }
       
-      // Create embed for vouch
-      const embed = new EmbedBuilder()
-        .setColor('#25D366') // WhatsApp green
-        .setTitle(vouchTitle)
-        .setDescription(vouchText)
-        .addFields(
-          { name: 'Date', value: new Date().toLocaleDateString(), inline: true }
-        )
-        .setFooter({ text: `WhatsApp: ${phoneNumber}` })
-        .setTimestamp();
+      // Format date as shown in the screenshots (MM/DD/YYYY)
+      const today = new Date();
+      const dateString = `${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getDate().toString().padStart(2, '0')}/${today.getFullYear()}`;
       
-      // Add media if available
+      // Format time as shown in the screenshots (HH:MM AM/PM)
+      const hours = today.getHours();
+      const minutes = today.getMinutes().toString().padStart(2, '0');
+      const timeString = `${hours % 12 || 12}:${minutes} ${hours >= 12 ? 'PM' : 'AM'}`;
+      
+      // Create files array for attachments
       let files = [];
       
+      // Add media if available
       if (mediaBuffer && mediaFileName) {
         try {
           // Save to temp file
@@ -821,12 +1007,6 @@ class VouchHandler {
           
           // Add file to message
           files.push(new AttachmentBuilder(mediaPath, { name: mediaFileName }));
-          
-          // Add image to embed if it's an image
-          if (mediaType && mediaType.includes('image')) {
-            embed.setImage(`attachment://${mediaFileName}`);
-          }
-          
           console.log(`[VouchHandler:${this.instanceId}] Added media to vouch: ${mediaFileName}`);
         } catch (mediaError) {
           console.error(`[VouchHandler:${this.instanceId}] Error attaching media:`, mediaError);
@@ -834,9 +1014,13 @@ class VouchHandler {
         }
       }
       
-      // Send to channel
+      // Format message exactly like the screenshots
+      // Using the megaphone emoji and specific format
+      const messageContent = `📢 Vouch from ${recipientString}\n${vouchText}\nDate\n${dateString}\nWhatsApp: ${phoneNumber} • Today at ${timeString}`;
+      
+      // Send to channel with the exact format from the screenshots
       await vouchChannel.send({
-        embeds: [embed],
+        content: messageContent,
         files
       });
       
@@ -858,20 +1042,102 @@ class VouchHandler {
       // Skip if disabled or no message
       if (this.isDisabled || !message) return false;
       
+      // Log full message for debugging
+      console.log(`[VouchHandler:${this.instanceId}] Processing message for vouch detection:`, 
+                 JSON.stringify(message, (key, value) => {
+                   // Omit binary data and circular references
+                   if (key === 'data' && typeof value === 'string' && value.length > 100) {
+                     return '[BINARY DATA]';
+                   }
+                   return value;
+                 }, 2).substring(0, 500) + '...');
+      
       // Extract text from message
       const messageText = this.extractMessageText(message);
-      if (!messageText) return false;
+      console.log(`[VouchHandler:${this.instanceId}] Extracted message text: "${messageText}"`);
       
-      // Check if it's a vouch message
-      if (!messageText.trim().toLowerCase().startsWith('vouch!')) {
+      if (!messageText) {
+        console.log(`[VouchHandler:${this.instanceId}] No text found in message, checking if it's a media message`);
+        
+        // If no text but has media, check message key for "Vouch!" in client display
+        if (this.hasMedia(message) && message.key && message.key.fromMe === false) {
+          // Extract message ID or other identifier
+          const messageId = message.key.id;
+          console.log(`[VouchHandler:${this.instanceId}] Media message detected with ID: ${messageId}`);
+          
+          // Try to find "Vouch!" in any context property
+          let isVouch = false;
+          
+          // Check various properties where "Vouch!" might be indicated
+          if (message.message && message.message.imageMessage && message.message.imageMessage.caption) {
+            isVouch = message.message.imageMessage.caption.trim().toLowerCase().startsWith('vouch!');
+          } else if (message.message && message.message.videoMessage && message.message.videoMessage.caption) {
+            isVouch = message.message.videoMessage.caption.trim().toLowerCase().startsWith('vouch!');
+          } else if (message.message && message.message.documentMessage && message.message.documentMessage.caption) {
+            isVouch = message.message.documentMessage.caption.trim().toLowerCase().startsWith('vouch!');
+          }
+          
+          if (isVouch) {
+            console.log(`[VouchHandler:${this.instanceId}] Media message with "Vouch!" caption detected`);
+            
+            // Extract sender JID
+            const sender = message.key.remoteJid;
+            if (!sender) {
+              console.log(`[VouchHandler:${this.instanceId}] No sender JID found in media message`);
+              return false;
+            }
+            
+            const phoneNumber = sender.split('@')[0];
+            
+            // Get user info
+            const userCard = this.userCardManager ? 
+              await this.userCardManager.getUserInfo(phoneNumber) : null;
+            
+            // Extract caption as the vouch text
+            let vouchText = '';
+            if (message.message.imageMessage && message.message.imageMessage.caption) {
+              vouchText = message.message.imageMessage.caption.replace(/^vouch!/i, '').trim();
+            } else if (message.message.videoMessage && message.message.videoMessage.caption) {
+              vouchText = message.message.videoMessage.caption.replace(/^vouch!/i, '').trim();
+            } else if (message.message.documentMessage && message.message.documentMessage.caption) {
+              vouchText = message.message.documentMessage.caption.replace(/^vouch!/i, '').trim();
+            }
+            
+            // If no valid text, use a placeholder
+            if (!vouchText || vouchText.length < 2) {
+              vouchText = "Shared media content";
+            }
+            
+            // Process the media vouch
+            return await this.handleVouch(
+              phoneNumber,
+              { text: vouchText },
+              userCard,
+              message
+            );
+          }
+        }
+        
         return false;
       }
       
+      // Check if it's a vouch message by looking for "Vouch!" at the beginning
+      if (!messageText.trim().toLowerCase().startsWith('vouch!')) {
+        console.log(`[VouchHandler:${this.instanceId}] Message is not a vouch`);
+        return false;
+      }
+      
+      console.log(`[VouchHandler:${this.instanceId}] Vouch message detected: "${messageText}"`);
+      
       // Extract phone number from the message
-      const sender = message.key.remoteJid;
-      if (!sender) return false;
+      const sender = message.key?.remoteJid;
+      if (!sender) {
+        console.error(`[VouchHandler:${this.instanceId}] Could not find sender JID in message`);
+        return false;
+      }
       
       const phoneNumber = sender.split('@')[0];
+      console.log(`[VouchHandler:${this.instanceId}] Extracted phone number: ${phoneNumber}`);
       
       // Get user info
       const userCard = this.userCardManager ? 

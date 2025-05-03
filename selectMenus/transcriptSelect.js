@@ -1,7 +1,8 @@
 // Updated selectMenus/transcriptSelect.js
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const SelectMenu = require('../templates/SelectMenu');
-const InteractionTracker = require('../utils/InteractionTracker');
+const fs = require('fs');
+const path = require('path');
 
 class TranscriptSelectMenu extends SelectMenu {
   constructor() {
@@ -12,214 +13,92 @@ class TranscriptSelectMenu extends SelectMenu {
   
   async execute(interaction, instance) {
     try {
-      await interaction.deferUpdate();
+      await interaction.deferUpdate().catch(err => {
+        console.error(`[TranscriptSelect] Error deferring update:`, err);
+      });
       
       // Get the selected option
       const selectedValue = interaction.values[0];
       
-      // Get instance manager for saving settings
-      let instanceManager;
-      try {
-        instanceManager = require('../core/InstanceManager');
-      } catch (err) {
-        console.error(`[TranscriptSelect] Error loading InstanceManager:`, err);
-      }
-      
-      // Update setup params
+      // Update setup params directly
       const guildId = interaction.guild.id;
-      const setupParams = global.setupStorage.getSetupParams(guildId) || {};
+      let setupParams = {};
       
-      // Handle the "no_transcripts" special value
-      if (selectedValue === "no_transcripts") {
-        // Disable transcripts
-        setupParams.transcriptChannelId = null;
-        
-        if (instance) {
-          // Update instance settings
-          try {
-            // 1. Update the instance property directly
-            instance.transcriptChannelId = null;
-            
-            // 2. Update the instance's transcriptManager if it exists
-            if (instance.transcriptManager) {
-              instance.transcriptManager.transcriptChannelId = null;
-              instance.transcriptManager.isDisabled = true;
-              console.log(`[TranscriptSelect] Updated transcriptManager directly`);
-            } else if (instance.managers && instance.managers.transcriptManager) {
-              instance.managers.transcriptManager.transcriptChannelId = null;
-              instance.managers.transcriptManager.isDisabled = true;
-              console.log(`[TranscriptSelect] Updated managers.transcriptManager`);
-            }
-            
-            // 3. Update custom settings
-            if (!instance.customSettings) instance.customSettings = {};
-            instance.customSettings.transcriptChannelId = null;
-            instance.customSettings.transcriptsEnabled = false;
-            
-            // 4. Save via different methods based on availability
-            let saved = false;
-            
-            // Try instance.saveSettings first
-            if (typeof instance.saveSettings === 'function') {
-              await instance.saveSettings({ 
-                transcriptChannelId: null,
-                transcriptsEnabled: false
-              });
-              saved = true;
-              console.log(`[TranscriptSelect] Saved settings via instance.saveSettings`);
-            }
-            
-            // Try instance manager if available and first attempt failed
-            if (!saved && instanceManager) {
-              await instanceManager.saveInstanceSettings(
-                instance.instanceId,
-                { 
-                  transcriptChannelId: null,
-                  transcriptsEnabled: false
-                }
-              );
-              saved = true;
-              console.log(`[TranscriptSelect] Saved settings via instanceManager`);
-            }
-            
-            // Try directly saving if all else fails
-            if (!saved) {
-              // Direct save to file using fs and path
-              const fs = require('fs');
-              const path = require('path');
-              const settingsPath = path.join(__dirname, '..', 'instances', instance.instanceId, 'settings.json');
-              
-              // Read existing settings
-              let settings = {};
-              if (fs.existsSync(settingsPath)) {
-                try {
-                  const data = fs.readFileSync(settingsPath, 'utf8');
-                  settings = JSON.parse(data);
-                } catch (err) {
-                  console.error(`[TranscriptSelect] Error reading settings:`, err);
-                }
-              }
-              
-              // Update settings
-              settings.transcriptChannelId = null;
-              settings.transcriptsEnabled = false;
-              
-              // Ensure directory exists
-              const dir = path.dirname(settingsPath);
-              if (!fs.existsSync(dir)) {
-                fs.mkdirSync(dir, { recursive: true });
-              }
-              
-              // Write settings
-              fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-              console.log(`[TranscriptSelect] Directly saved settings to file`);
-            }
-            
-            console.log(`[TranscriptSelect] Disabled transcripts for instance ${instance.instanceId}`);
-          } catch (saveError) {
-            console.error(`[TranscriptSelect] Error saving settings:`, saveError);
-          }
+      // Load existing setup params
+      try {
+        const setupStoragePath = path.join(__dirname, '..', 'setup_storage', `${guildId}_setup.json`);
+        if (fs.existsSync(setupStoragePath)) {
+          const setupData = fs.readFileSync(setupStoragePath, 'utf8');
+          setupParams = JSON.parse(setupData);
+          console.log(`[TranscriptSelect] Loaded setup params directly from file`);
+        } else if (global.setupStorage && typeof global.setupStorage.getSetupParams === 'function') {
+          const params = global.setupStorage.getSetupParams(guildId);
+          if (params) setupParams = params;
+          console.log(`[TranscriptSelect] Loaded setup params from global.setupStorage`);
         }
-        
-        global.setupStorage.saveSetupParams(guildId, setupParams);
-        console.log(`[TranscriptSelect] Disabled transcripts for guild ${guildId}`);
-      } else {
-        // Regular channel selection
-        const transcriptChannelId = selectedValue;
-        setupParams.transcriptChannelId = transcriptChannelId;
-        
-        if (instance) {
-          // Update instance settings
-          try {
-            // 1. Update the instance property directly
-            instance.transcriptChannelId = transcriptChannelId;
-            
-            // 2. Update the instance's transcriptManager if it exists
-            if (instance.transcriptManager) {
-              instance.transcriptManager.transcriptChannelId = transcriptChannelId;
-              instance.transcriptManager.isDisabled = false;
-              console.log(`[TranscriptSelect] Updated transcriptManager directly`);
-            } else if (instance.managers && instance.managers.transcriptManager) {
-              instance.managers.transcriptManager.transcriptChannelId = transcriptChannelId;
-              instance.managers.transcriptManager.isDisabled = false;
-              console.log(`[TranscriptSelect] Updated managers.transcriptManager`);
-            }
-            
-            // 3. Update custom settings
-            if (!instance.customSettings) instance.customSettings = {};
-            instance.customSettings.transcriptChannelId = transcriptChannelId;
-            instance.customSettings.transcriptsEnabled = true;
-            
-            // 4. Save via different methods based on availability
-            let saved = false;
-            
-            // Try instance.saveSettings first
-            if (typeof instance.saveSettings === 'function') {
-              await instance.saveSettings({ 
-                transcriptChannelId: transcriptChannelId,
-                transcriptsEnabled: true
-              });
-              saved = true;
-              console.log(`[TranscriptSelect] Saved settings via instance.saveSettings`);
-            }
-            
-            // Try instance manager if available and first attempt failed
-            if (!saved && instanceManager) {
-              await instanceManager.saveInstanceSettings(
-                instance.instanceId,
-                { 
-                  transcriptChannelId: transcriptChannelId,
-                  transcriptsEnabled: true
-                }
-              );
-              saved = true;
-              console.log(`[TranscriptSelect] Saved settings via instanceManager`);
-            }
-            
-            // Try directly saving if all else fails
-            if (!saved) {
-              // Direct save to file using fs and path
-              const fs = require('fs');
-              const path = require('path');
-              const settingsPath = path.join(__dirname, '..', 'instances', instance.instanceId, 'settings.json');
-              
-              // Read existing settings
-              let settings = {};
-              if (fs.existsSync(settingsPath)) {
-                try {
-                  const data = fs.readFileSync(settingsPath, 'utf8');
-                  settings = JSON.parse(data);
-                } catch (err) {
-                  console.error(`[TranscriptSelect] Error reading settings:`, err);
-                }
-              }
-              
-              // Update settings
-              settings.transcriptChannelId = transcriptChannelId;
-              settings.transcriptsEnabled = true;
-              
-              // Ensure directory exists
-              const dir = path.dirname(settingsPath);
-              if (!fs.existsSync(dir)) {
-                fs.mkdirSync(dir, { recursive: true });
-              }
-              
-              // Write settings
-              fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-              console.log(`[TranscriptSelect] Directly saved settings to file`);
-            }
-            
-            console.log(`[TranscriptSelect] Set transcript channel to ${transcriptChannelId} for instance ${instance.instanceId}`);
-          } catch (saveError) {
-            console.error(`[TranscriptSelect] Error saving settings:`, saveError);
-          }
-        }
-        
-        global.setupStorage.saveSetupParams(guildId, setupParams);
-        console.log(`[TranscriptSelect] Set transcript channel to ${transcriptChannelId} for guild ${guildId}`);
+      } catch (loadError) {
+        console.error(`[TranscriptSelect] Error loading setup params:`, loadError);
       }
       
-      // If this was a regular channel, verify it exists
+      // Update transcriptChannelId setting
+      if (selectedValue === "no_transcripts") {
+        setupParams.transcriptChannelId = null;
+      } else {
+        setupParams.transcriptChannelId = selectedValue;
+      }
+      
+      // Save setup params back to file directly
+      try {
+        const setupStoragePath = path.join(__dirname, '..', 'setup_storage', `${guildId}_setup.json`);
+        const storageDir = path.dirname(setupStoragePath);
+        
+        // Ensure directory exists
+        if (!fs.existsSync(storageDir)) {
+          fs.mkdirSync(storageDir, { recursive: true });
+        }
+        
+        // Write updated setup params
+        fs.writeFileSync(setupStoragePath, JSON.stringify(setupParams, null, 2), 'utf8');
+        console.log(`[TranscriptSelect] Saved setup params directly to file`);
+      } catch (saveError) {
+        console.error(`[TranscriptSelect] Error saving setup params directly:`, saveError);
+        
+        // Try fallback to global storage
+        if (global.setupStorage && typeof global.setupStorage.saveSetupParams === 'function') {
+          global.setupStorage.saveSetupParams(guildId, setupParams);
+          console.log(`[TranscriptSelect] Saved setup params using global.setupStorage`);
+        }
+      }
+      
+      // Update instance if available (try different approaches safely)
+      if (instance) {
+        try {
+          // Update transcriptChannelId
+          if (instance.transcriptChannelId !== undefined) {
+            instance.transcriptChannelId = selectedValue === "no_transcripts" ? null : selectedValue;
+          }
+          
+          // Update manager if it exists
+          if (instance.transcriptManager) {
+            instance.transcriptManager.transcriptChannelId = selectedValue === "no_transcripts" ? null : selectedValue;
+            instance.transcriptManager.isDisabled = selectedValue === "no_transcripts";
+          } else if (instance.managers && instance.managers.transcriptManager) {
+            instance.managers.transcriptManager.transcriptChannelId = selectedValue === "no_transcripts" ? null : selectedValue;
+            instance.managers.transcriptManager.isDisabled = selectedValue === "no_transcripts";
+          }
+          
+          // Update settings
+          if (!instance.customSettings) instance.customSettings = {};
+          instance.customSettings.transcriptChannelId = selectedValue === "no_transcripts" ? null : selectedValue;
+          instance.customSettings.transcriptsEnabled = selectedValue !== "no_transcripts";
+          
+          console.log(`[TranscriptSelect] Updated instance properties`);
+        } catch (instanceError) {
+          console.error(`[TranscriptSelect] Error updating instance:`, instanceError);
+        }
+      }
+      
+      // Verify channel exists if it's not "no_transcripts"
       if (selectedValue !== "no_transcripts") {
         const selectedChannel = interaction.guild.channels.cache.get(selectedValue);
         if (!selectedChannel) {
@@ -231,35 +110,38 @@ class TranscriptSelectMenu extends SelectMenu {
         }
       }
       
-      // Update the message with success
+      // Update message with success
       const channelText = selectedValue === "no_transcripts" ? 
         "Transcripts disabled" : 
         `Transcript channel: <#${selectedValue}>`;
+
+      // Now we need to decide what to show next - ask about vouches
+      const vouchOptionsRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("use_vouch_channel")
+          .setLabel("Yes, Enable Vouches")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("no_vouch_channel")
+          .setLabel("No Vouches")
+          .setStyle(ButtonStyle.Secondary)
+      );
       
       await interaction.editReply({
-        content: `✅ Settings updated successfully!\n\n${channelText}`,
-        components: [],
+        content: `✅ Settings updated successfully!\n\n${channelText}\n\nDo you want to enable the vouching system?`,
+        components: [vouchOptionsRow],
       });
-      
-      // Force update of instance configs
-      if (instanceManager && instanceManager.configs && instance.instanceId) {
-        if (!instanceManager.configs[instance.instanceId]) {
-          instanceManager.configs[instance.instanceId] = {};
-        }
-        
-        instanceManager.configs[instance.instanceId].transcriptChannelId = 
-          selectedValue === "no_transcripts" ? null : selectedValue;
-        
-        instanceManager.saveConfigurations();
-        console.log(`[TranscriptSelect] Updated instance configs`);
-      }
     } catch (error) {
-      console.error("Error in transcript channel selection:", error);
+      console.error("[TranscriptSelect] Error in transcript channel selection:", error);
       
-      await interaction.editReply({
-        content: "Channel selection failed: " + error.message,
-        components: [],
-      });
+      try {
+        await interaction.editReply({
+          content: "Channel selection failed: " + error.message,
+          components: [],
+        });
+      } catch (replyError) {
+        console.error("[TranscriptSelect] Error sending error message:", replyError);
+      }
     }
   }
 }

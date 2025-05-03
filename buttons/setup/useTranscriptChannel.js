@@ -1,5 +1,8 @@
+// Updated buttons/setup/useTranscriptChannel.js
 const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
+const fs = require('fs');
+const path = require('path');
 
 class UseTranscriptChannelButton extends Button {
   constructor() {
@@ -10,9 +13,38 @@ class UseTranscriptChannelButton extends Button {
   
   async execute(interaction, instance) {
     try {
-      // FIXED: Properly defer the interaction to prevent timeout
+      console.log(`[UseTranscriptChannel] Processing button click`);
+      
+      // First defer the update to prevent timeout
       if (!interaction.deferred && !interaction.replied) {
-        await interaction.deferUpdate();
+        await interaction.deferUpdate().catch(err => {
+          console.error(`[UseTranscriptChannel] Error deferring update:`, err);
+        });
+      }
+      
+      // Get setup info directly from storage to avoid circular dependency
+      const guildId = interaction.guild.id;
+      let setupParams = null;
+      
+      // Get setup params directly from storage file
+      try {
+        const setupStoragePath = path.join(__dirname, '..', '..', 'setup_storage', `${guildId}_setup.json`);
+        if (fs.existsSync(setupStoragePath)) {
+          const setupData = fs.readFileSync(setupStoragePath, 'utf8');
+          setupParams = JSON.parse(setupData);
+          console.log(`[UseTranscriptChannel] Loaded setup params directly from file: ${setupStoragePath}`);
+        } else if (global.setupStorage && typeof global.setupStorage.getSetupParams === 'function') {
+          setupParams = global.setupStorage.getSetupParams(guildId);
+          console.log(`[UseTranscriptChannel] Loaded setup params from global.setupStorage`);
+        }
+      } catch (paramError) {
+        console.error(`[UseTranscriptChannel] Error loading setup parameters:`, paramError);
+      }
+      
+      // If we still couldn't get setup params, create a minimal object
+      if (!setupParams) {
+        setupParams = { guildId, categoryId: null };
+        console.log(`[UseTranscriptChannel] Created minimal setup params object`);
       }
       
       // Get all text channels in the guild
@@ -29,13 +61,20 @@ class UseTranscriptChannelButton extends Button {
       }
       
       // Create options for select menu
-      const channelOptions = textChannels
-        .map((channel) => ({
-          label: channel.name,
-          value: channel.id,
-          description: "Channel for saving ticket transcripts",
-        }))
-        .slice(0, 25); // Discord limit
+      const channelOptions = [
+        {
+          label: "No Transcripts",
+          value: "no_transcripts",
+          description: "Disable transcript saving"
+        },
+        ...textChannels
+          .map((channel) => ({
+            label: channel.name,
+            value: channel.id,
+            description: "Channel for saving transcripts",
+          }))
+          .slice(0, 24) // Leave room for "No Transcripts" option
+      ];
       
       // Create select menu for transcript channel
       const transcriptSelectRow = new ActionRowBuilder().addComponents(
@@ -45,34 +84,38 @@ class UseTranscriptChannelButton extends Button {
           .addOptions(channelOptions)
       );
       
-      // Get setup info
-      const guildId = interaction.guild.id;
-      const setupParams = global.setupStorage.getSetupParams(guildId);
+      // Update the reply with category ID from setupParams
+      let categoryMessage = '';
+      if (setupParams.categoryId) {
+        try {
+          // Check if category exists
+          const category = interaction.guild.channels.cache.get(setupParams.categoryId);
+          if (category) {
+            categoryMessage = `Category selected: <#${setupParams.categoryId}>\n`;
+          } else {
+            categoryMessage = `Category selected (ID: ${setupParams.categoryId})\n`;
+          }
+        } catch (error) {
+          categoryMessage = `Category selected\n`;
+        }
+      } else {
+        categoryMessage = `Category selected\n`;
+      }
       
-      // Update the reply directly without using the tracker
       await interaction.editReply({
-        content: `Category selected: <#${setupParams.categoryId}>\nNow select a channel for ticket transcripts:`,
+        content: `${categoryMessage}Now select a channel for ticket transcripts:`,
         components: [transcriptSelectRow],
       });
     } catch (error) {
-      console.error("Error handling transcript channel option:", error);
+      console.error("[UseTranscriptChannel] Error handling transcript channel option:", error);
       
-      // Try different error handling approaches
       try {
         await interaction.editReply({
           content: "Error: " + error.message,
           components: [],
         });
       } catch (replyError) {
-        console.error("Error sending error response:", replyError);
-        try {
-          await interaction.followUp({
-            content: "Error: " + error.message,
-            ephemeral: true
-          });
-        } catch (finalError) {
-          console.error("Final error attempt failed:", finalError);
-        }
+        console.error("[UseTranscriptChannel] Error sending error message:", replyError);
       }
     }
   }

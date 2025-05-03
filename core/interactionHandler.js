@@ -150,59 +150,73 @@ class InteractionHandler {
     }
   }
   
-  /**
-   * Get instance for an interaction directly from client routes
-   * (Avoids circular dependency with InstanceManager)
-   * @param {Interaction} interaction - Discord interaction 
-   * @returns {Object} - Server instance
-   */
   getInstanceForInteraction(interaction) {
     if (!interaction.guildId) return null;
     
-    // Special case for customize_messages_modal
-    if (interaction.isModalSubmit() && interaction.customId === "customize_messages_modal") {
-      console.log("[InteractionHandler] Skipping instance check for customize_messages_modal");
-      return { customSettings: {}, isTemporary: true };
-    }
-    
     try {
-      console.log(`[InteractionHandler] Finding instance for guild ${interaction.guildId}, channel parent ${interaction.channel?.parentId || 'none'}`);
+      console.log(`[InteractionHandler] Finding instance for guild ${interaction.guildId}`);
       
-      // Check channel parent ID first for more specific matching
-      if (interaction.channel && interaction.channel.parentId) {
-        const categoryId = interaction.channel.parentId;
-        console.log(`[InteractionHandler] Checking category ID: ${categoryId}`);
-        
-        // Check if Discord client has instance routes
-        if (interaction.client._instanceRoutes && interaction.client._instanceRoutes.has(categoryId)) {
-          const routeInfo = interaction.client._instanceRoutes.get(categoryId);
-          if (routeInfo && routeInfo.instance) {
-            console.log(`[InteractionHandler] Found instance via category match: ${routeInfo.instance.instanceId || 'unknown'}`);
-            return routeInfo.instance;
-          }
-        }
+      // Special case for customize_messages_modal
+      if (interaction.isModalSubmit() && interaction.customId === "customize_messages_modal") {
+        console.log("[InteractionHandler] Using temporary instance for customize_messages_modal");
+        return { 
+          customSettings: {}, 
+          isTemporary: true,
+          instanceId: interaction.guildId
+        };
       }
       
-      // Fall back to guild ID matching if needed 
-      if (interaction.client._instanceRoutes) {
-        console.log(`[InteractionHandler] Searching for instance with matching guild ID: ${interaction.guildId}`);
+      // IMPORTANT: Try to get instance directly to avoid circular dependency
+      // First check if we have a local function to get instance
+      try {
+        const path = require('path');
+        const fs = require('fs');
         
-        // Look through all instances and find one with matching guild
-        for (const [catId, routeInfo] of interaction.client._instanceRoutes.entries()) {
-          if (routeInfo && routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
-            console.log(`[InteractionHandler] Found instance via guild ID match: ${routeInfo.instance.instanceId || 'unknown'}`);
-            return routeInfo.instance;
+        // Try to get instance without causing circular dependency
+        const instanceConfigPath = path.join(__dirname, '..', 'instance_configs.json');
+        
+        if (fs.existsSync(instanceConfigPath)) {
+          const configs = JSON.parse(fs.readFileSync(instanceConfigPath, 'utf8'));
+          
+          // Find matching config by guild ID
+          for (const [instanceId, config] of Object.entries(configs)) {
+            if (config.guildId === interaction.guildId) {
+              console.log(`[InteractionHandler] Found instance config with ID: ${instanceId}`);
+              
+              // Return a temporary instance with config data
+              return {
+                instanceId: instanceId,
+                guildId: interaction.guildId,
+                categoryId: config.categoryId,
+                transcriptChannelId: config.transcriptChannelId || null,
+                vouchChannelId: config.vouchChannelId || null,
+                customSettings: config.customSettings || {},
+                isTemporary: true
+              };
+            }
           }
         }
+      } catch (configError) {
+        console.error(`[InteractionHandler] Error reading instance config:`, configError);
       }
       
-      console.log(`[InteractionHandler] No instance found for guild ${interaction.guildId}`);
-      
-      // No instance found, but we'll return null and let the command handle it
-      return null;
+      // If we reach here, create a minimal temporary instance
+      return {
+        instanceId: interaction.guildId,
+        guildId: interaction.guildId,
+        customSettings: {},
+        isTemporary: true
+      };
     } catch (error) {
       console.error("[InteractionHandler] Error getting instance for interaction:", error);
-      return null;
+      
+      // Return minimal temporary instance on error
+      return {
+        instanceId: interaction.guildId,
+        guildId: interaction.guildId,
+        customSettings: {},
+        isTemporary: true
+      };
     }
   }
   

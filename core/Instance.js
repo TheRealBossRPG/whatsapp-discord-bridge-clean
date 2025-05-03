@@ -40,8 +40,35 @@ class Instance {
     this.lastQrCode = null;
     this.qrCodeTimer = null;
 
+    this.connectionRefreshInterval = null;
+    this.lastRefreshTime = Date.now();
+    this.refreshIntervalMs = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
+
     // Initialize directories
     this.initializeDirectories();
+
+    setTimeout(() => {
+      // Do an initial connection health check after 10 minutes
+      if (this.isConnected()) {
+        console.log(`[Instance:${this.instanceId}] Running initial connection health check`);
+        this.verifyActiveConnection().then(isReallyConnected => {
+          if (!isReallyConnected) {
+            console.log(`[Instance:${this.instanceId}] Initial health check shows connection issues, scheduling refresh`);
+            // Schedule a refresh in 1 minute
+            setTimeout(() => {
+              if (this.isConnected() && !this.reconnecting) {
+                console.log(`[Instance:${this.instanceId}] Performing initial connection refresh`);
+                this.disconnect(false).then(() => {
+                  setTimeout(() => this.connect(false), 2000);
+                });
+              }
+            }, 60000); // 1 minute
+          } else {
+            console.log(`[Instance:${this.instanceId}] Initial health check passed, connection is working properly`);
+          }
+        });
+      }
+    }, 10 * 60 * 1000); // 10 minutes
   }
 
   /**
@@ -89,6 +116,7 @@ class Instance {
       // 5. Register event handlers
       this.registerEventHandlers();
 
+      this.startConnectionRefreshTimer();
       console.log(`Instance ${this.instanceId} initialized successfully`);
       return true;
     } catch (error) {
@@ -299,6 +327,116 @@ class Instance {
     console.log(`[Instance:${this.instanceId}] Route set up for category ${this.categoryId}`);
   }
 
+  
+/**
+ * Start periodic connection refresh
+ */
+startConnectionRefreshTimer() {
+  // Clear any existing timer first
+  if (this.connectionRefreshInterval) {
+    clearInterval(this.connectionRefreshInterval);
+  }
+
+  console.log(`[Instance:${this.instanceId}] Starting connection refresh timer (every ${this.refreshIntervalMs / (60 * 60 * 1000)} hours)`);
+  
+  // Set up a new refresh interval
+  this.connectionRefreshInterval = setInterval(async () => {
+    try {
+      // Skip if currently reconnecting
+      if (this.reconnecting) {
+        console.log(`[Instance:${this.instanceId}] Skipping scheduled refresh - already reconnecting`);
+        return;
+      }
+      
+      console.log(`[Instance:${this.instanceId}] Running scheduled connection health check`);
+      
+      // Check current connection state
+      const isConnectedNow = this.isConnected();
+      
+      // Check if connection is actually working properly
+      const isReallyConnected = await this.verifyActiveConnection();
+      
+      // Only refresh if the connection appears connected but isn't working properly
+      if (isConnectedNow && !isReallyConnected) {
+        console.log(`[Instance:${this.instanceId}] Connection appears connected but isn't working, refreshing...`);
+        
+        // Force a clean disconnect without logging out
+        await this.disconnect(false);
+        
+        // Wait a moment before reconnecting
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Reconnect without showing QR code
+        await this.connect(false);
+        
+        this.lastRefreshTime = Date.now();
+        console.log(`[Instance:${this.instanceId}] Connection refreshed successfully`);
+      } else if (!isConnectedNow && !this.reconnecting) {
+        // Try to reconnect if not connected at all and not already reconnecting
+        console.log(`[Instance:${this.instanceId}] Not connected, attempting to reconnect...`);
+        await this.connect(false);
+        
+        this.lastRefreshTime = Date.now();
+        console.log(`[Instance:${this.instanceId}] Connection attempt completed`);
+      } else if (isConnectedNow && isReallyConnected) {
+        console.log(`[Instance:${this.instanceId}] Connection is working properly, no refresh needed`);
+        this.lastRefreshTime = Date.now();
+      }
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error during scheduled connection refresh:`, error);
+    }
+  }, this.refreshIntervalMs);
+}
+
+/**
+ * Stop connection refresh timer
+ */
+stopConnectionRefreshTimer() {
+  if (this.connectionRefreshInterval) {
+    clearInterval(this.connectionRefreshInterval);
+    this.connectionRefreshInterval = null;
+    console.log(`[Instance:${this.instanceId}] Stopped connection refresh timer`);
+  }
+}
+
+/**
+ * Verify if the connection is truly active
+ * @returns {Promise<boolean>} - Whether the connection is truly active
+ */
+async verifyActiveConnection() {
+  try {
+    if (!this.clients || !this.clients.whatsAppClient) {
+      return false;
+    }
+    
+    const client = this.clients.whatsAppClient;
+    
+    // Method 1: Check if WhatsApp client can get connection state
+    if (typeof client.isConnected === 'function') {
+      return await client.isConnected();
+    }
+    
+    // Method 2: Check for socket existence and readiness
+    if (client.sock && client.sock.ws) {
+      // Check socket connection state
+      return client.sock.ws.readyState === 1; // WebSocket.OPEN
+    }
+    
+    // Method 3: Check if client indicates it's ready
+    if (typeof client.isReady === 'function') {
+      return client.isReady();
+    } else if (typeof client.isReady === 'boolean') {
+      return client.isReady;
+    }
+    
+    // If we can't verify, assume it's not connected properly
+    return false;
+  } catch (error) {
+    console.error(`[Instance:${this.instanceId}] Error verifying connection:`, error);
+    return false;
+  }
+}
+
 /**
  * Connect WhatsApp client
  * @param {boolean} showQrCode - Whether to show QR code
@@ -397,6 +535,10 @@ async connect(showQrCode = false) {
       this.connected = false;
     }
     
+    if (this.connected && !this.connectionRefreshInterval) {
+      this.startConnectionRefreshTimer();
+    }
+
     return success;
   } catch (error) {
     console.error(`[Instance:${this.instanceId}] Error connecting WhatsApp:`, error);
@@ -528,6 +670,7 @@ async connect(showQrCode = false) {
 
       // Flag to prevent auto-reconnect
       this.reconnecting = false;
+      this.stopConnectionRefreshTimer();
 
       if (!this.clients.whatsAppClient) {
         console.log(`[Instance:${this.instanceId}] No WhatsApp client to disconnect`);
