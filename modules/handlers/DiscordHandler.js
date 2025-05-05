@@ -14,6 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
 const BaileysMedia = require("../clients/baileys/BaileysMedia.js");
+const MentionProcessor = require("../../utils/mentionProcessor.js");
 
 /**
  * Handles Discord events and interactions
@@ -54,6 +55,8 @@ class DiscordHandler {
     this.tempDir = options.tempDir || path.join(__dirname, "..", "..", "temp");
     this.assetsDir =
       options.assetsDir || path.join(__dirname, "..", "..", "assets");
+
+    this.mentionProcessor = options.mentionProcessor;
 
     // Create temp directory if it doesn't exist
     if (!fs.existsSync(this.tempDir)) {
@@ -205,8 +208,8 @@ class DiscordHandler {
    */
   async handleDiscordMessage(message) {
     try {
-      // Ignore bot messages
-      if (message.author.bot) return false;
+      // Skip bot messages and DMs
+      if (message.author.bot || !message.guild) return false;
 
       // Check if this is in a category we're monitoring
       const categoryId = message.channel.parentId;
@@ -234,6 +237,31 @@ class DiscordHandler {
 
       // Format the message content
       let content = message.content || "";
+
+      // Process mentions in the message content
+      const guildId = message.guild.id;
+
+      // Get special channels with careful access paths to avoid circular dependencies
+      let specialChannels = {};
+      try {
+        if (this.customSettings?.specialChannels) {
+          specialChannels = this.customSettings.specialChannels;
+        } else if (this.instance?.customSettings?.specialChannels) {
+          specialChannels = this.instance.customSettings.specialChannels;
+        }
+      } catch (err) {
+        // Silently continue if we can't access special channels
+      }
+
+      // Process mentions in the content
+      if (content && this.discordClient) {
+        content = MentionProcessor.convertDiscordMentionsToText(
+          content,
+          this.discordClient,
+          guildId,
+          specialChannels
+        );
+      }
 
       // Add agent prefix
       const agentName = message.member?.nickname || message.author.username;
@@ -503,95 +531,119 @@ class DiscordHandler {
   }
 
   /**
- * Handle interaction create event
- * @param {Object} interaction - Discord interaction
- * @returns {Promise<boolean>} - Success
- */
-async handleInteraction(interaction) {
-  try {
-    // Handle button interactions with legacy IDs for backward compatibility
-    if (interaction.isButton()) {
-      // First check for the new button IDs that are handled via separate files
-      // but provide backward compatibility if those don't get processed
-      
-      // Handle edit button (legacy format)
-      if (interaction.customId.startsWith('edit-user-')) {
-        console.log(`[DiscordHandler:${this.instanceId}] Legacy handling for edit-user button`);
-        return await this.handleEditTicketButton(interaction);
-      }
-      
-      // Handle close button (legacy format)
-      else if (interaction.customId.startsWith('close-ticket-')) {
-        console.log(`[DiscordHandler:${this.instanceId}] Legacy handling for close-ticket button`);
-        
-        // Extract channel ID from the button's custom ID
-        const channelId = interaction.channelId; // Use current channel ID
-        
-        await interaction.deferReply({ ephemeral: true });
-        
-        // Try to close the ticket with the channel ID
-        const success = await this.ticketManager.closeTicket(channelId, true, interaction);
-        
-        if (!success) {
-          await interaction.editReply('❌ Failed to close ticket. Please try again or check logs.');
-          return false;
-        }
-        
-        await interaction.editReply('✅ Ticket closed successfully!');
-        return true;
-      }
-      
-      // Handle other button types
-      else if (interaction.customId === 'close_ticket') {
-        // Old format close button without channel ID
-        await interaction.deferReply({ ephemeral: true });
-        const success = await this.ticketManager.closeTicket(interaction.channelId, true, interaction);
-        
-        if (!success) {
-          await interaction.editReply('❌ Failed to close ticket. Please try again or check logs.');
-          return false;
-        }
-        
-        await interaction.editReply('✅ Ticket closed successfully!');
-        return true;
-      }
-      
-      // Add other legacy button handling here if needed
-    }
-    
-    // Handle modal submissions (legacy format)
-    if (interaction.isModalSubmit()) {
-      if (interaction.customId.startsWith('edit_ticket_modal_')) {
-        console.log(`[DiscordHandler:${this.instanceId}] Legacy handling for edit ticket modal`);
-        return await this.handleEditTicketModal(interaction);
-      }
-      
-      // Add other legacy modal handling here if needed
-    }
-    
-    return false; // Pass to other handlers if not handled here
-  } catch (error) {
-    console.error(`[DiscordHandler:${this.instanceId}] Error handling interaction:`, error);
-    
+   * Handle interaction create event
+   * @param {Object} interaction - Discord interaction
+   * @returns {Promise<boolean>} - Success
+   */
+  async handleInteraction(interaction) {
     try {
-      if (!interaction.replied) {
-        await interaction.reply({ 
-          content: `❌ Error: ${error.message}`, 
-          ephemeral: true 
-        });
-      } else {
-        await interaction.followUp({ 
-          content: `❌ Error: ${error.message}`, 
-          ephemeral: true 
-        });
+      // Handle button interactions with legacy IDs for backward compatibility
+      if (interaction.isButton()) {
+        // First check for the new button IDs that are handled via separate files
+        // but provide backward compatibility if those don't get processed
+
+        // Handle edit button (legacy format)
+        if (interaction.customId.startsWith("edit-user-")) {
+          console.log(
+            `[DiscordHandler:${this.instanceId}] Legacy handling for edit-user button`
+          );
+          return await this.handleEditTicketButton(interaction);
+        }
+
+        // Handle close button (legacy format)
+        else if (interaction.customId.startsWith("close-ticket-")) {
+          console.log(
+            `[DiscordHandler:${this.instanceId}] Legacy handling for close-ticket button`
+          );
+
+          // Extract channel ID from the button's custom ID
+          const channelId = interaction.channelId; // Use current channel ID
+
+          await interaction.deferReply({ ephemeral: true });
+
+          // Try to close the ticket with the channel ID
+          const success = await this.ticketManager.closeTicket(
+            channelId,
+            true,
+            interaction
+          );
+
+          if (!success) {
+            await interaction.editReply(
+              "❌ Failed to close ticket. Please try again or check logs."
+            );
+            return false;
+          }
+
+          await interaction.editReply("✅ Ticket closed successfully!");
+          return true;
+        }
+
+        // Handle other button types
+        else if (interaction.customId === "close_ticket") {
+          // Old format close button without channel ID
+          await interaction.deferReply({ ephemeral: true });
+          const success = await this.ticketManager.closeTicket(
+            interaction.channelId,
+            true,
+            interaction
+          );
+
+          if (!success) {
+            await interaction.editReply(
+              "❌ Failed to close ticket. Please try again or check logs."
+            );
+            return false;
+          }
+
+          await interaction.editReply("✅ Ticket closed successfully!");
+          return true;
+        }
+
+        // Add other legacy button handling here if needed
       }
-    } catch (replyError) {
-      console.error(`[DiscordHandler:${this.instanceId}] Error sending error message:`, replyError);
+
+      // Handle modal submissions (legacy format)
+      if (interaction.isModalSubmit()) {
+        if (interaction.customId.startsWith("edit_ticket_modal_")) {
+          console.log(
+            `[DiscordHandler:${this.instanceId}] Legacy handling for edit ticket modal`
+          );
+          return await this.handleEditTicketModal(interaction);
+        }
+
+        // Add other legacy modal handling here if needed
+      }
+
+      return false; // Pass to other handlers if not handled here
+    } catch (error) {
+      console.error(
+        `[DiscordHandler:${this.instanceId}] Error handling interaction:`,
+        error
+      );
+
+      try {
+        if (!interaction.replied) {
+          await interaction.reply({
+            content: `❌ Error: ${error.message}`,
+            ephemeral: true,
+          });
+        } else {
+          await interaction.followUp({
+            content: `❌ Error: ${error.message}`,
+            ephemeral: true,
+          });
+        }
+      } catch (replyError) {
+        console.error(
+          `[DiscordHandler:${this.instanceId}] Error sending error message:`,
+          replyError
+        );
+      }
+
+      return false;
     }
-    
-    return false;
   }
-}
 
   /**
    * Handle close ticket button

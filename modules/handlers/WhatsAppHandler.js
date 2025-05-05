@@ -1,7 +1,8 @@
 // modules/handlers/WhatsAppHandler.js
 const fs = require("fs");
 const path = require("path");
-const axios = require('axios');
+const axios = require("axios");
+const MentionProcessor = require("../../utils/mentionProcessor");
 
 /**
  * WhatsAppHandler class for handling WhatsApp interactions
@@ -34,6 +35,8 @@ class WhatsAppHandler {
     this.vouchHandler = vouchHandler;
     this.tempDir = options.tempDir || path.join(__dirname, "temp");
     this.instanceId = options.instanceId || "default";
+
+    this.mentionProcessor = options.mentionProcessor;
 
     // Create temp directory if it doesn't exist
     if (!fs.existsSync(this.tempDir)) {
@@ -157,7 +160,9 @@ class WhatsAppHandler {
           if (channelId) {
             // Channel exists - use it regardless of userState
             userState.hasTicket = true; // Update userState to reflect reality
-            console.log(`[WhatsAppHandler:${this.instanceId}] Using existing channel ${channelId} for ${userId}`);
+            console.log(
+              `[WhatsAppHandler:${this.instanceId}] Using existing channel ${channelId} for ${userId}`
+            );
             return await this.processMessage(message, userId, channelId);
           }
 
@@ -483,88 +488,96 @@ class WhatsAppHandler {
   }
 
   /**
- * Ultra-simplified sticker handler
- * @param {Object} message - WhatsApp message
- * @param {string} sender - Sender ID
- * @param {string} channelId - Discord channel ID
- * @param {string} caption - Optional caption text
- * @returns {Promise<boolean>} - Success status
- */
-async handleStickerMessage(message, sender, channelId, caption = "") {
-  try {
-    console.log(`[WhatsAppHandler:${this.instanceId}] Processing sticker message - simplified approach`);
-
-    // Get user info
-    const userInfo = this.userCardManager.getUserInfo(sender);
-    const username = userInfo?.username || "Unknown User";
-
-    // Let's skip the placeholder message to eliminate any possible interference
-    
-    // Use the simplest approach possible - just use the WhatsApp client directly
-    if (!this.whatsAppClient) {
-      console.error(`[WhatsAppHandler:${this.instanceId}] WhatsApp client not available`);
-      return false;
-    }
-    
-    try {
-      // Just get the raw buffer from client with no options
-      const mediaData = await this.whatsAppClient.downloadMedia(message);
-      
-      if (!mediaData || !mediaData.buffer || mediaData.buffer.length === 0) {
-        throw new Error("Empty sticker data received");
-      }
-      
-      // Write to file with minimal code
-      const tempFilePath = path.join(this.tempDir, `sticker_${Date.now()}.webp`);
-      fs.writeFileSync(tempFilePath, mediaData.buffer);
-      
-      // Create content string
-      const content = `**${username}**: ${caption || ""} [Sticker]`;
-      
-      // Forward to Discord
-      const success = await this.ticketManager.forwardUserMessage(
-        sender,
-        {
-          content: content,
-          files: [tempFilePath]
-        },
-        true
-      );
-      
-      // Cleanup immediately after forwarding (no delay)
-      try {
-        fs.unlinkSync(tempFilePath);
-      } catch (e) {
-        // Ignore cleanup errors
-      }
-      
-      return success;
-    } catch (innerError) {
-      console.error(`[WhatsAppHandler:${this.instanceId}] Sticker processing failed:`, innerError);
-      
-      // Just send a text message indicating sticker was received
-      await this.ticketManager.forwardUserMessage(
-        sender,
-        `**${username}**: ${caption || ""} [Sticker - could not be displayed]`,
-        false
-      );
-      
-      // Still return true since we did handle the message in some way
-      return true;
-    }
-  } catch (error) {
-    console.error(`[WhatsAppHandler:${this.instanceId}] Sticker handler error:`, error);
-    return false;
-  }
-}
-
-  /**
-   * Handle text message
+   * Ultra-simplified sticker handler
    * @param {Object} message - WhatsApp message
    * @param {string} sender - Sender ID
    * @param {string} channelId - Discord channel ID
+   * @param {string} caption - Optional caption text
    * @returns {Promise<boolean>} - Success status
    */
+  async handleStickerMessage(message, sender, channelId, caption = "") {
+    try {
+      console.log(
+        `[WhatsAppHandler:${this.instanceId}] Processing sticker message - simplified approach`
+      );
+
+      // Get user info
+      const userInfo = this.userCardManager.getUserInfo(sender);
+      const username = userInfo?.username || "Unknown User";
+
+      // Let's skip the placeholder message to eliminate any possible interference
+
+      // Use the simplest approach possible - just use the WhatsApp client directly
+      if (!this.whatsAppClient) {
+        console.error(
+          `[WhatsAppHandler:${this.instanceId}] WhatsApp client not available`
+        );
+        return false;
+      }
+
+      try {
+        // Just get the raw buffer from client with no options
+        const mediaData = await this.whatsAppClient.downloadMedia(message);
+
+        if (!mediaData || !mediaData.buffer || mediaData.buffer.length === 0) {
+          throw new Error("Empty sticker data received");
+        }
+
+        // Write to file with minimal code
+        const tempFilePath = path.join(
+          this.tempDir,
+          `sticker_${Date.now()}.webp`
+        );
+        fs.writeFileSync(tempFilePath, mediaData.buffer);
+
+        // Create content string
+        const content = `**${username}**: ${caption || ""} [Sticker]`;
+
+        // Forward to Discord
+        const success = await this.ticketManager.forwardUserMessage(
+          sender,
+          {
+            content: content,
+            files: [tempFilePath],
+          },
+          true
+        );
+
+        // Cleanup immediately after forwarding (no delay)
+        try {
+          fs.unlinkSync(tempFilePath);
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+
+        return success;
+      } catch (innerError) {
+        console.error(
+          `[WhatsAppHandler:${this.instanceId}] Sticker processing failed:`,
+          innerError
+        );
+
+        // Just send a text message indicating sticker was received
+        await this.ticketManager.forwardUserMessage(
+          sender,
+          `**${username}**: ${
+            caption || ""
+          } [Sticker - could not be displayed]`,
+          false
+        );
+
+        // Still return true since we did handle the message in some way
+        return true;
+      }
+    } catch (error) {
+      console.error(
+        `[WhatsAppHandler:${this.instanceId}] Sticker handler error:`,
+        error
+      );
+      return false;
+    }
+  }
+
   async handleTextMessage(message, sender, channelId) {
     try {
       // Get the text content
@@ -582,10 +595,43 @@ async handleStickerMessage(message, sender, channelId, caption = "") {
       const userInfo = this.userCardManager.getUserInfo(sender);
       const username = userInfo?.username || "Unknown User";
 
-      // Forward message to Discord
+      // Process any channel mentions in the text
+      let processedText = text;
+
+      // Access necessary references for mention processing
+      const discordClient = this.ticketManager?.discordClient;
+      const guildId = this.ticketManager?.guildId;
+
+      // Get special channels from settings - carefully access to avoid circular dependencies
+      let specialChannels = {};
+      try {
+        // Find special channels through various possible paths
+        if (this.ticketManager?.customSettings?.specialChannels) {
+          specialChannels = this.ticketManager.customSettings.specialChannels;
+        } else if (
+          this.ticketManager?.instance?.customSettings?.specialChannels
+        ) {
+          specialChannels =
+            this.ticketManager.instance.customSettings.specialChannels;
+        }
+      } catch (err) {
+        // Silently continue if we can't access special channels
+      }
+
+      // Process mentions if we have the needed references
+      if (discordClient && guildId) {
+        processedText = MentionProcessor.processChannelAndUserMentions(
+          text,
+          discordClient,
+          guildId,
+          specialChannels
+        );
+      }
+
+      // Forward message to Discord with processed text
       const success = await this.ticketManager.forwardUserMessage(
         sender,
-        text,
+        processedText,
         false
       );
 

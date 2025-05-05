@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const EventBus = require('./EventBus');
 const EventController = require('../controllers/EventController');
+const MentionProcessor = require('../utils/mentionProcessor');
 
 /**
  * Instance class for managing a WhatsApp-Discord bridge instance
@@ -34,6 +35,8 @@ class Instance {
     this.managers = {};
     this.handlers = {};
     this.clients = {};
+
+    this.mentionProcessor = null;
 
     // QR code handling
     this.qrCodeListeners = new Set();
@@ -71,6 +74,23 @@ class Instance {
     }, 10 * 60 * 1000); // 10 minutes
   }
 
+  async initializeMentionProcessor() {
+    try {
+      this.mentionProcessor = new MentionProcessor({
+        instanceId: this.instanceId,
+        discordClient: this.discordClient,
+        guildId: this.guildId,
+        instance: this
+      });
+      
+      console.log(`[Instance:${this.instanceId}] MentionProcessor initialized`);
+      return true;
+    } catch (error) {
+      console.error(`[Instance:${this.instanceId}] Error initializing MentionProcessor:`, error);
+      return false;
+    }
+  }
+
   /**
    * Initialize instance directories
    */
@@ -106,14 +126,17 @@ class Instance {
       
       // 2. Initialize WhatsApp client
       await this.initializeClient();
+
+      // 3. Initialize Mention Processor
+      await this.initializeMentionProcessor();
       
-      // 3. Initialize handlers
+      // 4. Initialize handlers
       await this.initializeHandlers();
       
-      // 4. Load instance settings
+      // 5. Load instance settings
       await this.loadSettings();
       
-      // 5. Register event handlers
+      // 6. Register event handlers
       this.registerEventHandlers();
 
       this.startConnectionRefreshTimer();
@@ -221,6 +244,7 @@ class Instance {
           instanceId: this.instanceId,
           tempDir: this.paths.temp,
           assetsDir: this.paths.assets,
+          mentionProcessor: this.mentionProcessor,
         }
       );
 
@@ -249,6 +273,7 @@ class Instance {
       {
         instanceId: this.instanceId,
         tempDir: this.paths.temp,
+        mentionProcessor: this.mentionProcessor,
       }
     );
 
