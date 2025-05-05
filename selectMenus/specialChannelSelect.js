@@ -12,10 +12,19 @@ class SpecialChannelSelectMenu extends SelectMenu {
     try {
       // Get the selected channel ID
       const channelId = interaction.values[0];
+      
+      if (!channelId) {
+        await interaction.update({
+          content: '❌ No channel selected. Please try again.',
+          components: []
+        });
+        return;
+      }
+      
       const channel = interaction.guild.channels.cache.get(channelId);
       
       if (!channel) {
-        await interaction.editReply({
+        await interaction.update({
           content: '❌ Selected channel not found. Please try again.',
           components: []
         });
@@ -23,14 +32,15 @@ class SpecialChannelSelectMenu extends SelectMenu {
       }
       
       // Create a modal for entering the special message
+      // Use a shorter custom ID to avoid length issues
       const modal = new ModalBuilder()
-        .setCustomId(`special_channel_modal_${channelId}`)
-        .setTitle(`Special Message for #${channel.name}`);
+        .setCustomId(`special_modal_${channelId}`)
+        .setTitle(`Message for #${channel.name}`);
       
       // Add text input for the message
       const messageInput = new TextInputBuilder()
         .setCustomId('special_message')
-        .setLabel(`Message to show when #${channel.name} is mentioned`)
+        .setLabel(`Message for #${channel.name} mentions`)
         .setStyle(TextInputStyle.Paragraph)
         .setPlaceholder('Example: Click here to view our pricing information!')
         .setRequired(true)
@@ -46,7 +56,7 @@ class SpecialChannelSelectMenu extends SelectMenu {
       console.error("Error handling special channel selection:", error);
       
       try {
-        await interaction.editReply({
+        await interaction.update({
           content: `❌ Error selecting channel: ${error.message}`,
           components: []
         });

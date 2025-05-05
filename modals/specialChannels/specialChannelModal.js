@@ -1,46 +1,48 @@
+// modals/specialChannels/specialChannelModal.js
 const Modal = require('../../templates/Modal');
+const fs = require('fs');
+const path = require('path');
 
 class SpecialChannelModal extends Modal {
   constructor() {
     super({
-      regex: /^special_channel_modal_\d+$/
+      regex: /^special_modal_\d+/
     });
   }
   
   matches(customId) {
-    return customId.startsWith('special_channel_modal_');
+    return customId.startsWith('special_modal_');
   }
   
   async execute(interaction, instance) {
     try {
-      // Get the channel ID from the modal ID
-      const channelId = interaction.customId.replace('special_channel_modal_', '');
-      const channel = interaction.guild.channels.cache.get(channelId);
+      // Defer the reply to prevent timeout
+      await interaction.deferReply({ ephemeral: true });
       
-      if (!channel) {
-        await interaction.reply({
-          content: '❌ Selected channel no longer exists.',
-          ephemeral: true
-        });
-        return;
-      }
+      // Extract channel ID from the custom ID
+      const channelId = interaction.customId.replace('special_modal_', '');
       
-      // Get the message from the modal
+      // Get the message from the modal input
       const specialMessage = interaction.fields.getTextInputValue('special_message');
       
-      // Get the instance
-      if (!instance) {
-        await interaction.reply({
-          content: "❌ WhatsApp bridge is not set up for this server. Please use `/setup` first.",
-          ephemeral: true
+      // Get the channel
+      const channel = interaction.guild.channels.cache.get(channelId);
+      if (!channel) {
+        await interaction.editReply({
+          content: '❌ Channel not found. It may have been deleted.',
         });
         return;
       }
       
-      // Get the bridge instance manager
-      const InstanceManager = require('../../core/InstanceManager');
+      // Save to instance settings
+      if (!instance) {
+        await interaction.editReply({
+          content: '❌ WhatsApp bridge configuration not found. Please use `/setup` first.',
+        });
+        return;
+      }
       
-      // Initialize customSettings.specialChannels if needed
+      // Initialize specialChannels if it doesn't exist
       if (!instance.customSettings) {
         instance.customSettings = {};
       }
@@ -49,30 +51,79 @@ class SpecialChannelModal extends Modal {
         instance.customSettings.specialChannels = {};
       }
       
-      // Add the special channel
+      // Save the special channel message
       instance.customSettings.specialChannels[channelId] = {
-        message: specialMessage
+        message: specialMessage,
+        channelName: channel.name
       };
       
-      // Save the settings to persist this change
-      await InstanceManager.saveInstanceSettings(
-        instance.instanceId,
-        instance.customSettings
-      );
+      // Save settings to file
+      try {
+        // Try instance method first
+        if (typeof instance.saveSettings === 'function') {
+          await instance.saveSettings({
+            specialChannels: instance.customSettings.specialChannels
+          });
+        } else {
+          // Direct file update
+          const instanceId = instance.instanceId || interaction.guildId;
+          const settingsPath = path.join(__dirname, '..', '..', 'instances', instanceId, 'settings.json');
+          
+          let settings = {};
+          if (fs.existsSync(settingsPath)) {
+            try {
+              settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+            } catch (readError) {
+              console.error(`Error reading settings:`, readError);
+            }
+          }
+          
+          // Update settings
+          if (!settings.specialChannels) {
+            settings.specialChannels = {};
+          }
+          
+          settings.specialChannels[channelId] = {
+            message: specialMessage,
+            channelName: channel.name
+          };
+          
+          // Ensure directory exists
+          const dir = path.dirname(settingsPath);
+          if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+          }
+          
+          // Write updated settings
+          fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+          
+          console.log(`Saved special channel settings directly to file: ${settingsPath}`);
+        }
+      } catch (saveError) {
+        console.error(`Error saving special channel settings:`, saveError);
+        await interaction.editReply({
+          content: `❌ Error saving settings: ${saveError.message}`,
+        });
+        return;
+      }
       
-      // Confirm to the user
-      await interaction.reply({
-        content: `✅ Special channel added! When <#${channelId}> is mentioned in messages, it will show:\n\n${specialMessage}`,
-        ephemeral: true
+      await interaction.editReply({
+        content: `✅ Successfully set up special message for channel #${channel.name}!\n\nWhen this channel is mentioned in WhatsApp messages, users will see: "${specialMessage}"`,
       });
     } catch (error) {
       console.error("Error handling special channel modal:", error);
       
       try {
-        await interaction.reply({
-          content: `❌ Error adding special channel: ${error.message}`,
-          ephemeral: true
-        });
+        if (interaction.deferred) {
+          await interaction.editReply({
+            content: `❌ Error: ${error.message}`
+          });
+        } else if (!interaction.replied) {
+          await interaction.reply({
+            content: `❌ Error: ${error.message}`,
+            ephemeral: true
+          });
+        }
       } catch (replyError) {
         console.error("Error sending error message:", replyError);
       }

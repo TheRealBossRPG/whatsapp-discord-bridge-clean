@@ -1,3 +1,4 @@
+// buttons/specialChannels/addSpecialChannel.js
 const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
 
@@ -9,28 +10,26 @@ class AddSpecialChannelButton extends Button {
   }
   
   async execute(interaction, instance) {
-    await interaction.deferUpdate();
-    
     try {
-      // Get instance
-      if (!instance) {
-        await interaction.editReply("❌ WhatsApp bridge is not set up for this server. Please use `/setup` first.");
-        return;
-      }
+      // First defer the update to prevent timeout
+      await interaction.deferUpdate().catch(err => {
+        console.error(`Error deferring update:`, err);
+      });
       
       // Get all text channels in the guild
       const textChannels = interaction.guild.channels.cache.filter(
-        c => c.type === ChannelType.GuildText
+        (c) => c.type === ChannelType.GuildText
       );
       
       if (textChannels.size === 0) {
         await interaction.editReply({
-          content: "❌ No text channels found in this server."
+          content: "❌ No text channels found in this server. Please create a text channel first.",
+          components: []
         });
         return;
       }
       
-      // Create select menu with text channels
+      // Create options for select menu
       const channelOptions = textChannels
         .map(channel => ({
           label: channel.name,
@@ -51,12 +50,19 @@ class AddSpecialChannelButton extends Button {
       // Send the select menu
       await interaction.editReply({
         content: "Select a channel to add special handling for when mentioned:",
-        components: [row],
-        embeds: [] // Clear any embeds
+        components: [row]
       });
     } catch (error) {
       console.error("Error handling add special channel button:", error);
-      await interaction.editReply(`❌ Error: ${error.message}`);
+      
+      try {
+        await interaction.editReply({
+          content: `❌ Error: ${error.message}`,
+          components: []
+        });
+      } catch (replyError) {
+        console.error("Error sending error response:", replyError);
+      }
     }
   }
 }

@@ -1,9 +1,12 @@
+// buttons/specialChannels/confirmRemoveSpecial.js
 const Button = require('../../templates/Button');
+const fs = require('fs');
+const path = require('path');
 
 class ConfirmRemoveSpecialButton extends Button {
   constructor() {
     super({
-      regex: /^confirm_remove_special_\d+$/
+      regex: /^confirm_remove_special_\d+/
     });
   }
   
@@ -13,41 +16,98 @@ class ConfirmRemoveSpecialButton extends Button {
   
   async execute(interaction, instance) {
     try {
+      // Defer the reply to prevent timeout
       await interaction.deferUpdate();
       
-      // Get the channel ID from the button ID
+      // Extract channel ID from the custom ID
       const channelId = interaction.customId.replace('confirm_remove_special_', '');
       
-      // Get the bridge instance manager
-      const InstanceManager = require('../../core/InstanceManager');
+      // Get the channel
+      const channel = interaction.guild.channels.cache.get(channelId);
+      const channelName = channel ? channel.name : 'Unknown Channel';
       
-      // Get the instance
-      if (!instance || !instance.customSettings?.specialChannels) {
+      // Remove from instance settings
+      if (!instance) {
         await interaction.editReply({
-          content: "❌ Cannot remove special channel: Configuration not found.",
+          content: '❌ WhatsApp bridge configuration not found. Please use `/setup` first.',
+          components: []
+        });
+        return;
+      }
+      
+      // Check if specialChannels exists
+      if (!instance.customSettings || !instance.customSettings.specialChannels) {
+        await interaction.editReply({
+          content: '❌ No special channels configuration found.',
           components: []
         });
         return;
       }
       
       // Remove the special channel
-      delete instance.customSettings.specialChannels[channelId];
+      if (instance.customSettings.specialChannels[channelId]) {
+        delete instance.customSettings.specialChannels[channelId];
+      } else {
+        await interaction.editReply({
+          content: '❌ This channel was not configured as a special channel.',
+          components: []
+        });
+        return;
+      }
       
-      // Save the settings
-      await InstanceManager.saveInstanceSettings(
-        instance.instanceId,
-        instance.customSettings
-      );
+      // Save settings to file
+      try {
+        // Try instance method first
+        if (typeof instance.saveSettings === 'function') {
+          await instance.saveSettings({
+            specialChannels: instance.customSettings.specialChannels
+          });
+        } else {
+          // Direct file update
+          const instanceId = instance.instanceId || interaction.guildId;
+          const settingsPath = path.join(__dirname, '..', '..', 'instances', instanceId, 'settings.json');
+          
+          let settings = {};
+          if (fs.existsSync(settingsPath)) {
+            try {
+              settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+            } catch (readError) {
+              console.error(`Error reading settings:`, readError);
+            }
+          }
+          
+          // Update settings
+          if (settings.specialChannels && settings.specialChannels[channelId]) {
+            delete settings.specialChannels[channelId];
+          }
+          
+          // Write updated settings
+          fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+          
+          console.log(`Removed special channel ${channelId} from settings file: ${settingsPath}`);
+        }
+      } catch (saveError) {
+        console.error(`Error saving settings:`, saveError);
+        await interaction.editReply({
+          content: `❌ Error saving settings: ${saveError.message}`,
+          components: []
+        });
+        return;
+      }
       
-      // Import the manageSpecialChannels command and execute it to refresh the view
-      const manageSpecialChannelsCommand = require('../commands/manageSpecialChannels');
-      await manageSpecialChannelsCommand.execute(interaction, instance);
+      await interaction.editReply({
+        content: `✅ Special handling for channel #${channelName} has been removed.`,
+        components: []
+      });
+      
+      // Trigger a refresh of the manage special channels command if possible
+      // This requires additional code in manageSpecialChannels.js
     } catch (error) {
-      console.error("Error confirming removal of special channel:", error);
+      console.error("Error handling confirm remove special:", error);
       
       try {
         await interaction.editReply({
-          content: `❌ Error removing special channel: ${error.message}`,
+          content: `❌ Error: ${error.message}`,
           components: []
         });
       } catch (replyError) {

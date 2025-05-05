@@ -1,3 +1,4 @@
+// buttons/specialChannels/cancelRemoveSpecial.js
 const Button = require('../../templates/Button');
 
 class CancelRemoveSpecialButton extends Button {
@@ -9,14 +10,15 @@ class CancelRemoveSpecialButton extends Button {
   
   async execute(interaction, instance) {
     try {
-      // Import and use the manageSpecialChannels command to refresh the view
-      const manageSpecialChannelsCommand = require('../commands/manageSpecialChannels');
-      await manageSpecialChannelsCommand.execute(interaction, instance);
+      await interaction.update({
+        content: '❌ Removal cancelled. The special channel handling will be kept.',
+        components: []
+      });
     } catch (error) {
-      console.error("Error cancelling removal of special channel:", error);
+      console.error("Error handling cancel remove special:", error);
       
       try {
-        await interaction.editReply({
+        await interaction.update({
           content: `❌ Error: ${error.message}`,
           components: []
         });

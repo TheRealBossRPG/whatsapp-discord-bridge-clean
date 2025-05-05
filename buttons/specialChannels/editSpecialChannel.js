@@ -1,10 +1,11 @@
+// buttons/specialChannels/editSpecialChannel.js
 const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
 
 class EditSpecialChannelButton extends Button {
   constructor() {
     super({
-      regex: /^edit_special_\d+$/
+      regex: /^edit_special_\d+/
     });
   }
   
@@ -14,41 +15,48 @@ class EditSpecialChannelButton extends Button {
   
   async execute(interaction, instance) {
     try {
-      // Get the channel ID from the button ID
+      // Extract channel ID from the custom ID
       const channelId = interaction.customId.replace('edit_special_', '');
-      const channel = interaction.guild.channels.cache.get(channelId);
       
+      // Get the channel
+      const channel = interaction.guild.channels.cache.get(channelId);
       if (!channel) {
         await interaction.reply({
-          content: '❌ Selected channel no longer exists.',
+          content: '❌ Channel not found. It may have been deleted.',
           ephemeral: true
         });
         return;
       }
       
-      // Get the instance
-      if (!instance) {
+      // Get current message from instance settings
+      if (!instance || !instance.customSettings || !instance.customSettings.specialChannels) {
         await interaction.reply({
-          content: "❌ WhatsApp bridge is not set up for this server.",
+          content: '❌ Special channel configuration not found.',
           ephemeral: true
         });
         return;
       }
       
-      // Get the current message for this special channel
-      const currentMessage = instance.customSettings?.specialChannels?.[channelId]?.message || '';
+      const specialChannel = instance.customSettings.specialChannels[channelId];
+      if (!specialChannel) {
+        await interaction.reply({
+          content: '❌ Special message for this channel not found.',
+          ephemeral: true
+        });
+        return;
+      }
       
       // Create a modal for editing the special message
       const modal = new ModalBuilder()
         .setCustomId(`edit_special_modal_${channelId}`)
-        .setTitle(`Edit Message for #${channel.name}`);
+        .setTitle(`Edit Special Message for #${channel.name}`);
       
-      // Add text input for the message
+      // Add text input for the message, pre-filled with current message
       const messageInput = new TextInputBuilder()
         .setCustomId('special_message')
-        .setLabel(`Message for #${channel.name}`)
+        .setLabel(`Message to show when #${channel.name} is mentioned`)
         .setStyle(TextInputStyle.Paragraph)
-        .setValue(currentMessage)
+        .setValue(specialChannel.message)
         .setRequired(true)
         .setMaxLength(1000);
       
@@ -59,11 +67,11 @@ class EditSpecialChannelButton extends Button {
       // Show the modal
       await interaction.showModal(modal);
     } catch (error) {
-      console.error("Error handling edit special channel:", error);
+      console.error("Error handling edit special channel button:", error);
       
       try {
         await interaction.reply({
-          content: `❌ Error editing special channel: ${error.message}`,
+          content: `❌ Error: ${error.message}`,
           ephemeral: true
         });
       } catch (replyError) {

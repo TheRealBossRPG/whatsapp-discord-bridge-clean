@@ -1,4 +1,4 @@
-// commands/manageSpecialChannels.js - Fixed version
+// commands/manageSpecialChannels.js
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
 const Command = require('../templates/Command');
 const InteractionTracker = require('../utils/InteractionTracker');
