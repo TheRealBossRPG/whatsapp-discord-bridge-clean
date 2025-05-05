@@ -1,10 +1,7 @@
-// buttons/setup/changeCategory.js
+// buttons/setup/changeCategory.js - Updated to return to edit settings
 const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
 
-/**
- * Button handler for changing the category
- */
 class ChangeCategoryButton extends Button {
   constructor() {
     super({
@@ -77,7 +74,7 @@ class ChangeCategoryButton extends Button {
       // Create select menu for category (limit to 25 options)
       const categorySelectRow = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId("category_select")
+          .setCustomId("edit_category_select") // NEW: Distinct ID for edit flow
           .setPlaceholder("Select a category for tickets")
           .addOptions(categoryOptions.slice(0, 25)) // Discord limit
       );

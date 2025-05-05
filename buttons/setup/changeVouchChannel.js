@@ -2,9 +2,6 @@
 const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
 
-/**
- * Button handler for changing the vouch channel
- */
 class ChangeVouchChannelButton extends Button {
   constructor() {
     super({
@@ -63,68 +60,45 @@ class ChangeVouchChannelButton extends Button {
         return;
       }
       
-      // Create options for the buttons
-      const buttonOptions = [];
+      // Create options for the select menu
+      const channelOptions = [];
+      
+      // Add 'No Vouches' option
+      channelOptions.push({
+        label: "No Vouches",
+        value: "no_vouches",
+        description: "Disable vouch system"
+      });
       
       // Check if there's a transcript channel - offer to use the same channel
       if (instance.transcriptChannelId) {
         const transcriptChannel = interaction.guild.channels.cache.get(instance.transcriptChannelId);
         if (transcriptChannel) {
-          // Create the row with options specific to vouch setup
-          const vouchOptionsRow = new ActionRowBuilder().addComponents(
-            new StringSelectMenuBuilder()
-              .setCustomId("vouch_select")
-              .setPlaceholder("Select a channel for vouches")
-              .addOptions([
-                {
-                  label: "No Vouches",
-                  value: "no_vouches",
-                  description: "Disable vouch system"
-                },
-                {
-                  label: `Use Transcript Channel (${transcriptChannel.name})`,
-                  value: "same_as_transcript",
-                  description: "Use the same channel as transcripts"
-                },
-                ...textChannels.map(channel => ({
-                  label: channel.name,
-                  value: channel.id,
-                  description: instance.vouchChannelId === channel.id ? 
-                    "Current vouch channel" : "Channel for posting vouches"
-                })).slice(0, 23) // Leave room for the two options above
-              ])
-          );
-          
-          await interaction.editReply({
-            content: `Select a channel for vouch messages, or choose to use the same channel as transcripts:`,
-            components: [vouchOptionsRow],
-            embeds: []
+          channelOptions.push({
+            label: `Use Transcript Channel (${transcriptChannel.name})`,
+            value: "same_as_transcript",
+            description: "Use the same channel as transcripts"
           });
-          return;
         }
       }
       
-      // If no transcript channel or couldn't find it, just show channel select
-      const channelOptions = [
-        {
-          label: "No Vouches",
-          value: "no_vouches",
-          description: "Disable vouch system"
-        },
-        ...textChannels.map(channel => ({
-          label: channel.name,
+      // Add all text channels
+      textChannels.forEach((channel) => {
+        // Highlight the current vouch channel if set
+        const isCurrent = instance.vouchChannelId === channel.id;
+        channelOptions.push({
+          label: `${isCurrent ? '✓ ' : ''}${channel.name}`,
           value: channel.id,
-          description: instance.vouchChannelId === channel.id ? 
-            "Current vouch channel" : "Channel for posting vouches"
-        })).slice(0, 24) // Leave room for the "No Vouches" option
-      ];
+          description: isCurrent ? "Current vouch channel" : "Channel for posting vouches"
+        });
+      });
       
-      // Create select menu
+      // Create select menu for vouch channel
       const vouchSelectRow = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId("vouch_select")
+          .setCustomId("edit_vouch_select")
           .setPlaceholder("Select a channel for vouches")
-          .addOptions(channelOptions)
+          .addOptions(channelOptions.slice(0, 25)) // Discord limit
       );
       
       // Update with message and select menu

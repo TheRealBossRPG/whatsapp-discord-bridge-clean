@@ -1,6 +1,7 @@
+// commands/manageSpecialChannels.js - Fixed version
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
 const Command = require('../templates/Command');
-const InstanceManager = require('../core/InstanceManager');
+const InteractionTracker = require('../utils/InteractionTracker');
 
 class ManageSpecialChannelsCommand extends Command {
   constructor() {
@@ -12,17 +13,30 @@ class ManageSpecialChannelsCommand extends Command {
   }
   
   async execute(interaction, instance) {
-    await interaction.deferReply({ ephemeral: true });
-    
     try {
-      // Get instance
+      // Use the InteractionTracker for safer handling
+      await InteractionTracker.safeDefer(interaction, { ephemeral: true });
+  
+      // Get instance - if not provided in the command call
       if (!instance) {
-        instance = InstanceManager.getInstanceByGuildId(interaction.guild.id);
-      }
-      
-      if (!instance) {
-        await interaction.editReply("❌ WhatsApp bridge is not set up for this server. Please use `/setup` first.");
-        return;
+        // Try finding via route map
+        if (interaction.client._instanceRoutes) {
+          // First try by guild ID
+          for (const [_, routeInfo] of interaction.client._instanceRoutes.entries()) {
+            if (routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
+              instance = routeInfo.instance;
+              break;
+            }
+          }
+        }
+        
+        if (!instance) {
+          console.log(`[ManageSpecialChannels] No instance found for guild ${interaction.guildId}`);
+          await InteractionTracker.safeEdit(interaction, {
+            content: "❌ WhatsApp bridge is not set up for this server. Please use `/setup` first."
+          });
+          return;
+        }
       }
       
       // Get special channels from instance settings
@@ -39,7 +53,7 @@ class ManageSpecialChannelsCommand extends Command {
               .setStyle(ButtonStyle.Primary)
           );
         
-        await interaction.editReply({
+        await InteractionTracker.safeEdit(interaction, {
           content: "📋 **Special Channels**\n\nNo special channels have been configured yet. Click the button below to add one.",
           components: [addRow]
         });
@@ -113,14 +127,16 @@ class ManageSpecialChannelsCommand extends Command {
         rows.push(addRow);
       }
       
-      // Send the embed with buttons
-      await interaction.editReply({
+      // Send the embed with buttons using the tracker
+      await InteractionTracker.safeEdit(interaction, {
         embeds: [embed],
         components: rows
       });
     } catch (error) {
       console.error("Error handling manage-special-channels command:", error);
-      await interaction.editReply(`❌ Error: ${error.message}`);
+      await InteractionTracker.safeEdit(interaction, {
+        content: `❌ Error: ${error.message}`
+      });
     }
   }
 }

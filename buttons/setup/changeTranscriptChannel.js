@@ -2,9 +2,6 @@
 const { ChannelType, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
 
-/**
- * Button handler for changing the transcript channel
- */
 class ChangeTranscriptChannelButton extends Button {
   constructor() {
     super({
@@ -67,7 +64,7 @@ class ChangeTranscriptChannelButton extends Button {
       channelOptions.push({
         label: "No Transcripts",
         value: "no_transcripts",
-        description: "Disable transcript saving"
+        description: "Disable transcript sending (still saved locally)"
       });
       
       // Add all text channels
@@ -84,7 +81,7 @@ class ChangeTranscriptChannelButton extends Button {
       // Create select menu for transcript channel
       const transcriptSelectRow = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId("transcript_select")
+          .setCustomId("edit_transcript_select")
           .setPlaceholder("Select a channel for transcripts")
           .addOptions(channelOptions.slice(0, 25)) // Discord limit
       );

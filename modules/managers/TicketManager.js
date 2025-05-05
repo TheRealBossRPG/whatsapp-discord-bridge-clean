@@ -9,6 +9,7 @@ const {
 } = require("discord.js");
 const path = require("path");
 const fs = require("fs");
+const glob = require('glob');
 
 /**
  * Manages Discord support tickets
@@ -554,43 +555,103 @@ class TicketManager {
         return null;
       }
 
-      // First try to find the directory by phone number
+      // Try multiple approaches to find the transcript folder
       let userDir = null;
+      const possibleDirs = [
+        // New format
+        this.transcriptManager.getUserDir(phoneNumber, username),
+        // Phone number only
+        path.join(this.transcriptManager.baseDir, phoneNumber),
+        // Variations with parentheses
+        path.join(
+          this.transcriptManager.baseDir,
+          `${username} (${phoneNumber})`
+        ),
+        path.join(
+          this.transcriptManager.baseDir,
+          `${phoneNumber} (${username})`
+        ),
+      ];
 
-      // Try to find by phone directly
-      if (this.transcriptManager.findExistingFolderByPhone) {
-        userDir = this.transcriptManager.findExistingFolderByPhone(phoneNumber);
+      // Try each possible directory format
+      for (const dir of possibleDirs) {
+        if (fs.existsSync(dir)) {
+          userDir = dir;
+          console.log(
+            `[TicketManager:${this.instanceId}] Found transcript directory: ${dir}`
+          );
+          break;
+        }
       }
 
-      // If not found, try the standard path
-      if (!userDir) {
-        userDir = this.transcriptManager.getUserDir(phoneNumber, username);
+      // If direct path not found, search for folders containing the phone number
+      if (!userDir && this.transcriptManager.findExistingFolderByPhone) {
+        userDir = this.transcriptManager.findExistingFolderByPhone(phoneNumber);
+        if (userDir) {
+          console.log(
+            `[TicketManager:${this.instanceId}] Found directory by phone search: ${userDir}`
+          );
+        }
+      }
+
+      // If still no directory, search all subdirectories for matching phone number
+      if (!userDir && fs.existsSync(this.transcriptManager.baseDir)) {
+        const dirs = fs
+          .readdirSync(this.transcriptManager.baseDir, { withFileTypes: true })
+          .filter((dirent) => dirent.isDirectory())
+          .map((dirent) => dirent.name);
+
+        for (const dir of dirs) {
+          if (dir.includes(phoneNumber)) {
+            userDir = path.join(this.transcriptManager.baseDir, dir);
+            console.log(
+              `[TicketManager:${this.instanceId}] Found directory containing phone number: ${userDir}`
+            );
+            break;
+          }
+        }
       }
 
       // Check if directory exists
-      if (!fs.existsSync(userDir)) {
+      if (!userDir || !fs.existsSync(userDir)) {
         console.log(
           `[TicketManager:${this.instanceId}] No transcript directory found for ${username} (${phoneNumber})`
         );
         return null;
       }
 
-      // First check for master transcript
-      const masterPath = path.join(userDir, "transcript-master.html");
-      if (fs.existsSync(masterPath)) {
-        console.log(
-          `[TicketManager:${this.instanceId}] Found master transcript at ${masterPath}`
-        );
-        return masterPath;
+      // Search for transcript files in various formats
+      const filePatterns = [
+        // Try different naming patterns
+        "transcript-master.html",
+        `${username.replace(/[^a-zA-Z0-9]/g, "-")}-transcript-master.html`,
+        "transcript-*.html", // Any transcript HTML file
+        "*.html", // Any HTML file as last resort
+      ];
+
+      for (const pattern of filePatterns) {
+        const files = glob.sync(path.join(userDir, pattern));
+        if (files.length > 0) {
+          // Sort by modified time (newest first)
+          files.sort(
+            (a, b) =>
+              fs.statSync(b).mtime.getTime() - fs.statSync(a).mtime.getTime()
+          );
+
+          console.log(
+            `[TicketManager:${this.instanceId}] Found transcript: ${files[0]}`
+          );
+          return files[0];
+        }
       }
 
-      // If no master transcript, fall back to standard approach
+      // If pattern matching didn't work, try direct file listing
       const files = fs
         .readdirSync(userDir)
         .filter(
           (file) =>
-            (file.endsWith(".html") && file.startsWith("transcript-")) ||
-            (file.endsWith(".md") && file.startsWith("transcript-"))
+            (file.endsWith(".html") && file.includes("transcript")) ||
+            (file.endsWith(".md") && file.includes("transcript"))
         )
         .sort((a, b) => {
           // Sort by creation time descending (newest first)

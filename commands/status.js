@@ -139,7 +139,6 @@ class StatusCommand extends Command {
             value: status.isConnected ? "🟢 Connected" : "🔴 Disconnected",
           },
           { name: "Server", value: interaction.guild.name, inline: true },
-          { name: "Instance ID", value: status.instanceId, inline: true },
           {
             name: "Category",
             value: status.categoryId ? `<#${status.categoryId}>` : "Not set",
