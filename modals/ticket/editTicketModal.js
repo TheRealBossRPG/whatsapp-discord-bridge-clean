@@ -1,5 +1,4 @@
-// modals/ticket/editTicketModal.js - Complete rewrite for proper username persistence
-
+// modals/ticket/editTicketModal.js
 const { EmbedBuilder } = require('discord.js');
 const Modal = require('../../templates/Modal');
 const fs = require('fs');
@@ -31,28 +30,44 @@ class EditTicketModal extends Modal {
       
       console.log(`[EditTicketModal] New values - Username: ${username}, Notes length: ${notes.length}`);
       
-      // Get instance if not provided (from interactionHandler)
-      if (!instance) {
-        // We'll try to work with minimal info even without a proper instance
-        console.log(`[EditTicketModal] No instance provided, creating minimal instance context`);
-        instance = {
-          instanceId: interaction.guildId,
-          guildId: interaction.guildId,
-          isTemporary: true
-        };
+      // Find instance managers
+      let userCardManager = null;
+      let transcriptManager = null;
+      let channelManager = null;
+      
+      if (instance) {
+        if (instance.managers) {
+          userCardManager = instance.managers.userCardManager;
+          transcriptManager = instance.managers.transcriptManager;
+          channelManager = instance.managers.channelManager;
+        } else {
+          userCardManager = instance.userCardManager;
+          transcriptManager = instance.transcriptManager;
+          channelManager = instance.channelManager;
+        }
       }
       
-      // Update user info - CRITICAL FOR PERSISTENCE
+      // Get old username first
+      let oldUsername = 'Unknown User';
+      if (userCardManager) {
+        const userInfo = await userCardManager.getUserInfo(phoneNumber);
+        if (userInfo) {
+          if (typeof userInfo === 'string') {
+            oldUsername = userInfo;
+          } else if (userInfo.username) {
+            oldUsername = userInfo.username;
+          } else if (userInfo.name) {
+            oldUsername = userInfo.name;
+          }
+        }
+      }
+      
+      console.log(`[EditTicketModal] Old username: ${oldUsername}`);
+      
+      // Update user info in multiple places to ensure persistence
       let userUpdateSuccess = false;
       
-      // APPROACH 1: Try to update through UserCardManager if available
-      let userCardManager = null;
-      if (instance.userCardManager) {
-        userCardManager = instance.userCardManager;
-      } else if (instance.managers && instance.managers.userCardManager) {
-        userCardManager = instance.managers.userCardManager;
-      }
-      
+      // 1. Update in UserCardManager first
       if (userCardManager) {
         try {
           // Try both methods for compatibility
@@ -65,22 +80,16 @@ class EditTicketModal extends Modal {
             userUpdateSuccess = true;
             console.log(`[EditTicketModal] Updated user info using setUserInfo`);
           }
-          
-          // Force saving if method exists
-          if (typeof userCardManager.saveUserCards === 'function') {
-            await userCardManager.saveUserCards();
-            console.log(`[EditTicketModal] Explicitly saved user cards`);
-          }
         } catch (userManagerError) {
           console.error(`[EditTicketModal] Error using UserCardManager:`, userManagerError);
         }
       }
       
-      // APPROACH 2: Direct file update as backup (ensures persistence)
+      // 2. Direct file update as backup (ensures persistence)
       if (!userUpdateSuccess) {
         try {
           // Determine the instance directory
-          const instanceId = instance.instanceId || interaction.guildId;
+          const instanceId = instance?.instanceId || interaction.guildId;
           const instanceDir = path.join(__dirname, '..', '..', 'instances', instanceId);
           
           // Create user data directory if it doesn't exist
@@ -105,11 +114,12 @@ class EditTicketModal extends Modal {
           // Clean the phone number
           const cleanPhone = phoneNumber.replace(/\D/g, '');
           
-          // Update user info
+          // Update user info with current timestamp
           userCards[cleanPhone] = {
             ...(userCards[cleanPhone] || {}),
             username: username,
-            lastUpdated: new Date().toISOString()
+            lastUpdated: new Date().toISOString(),
+            lastSeen: Date.now()
           };
           
           // Write back to file
@@ -122,13 +132,26 @@ class EditTicketModal extends Modal {
         }
       }
       
-      // APPROACH 3: If WhatsApp client available, update contacts there too
+      // 3. Update WhatsApp client contacts if available
       try {
         if (instance.clients && instance.clients.whatsAppClient) {
           const client = instance.clients.whatsAppClient;
           
           // Different clients store contacts differently, try multiple approaches
-          // 1. Direct contacts object (most common)
+          
+          // Try updateContact method if available
+          if (typeof client.updateContact === 'function') {
+            await client.updateContact(phoneNumber, username);
+            console.log(`[EditTicketModal] Updated contact using updateContact`);
+          }
+          
+          // Try using sock.updateProfileName (for @whiskeysockets/baileys)
+          if (client.sock && typeof client.sock.updateProfileName === 'function') {
+            await client.sock.updateProfileName(phoneNumber, username);
+            console.log(`[EditTicketModal] Updated name using sock.updateProfileName`);
+          }
+          
+          // Try direct contacts object update (most common)
           if (client.contacts) {
             const jid = `${phoneNumber}@s.whatsapp.net`;
             if (client.contacts[jid]) {
@@ -137,24 +160,12 @@ class EditTicketModal extends Modal {
               console.log(`[EditTicketModal] Updated name in WhatsApp contacts`);
             }
           }
-          
-          // 2. Using sock.updateProfileName (for @whiskeysockets/baileys)
-          if (client.sock && typeof client.sock.updateProfileName === 'function') {
-            client.sock.updateProfileName(phoneNumber, username);
-            console.log(`[EditTicketModal] Updated name using sock.updateProfileName`);
-          }
-          
-          // 3. Using client's updateContact method if available
-          if (typeof client.updateContact === 'function') {
-            await client.updateContact(phoneNumber, username);
-            console.log(`[EditTicketModal] Updated contact using updateContact`);
-          }
         }
       } catch (whatsappError) {
         console.error(`[EditTicketModal] Error updating WhatsApp client:`, whatsappError);
       }
       
-      // Update channel name to match the new username
+      // 4. Update channel name to match the new username
       try {
         // Format new channel name
         const formattedUsername = username
@@ -181,98 +192,138 @@ class EditTicketModal extends Modal {
         console.error(`[EditTicketModal] Error updating channel name:`, channelError);
       }
       
-      // Find the ticket embed message - try pinned messages first
-      let embedMessage = null;
+      // 5. Update transcript folders if needed - IMPORTANT: Check if folders exist first
+      if (transcriptManager && oldUsername !== username) {
+        try {
+          // Try direct method if available
+          if (typeof transcriptManager.updateUsername === 'function') {
+            await transcriptManager.updateUsername(phoneNumber, oldUsername, username);
+          } else {
+            // Determine folder paths manually
+            const baseDir = transcriptManager.baseDir || 
+                           path.join(__dirname, '..', '..', 'instances', instance?.instanceId || interaction.guildId, 'transcripts');
+            
+            // Try different possible folder name formats
+            const possibleOldPaths = [
+              path.join(baseDir, `${oldUsername} (${phoneNumber})`),
+              path.join(baseDir, `${oldUsername}(${phoneNumber})`),
+              path.join(baseDir, `${oldUsername}-${phoneNumber}`),
+              path.join(baseDir, phoneNumber, oldUsername),
+              path.join(baseDir, phoneNumber)
+            ];
+            
+            const newPath = path.join(baseDir, `${username} (${phoneNumber})`);
+            
+            let foundPath = null;
+            for (const oldPath of possibleOldPaths) {
+              if (fs.existsSync(oldPath)) {
+                foundPath = oldPath;
+                console.log(`[EditTicketModal] Found existing transcript folder at ${oldPath}`);
+                break;
+              }
+            }
+            
+            // Only try to rename if a folder was found
+            if (foundPath) {
+              // Create parent directory for new path if needed
+              const parentDir = path.dirname(newPath);
+              if (!fs.existsSync(parentDir)) {
+                fs.mkdirSync(parentDir, { recursive: true });
+              }
+              
+              // Rename the directory
+              fs.renameSync(foundPath, newPath);
+              console.log(`[EditTicketModal] Renamed directory from ${foundPath} to ${newPath}`);
+            } else {
+              console.log(`[EditTicketModal] No transcript folder found to rename for ${phoneNumber}`);
+            }
+          }
+        } catch (transcriptError) {
+          console.error(`[EditTicketModal] Error updating transcript folders:`, transcriptError);
+        }
+      }
+      
+      // 6. Update ticket embed message
       let embedUpdateSuccess = false;
       
       try {
+        // Find pinned message with 'Ticket Tool' title
         const pinnedMessages = await interaction.channel.messages.fetchPinned();
-        embedMessage = pinnedMessages.find(
-          m => m.embeds.length > 0 && 
-          m.embeds[0].title === 'Ticket Tool'
+        const ticketEmbed = pinnedMessages.find(m => 
+          m.embeds.length > 0 && m.embeds[0].title === 'Ticket Tool'
         );
         
-        if (embedMessage) {
-          console.log(`[EditTicketModal] Found embed in pinned messages`);
+        if (ticketEmbed) {
+          // Create new embed
+          const embed = new EmbedBuilder()
+            .setColor(0x00AE86)
+            .setTitle('Ticket Tool')
+            .setDescription(`\`\`\`${username}\`\`\` \`\`\`${phoneNumber}\`\`\``)
+            .addFields([
+              {
+                name: 'Opened Ticket',
+                value: ticketEmbed.embeds[0].fields.find(f => f.name === 'Opened Ticket')?.value || new Date().toLocaleString(),
+                inline: false
+              },
+              {
+                name: 'Notes',
+                value: `\`\`\`${notes || 'No notes provided.'}\`\`\``,
+                inline: false
+              }
+            ])
+            .setTimestamp();
+            
+          // Update the message
+          await ticketEmbed.edit({ 
+            embeds: [embed],
+            components: ticketEmbed.components
+          });
+          
+          embedUpdateSuccess = true;
+          console.log(`[EditTicketModal] Updated ticket embed message`);
         } else {
-          // Try recent messages if not found in pinned
-          const recentMessages = await interaction.channel.messages.fetch({ limit: 50 });
-          embedMessage = recentMessages.find(
+          // Try looking in recent messages as fallback
+          const recentMessages = await interaction.channel.messages.fetch({ limit: 20 });
+          const embedMessage = recentMessages.find(
             m => m.embeds.length > 0 && 
             m.embeds[0].title === 'Ticket Tool'
           );
           
           if (embedMessage) {
-            console.log(`[EditTicketModal] Found embed in recent messages`);
-          }
-        }
-      } catch (error) {
-        console.error(`[EditTicketModal] Error finding embed message:`, error);
-      }
-      
-      // Update or create embed message
-      if (embedMessage) {
-        try {
-          // Get current embed
-          const currentEmbed = embedMessage.embeds[0];
-          
-          // Create updated embed
-          const updatedEmbed = new EmbedBuilder()
-            .setColor(currentEmbed.color || 0x00AE86)
-            .setTitle(currentEmbed.title || 'Ticket Tool')
-            .setDescription(`\`\`\`${username}\`\`\` \`\`\`${phoneNumber}\`\`\``);
-          
-          // Add opened ticket field
-          let openedTicketValue = new Date().toLocaleString();
-          
-          // Try to preserve the original opened date if available
-          if (currentEmbed.fields && currentEmbed.fields.length > 0) {
-            const openedField = currentEmbed.fields.find(f => f.name === 'Opened Ticket');
-            if (openedField) {
-              openedTicketValue = openedField.value;
-            }
-          }
-          
-          updatedEmbed.addFields([
-            {
-              name: 'Opened Ticket',
-              value: openedTicketValue,
-              inline: false
-            },
-            {
-              name: 'Notes',
-              value: `\`\`\`${notes || 'No notes provided.'}\`\`\``,
-              inline: false
-            }
-          ]);
-          
-          // Set timestamp
-          updatedEmbed.setTimestamp();
-          
-          // Store components to reuse
-          const components = embedMessage.components || [];
-          
-          // Update the message
-          await embedMessage.edit({ 
-            embeds: [updatedEmbed],
-            components: components
-          });
-          
-          console.log(`[EditTicketModal] Updated ticket embed message`);
-          embedUpdateSuccess = true;
-        } catch (editError) {
-          console.error(`[EditTicketModal] Error updating embed:`, editError);
-          
-          // Try a simpler approach if the first attempt failed
-          try {
-            console.log(`[EditTicketModal] Trying simplified embed update approach`);
+            // Create new embed
+            const embed = new EmbedBuilder()
+              .setColor(0x00AE86)
+              .setTitle('Ticket Tool')
+              .setDescription(`\`\`\`${username}\`\`\` \`\`\`${phoneNumber}\`\`\``)
+              .addFields([
+                {
+                  name: 'Opened Ticket',
+                  value: embedMessage.embeds[0].fields.find(f => f.name === 'Opened Ticket')?.value || new Date().toLocaleString(),
+                  inline: false
+                },
+                {
+                  name: 'Notes',
+                  value: `\`\`\`${notes || 'No notes provided.'}\`\`\``,
+                  inline: false
+                }
+              ])
+              .setTimestamp();
+              
+            // Update the message
+            await embedMessage.edit({ 
+              embeds: [embed],
+              components: embedMessage.components
+            });
             
-            // Simple embed object approach
-            const simpleEmbed = {
-              color: 0x00AE86,
-              title: 'Ticket Tool',
-              description: `\`\`\`${username}\`\`\` \`\`\`${phoneNumber}\`\`\``,
-              fields: [
+            embedUpdateSuccess = true;
+            console.log(`[EditTicketModal] Updated ticket embed message from recent messages`);
+          } else {
+            // Create new embed if not found anywhere
+            const embed = new EmbedBuilder()
+              .setColor(0x00AE86)
+              .setTitle('Ticket Tool')
+              .setDescription(`\`\`\`${username}\`\`\` \`\`\`${phoneNumber}\`\`\``)
+              .addFields([
                 {
                   name: 'Opened Ticket',
                   value: new Date().toLocaleString(),
@@ -283,97 +334,98 @@ class EditTicketModal extends Modal {
                   value: `\`\`\`${notes || 'No notes provided.'}\`\`\``,
                   inline: false
                 }
-              ],
-              timestamp: new Date().toISOString()
-            };
+              ])
+              .setTimestamp();
+              
+            // Create edit and close buttons
+            const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+            const row = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`edit-user-${phoneNumber}`)
+                .setLabel("Edit")
+                .setStyle(ButtonStyle.Primary),
+              new ButtonBuilder()
+                .setCustomId(`close`)
+                .setLabel("Close")
+                .setStyle(ButtonStyle.Danger)
+            );
             
-            await embedMessage.edit({ 
-              embeds: [simpleEmbed],
-              components: embedMessage.components || []
+            // Send and pin the message
+            const message = await interaction.channel.send({ 
+              embeds: [embed],
+              components: [row]
             });
             
-            console.log(`[EditTicketModal] Updated ticket embed with simplified approach`);
+            try {
+              await message.pin();
+            } catch (pinError) {
+              console.error(`[EditTicketModal] Error pinning message:`, pinError);
+            }
+            
             embedUpdateSuccess = true;
-          } catch (simplifiedError) {
-            console.error(`[EditTicketModal] Error with simplified embed update:`, simplifiedError);
+            console.log(`[EditTicketModal] Created new ticket embed message`);
           }
         }
+      } catch (embedError) {
+        console.error(`[EditTicketModal] Error updating ticket embed:`, embedError);
       }
       
-      // Create new embed message if update failed or no embed exists
-      if (!embedMessage || !embedUpdateSuccess) {
-        try {
-          console.log(`[EditTicketModal] Creating new ticket embed message`);
+      // 7. Additional direct file update to enhance persistence
+      try {
+        // Try to update channel mapping file directly
+        if (channelManager && typeof channelManager.getChannelMappingPath === 'function') {
+          const mappingPath = channelManager.getChannelMappingPath();
           
-          const newEmbed = new EmbedBuilder()
-            .setColor(0x00AE86)
-            .setTitle('Ticket Tool')
-            .setDescription(`\`\`\`${username}\`\`\` \`\`\`${phoneNumber}\`\`\``)
-            .addFields([
-              {
-                name: 'Opened Ticket',
-                value: new Date().toLocaleString(),
-                inline: false
-              },
-              {
-                name: 'Notes',
-                value: `\`\`\`${notes || 'No notes provided.'}\`\`\``,
-                inline: false
+          if (fs.existsSync(mappingPath)) {
+            let channelMappings = {};
+            try {
+              channelMappings = JSON.parse(fs.readFileSync(mappingPath, 'utf8'));
+              
+              // Find the mapping for this phone number
+              for (const [phone, channelInfo] of Object.entries(channelMappings)) {
+                if (phone === phoneNumber || phone.includes(phoneNumber)) {
+                  // Update username in the mapping
+                  if (typeof channelInfo === 'object') {
+                    channelInfo.username = username;
+                  } else if (typeof channelInfo === 'string') {
+                    // If it's just a string (channelId), convert to object with username
+                    channelMappings[phone] = {
+                      channelId: channelInfo,
+                      username: username
+                    };
+                  }
+                }
               }
-            ])
-            .setTimestamp();
-          
-          // Create edit and close buttons
-          const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-          const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`edit-user-${phoneNumber}`)
-              .setLabel("Edit")
-              .setStyle(ButtonStyle.Primary),
-            new ButtonBuilder()
-              .setCustomId(`close`)
-              .setLabel("Close")
-              .setStyle(ButtonStyle.Danger)
-          );
-          
-          const message = await interaction.channel.send({ 
-            embeds: [newEmbed],
-            components: [row]
-          });
-          
-          await message.pin().catch(pinError => {
-            console.error(`[EditTicketModal] Error pinning message:`, pinError);
-          });
-          
-          console.log(`[EditTicketModal] Created new ticket embed message`);
-          embedUpdateSuccess = true;
-        } catch (createError) {
-          console.error(`[EditTicketModal] Error creating ticket info:`, createError);
+              
+              // Write back to file
+              fs.writeFileSync(mappingPath, JSON.stringify(channelMappings, null, 2), 'utf8');
+              console.log(`[EditTicketModal] Updated username in channel mapping file`);
+            } catch (mappingError) {
+              console.error(`[EditTicketModal] Error updating channel mapping:`, mappingError);
+            }
+          }
         }
+      } catch (additionalError) {
+        console.error(`[EditTicketModal] Error with additional file updates:`, additionalError);
       }
       
       // Send success message
       await interaction.editReply({ 
-        content: `✅ Ticket information updated successfully!${userUpdateSuccess ? '' : '\n\n⚠️ Note: User info could not be updated in the system, but the ticket display has been updated.'}` 
+        content: `✅ Ticket information updated successfully!` +
+                 `${userUpdateSuccess ? '' : '\n\n⚠️ Warning: User info might not be fully updated.'}` +
+                 `${embedUpdateSuccess ? '' : '\n\n⚠️ Warning: Ticket display might not be fully updated.'}`
       });
       
       return true;
     } catch (error) {
-      console.error(`[EditTicketModal] Unhandled error:`, error);
+      console.error(`[EditTicketModal] Error:`, error);
       
       try {
-        if (interaction.deferred) {
-          await interaction.editReply({ 
-            content: `❌ Error updating ticket information: ${error.message}` 
-          });
-        } else if (!interaction.replied) {
-          await interaction.reply({ 
-            content: `❌ Error updating ticket information: ${error.message}`, 
-            ephemeral: true 
-          });
-        }
+        await interaction.editReply({ 
+          content: `❌ Error updating ticket information: ${error.message}` 
+        });
       } catch (replyError) {
-        console.error(`[EditTicketModal] Error sending error reply:`, replyError);
+        console.error(`[EditTicketModal] Error sending error message:`, replyError);
       }
       
       return false;

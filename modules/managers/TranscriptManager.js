@@ -373,13 +373,109 @@ class TranscriptManager {
   }
 
   /**
-   * Get user directory
+   * Update the user directory name when username changes
+   * @param {string} phoneNumber - Phone number
+   * @param {string} oldUsername - Old username
+   * @param {string} newUsername - New username
+   * @returns {Promise<boolean>} - Success status
+   */
+  async updateUsername(phoneNumber, oldUsername, newUsername) {
+    try {
+      if (!phoneNumber || !oldUsername || !newUsername) {
+        console.log(
+          `[TranscriptManager:${this.instanceId}] Missing parameters for updateUsername`
+        );
+        return false;
+      }
+
+      console.log(
+        `[TranscriptManager:${this.instanceId}] Updating username from ${oldUsername} to ${newUsername} for ${phoneNumber}`
+      );
+
+      // Get old and new directory paths
+      const oldDir = this.getUserDir(phoneNumber, oldUsername);
+      const newDir = this.getUserDir(phoneNumber, newUsername);
+
+      // Check if old directory exists
+      if (!fs.existsSync(oldDir)) {
+        console.log(
+          `[TranscriptManager:${this.instanceId}] Old directory not found: ${oldDir}`
+        );
+        // Check alternative formats for the old directory
+        const alternativePaths = [
+          path.join(this.baseDir, `${oldUsername}(${phoneNumber})`),
+          path.join(this.baseDir, `${oldUsername} (${phoneNumber})`),
+          path.join(this.baseDir, `${oldUsername}-${phoneNumber}`),
+          path.join(this.baseDir, phoneNumber),
+          path.join(this.baseDir, `${phoneNumber}/${oldUsername}`),
+        ];
+
+        let foundPath = null;
+        for (const altPath of alternativePaths) {
+          if (fs.existsSync(altPath)) {
+            foundPath = altPath;
+            console.log(
+              `[TranscriptManager:${this.instanceId}] Found alternative path: ${altPath}`
+            );
+            break;
+          }
+        }
+
+        if (!foundPath) {
+          console.log(
+            `[TranscriptManager:${this.instanceId}] No existing directory found for ${phoneNumber} with username ${oldUsername}`
+          );
+          return false;
+        }
+
+        // Set oldDir to the found path
+        oldDir = foundPath;
+      }
+
+      // Ensure parent directory exists for new path
+      const parentDir = path.dirname(newDir);
+      if (!fs.existsSync(parentDir)) {
+        fs.mkdirSync(parentDir, { recursive: true });
+      }
+
+      // Rename directory
+      fs.renameSync(oldDir, newDir);
+      console.log(
+        `[TranscriptManager:${this.instanceId}] Renamed directory from ${oldDir} to ${newDir}`
+      );
+
+      return true;
+    } catch (error) {
+      console.error(
+        `[TranscriptManager:${this.instanceId}] Error updating username:`,
+        error
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Get user directory - made more robust to handle edge cases
    * @param {string} phoneNumber - Phone number
    * @param {string} username - Username
    * @returns {string} - Directory path
    */
   getUserDir(phoneNumber, username) {
-    return this.mediaManager.getUserDir(phoneNumber, username);
+    if (!phoneNumber) {
+      return path.join(this.baseDir, "unknown");
+    }
+
+    // Clean phone number
+    const cleanPhone = phoneNumber.replace(/\D/g, "").replace(/^(\+|00)/, "");
+
+    // If username is provided, use it
+    if (username) {
+      // Format directory name consistently
+      return path.join(this.baseDir, `${username} (${cleanPhone})`);
+    }
+
+    // If no username, just use phone number
+    return path.join(this.baseDir, cleanPhone);
   }
 
   /**

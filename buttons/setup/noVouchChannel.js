@@ -1,4 +1,4 @@
-// Updated buttons/setup/noVouchChannel.js
+// buttons/setup/noVouchChannel.js
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const Button = require('../../templates/Button');
 const fs = require('fs');
@@ -66,6 +66,80 @@ class NoVouchChannelButton extends Button {
           global.setupStorage.saveSetupParams(guildId, setupParams);
           console.log(`[NoVouchChannel] Saved setup params using global.setupStorage`);
         }
+      }
+
+      // IMPORTANT: Update global configuration immediately
+      try {
+        // Update existing instance if available
+        if (instance) {
+          // Update instance properties directly
+          instance.vouchChannelId = null;
+          instance.customSettings = instance.customSettings || {};
+          instance.customSettings.vouchChannelId = null;
+          instance.customSettings.vouchEnabled = false;
+          
+          // Update handlers if they exist
+          if (instance.handlers && instance.handlers.vouchHandler) {
+            instance.handlers.vouchHandler.isDisabled = true;
+            instance.handlers.vouchHandler.vouchChannelId = null;
+          }
+          
+          // Also update via managers if available
+          if (instance.managers && instance.managers.vouchHandler) {
+            instance.managers.vouchHandler.isDisabled = true;
+            instance.managers.vouchHandler.vouchChannelId = null;
+          }
+          
+          // Save to instance settings file directly
+          try {
+            const instanceDir = path.join(__dirname, '..', '..', 'instances', instance.instanceId || guildId);
+            if (!fs.existsSync(instanceDir)) {
+              fs.mkdirSync(instanceDir, { recursive: true });
+            }
+            
+            const settingsPath = path.join(instanceDir, 'settings.json');
+            let settings = {};
+            
+            // Read existing settings if available
+            if (fs.existsSync(settingsPath)) {
+              settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+            }
+            
+            // Update settings
+            settings.vouchChannelId = null;
+            settings.vouchEnabled = false;
+            
+            // Write updated settings
+            fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+            console.log(`[NoVouchChannel] Updated instance settings file directly`);
+          } catch (instanceError) {
+            console.error(`[NoVouchChannel] Error updating instance settings file:`, instanceError);
+          }
+        }
+        
+        // Try updating instance_configs.json as well
+        const configPath = path.join(__dirname, '..', '..', 'instance_configs.json');
+        if (fs.existsSync(configPath)) {
+          let configs = {};
+          
+          try {
+            configs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          } catch (readError) {
+            console.error(`[NoVouchChannel] Error reading instance_configs.json:`, readError);
+          }
+          
+          // Find the config for this guild
+          const instanceId = instance?.instanceId || guildId;
+          
+          if (configs[instanceId]) {
+            configs[instanceId].vouchChannelId = null;
+            // Write updated configs
+            fs.writeFileSync(configPath, JSON.stringify(configs, null, 2), 'utf8');
+            console.log(`[NoVouchChannel] Updated instance_configs.json`);
+          }
+        }
+      } catch (configError) {
+        console.error(`[NoVouchChannel] Error updating global configuration:`, configError);
       }
       
       // Create customize options buttons
