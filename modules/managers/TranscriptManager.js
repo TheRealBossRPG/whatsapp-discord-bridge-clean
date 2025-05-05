@@ -91,6 +91,152 @@ class TranscriptManager {
    * @param {string} newUsername - New username
    * @returns {Promise<boolean>} - Success status
    */
+  async updateUsername(phoneNumber, oldUsername, newUsername) {
+    try {
+      if (!phoneNumber || !oldUsername || !newUsername) {
+        return false;
+      }
+
+      console.log(
+        `[TranscriptManager:${this.instanceId}] Updating username in transcripts from ${oldUsername} to ${newUsername}`
+      );
+
+      // First check for existing folder with exact old format
+      let oldDir = this.getUserDir(phoneNumber, oldUsername);
+
+      // If not found, try to find by phone number
+      if (!fs.existsSync(oldDir)) {
+        const existingFolder = this.findExistingFolderByPhone(phoneNumber);
+        if (existingFolder) {
+          oldDir = existingFolder;
+          console.log(
+            `[TranscriptManager:${this.instanceId}] Found existing folder by phone: ${oldDir}`
+          );
+        } else {
+          console.log(
+            `[TranscriptManager:${this.instanceId}] No existing transcript folder found for ${phoneNumber}`
+          );
+          return false;
+        }
+      }
+
+      // Get new directory path
+      const newDir = this.getUserDir(phoneNumber, newUsername);
+
+      // Find the master transcript file
+      const sanitizedNewUsername = newUsername.replace(/[^a-zA-Z0-9]/g, "-");
+      const masterFilename = `${sanitizedNewUsername}-transcript-master.html`;
+      const oldMasterPath = path.join(oldDir, "transcript-master.html");
+      const newMasterPath = path.join(newDir, masterFilename);
+
+      // Look for any master transcript file patterns
+      let masterPath = null;
+      let masterContent = null;
+
+      if (fs.existsSync(oldMasterPath)) {
+        masterPath = oldMasterPath;
+      } else {
+        // Look for any HTML files that might be transcripts
+        const files = fs.readdirSync(oldDir);
+        for (const file of files) {
+          if (file.endsWith(".html") && file.includes("transcript")) {
+            masterPath = path.join(oldDir, file);
+            break;
+          }
+        }
+      }
+
+      // If we found a master file, update its content
+      if (masterPath && fs.existsSync(masterPath)) {
+        masterContent = fs.readFileSync(masterPath, "utf8");
+
+        // Replace all instances of old username with new username
+        const escapeRegExp = (string) =>
+          string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+        const regex = new RegExp(escapeRegExp(oldUsername), "g");
+        masterContent = masterContent.replace(regex, newUsername);
+
+        // Update user info in the header section if it exists
+        masterContent = masterContent.replace(
+          /<p><strong>User:<\/strong> .*?<\/p>/,
+          `<p><strong>User:</strong> ${newUsername}</p>`
+        );
+
+        // Update author names in message divs
+        const authorRegex = new RegExp(
+          `<div class="author">${escapeRegExp(oldUsername)}</div>`,
+          "g"
+        );
+        masterContent = masterContent.replace(
+          authorRegex,
+          `<div class="author">${newUsername}</div>`
+        );
+      }
+
+      // Create parent directory for new path if needed
+      if (!fs.existsSync(newDir) && newDir !== oldDir) {
+        fs.mkdirSync(newDir, { recursive: true });
+      }
+
+      // Save updated content to new location if we have it
+      if (masterContent) {
+        fs.writeFileSync(newMasterPath, masterContent, "utf8");
+        console.log(
+          `[TranscriptManager:${this.instanceId}] Updated and saved master transcript to ${newMasterPath}`
+        );
+
+        // If paths are different and old file exists, delete it
+        if (masterPath !== newMasterPath && fs.existsSync(masterPath)) {
+          fs.unlinkSync(masterPath);
+          console.log(
+            `[TranscriptManager:${this.instanceId}] Deleted old master transcript: ${masterPath}`
+          );
+        }
+      }
+
+      // Now rename the directory if paths are different
+      if (oldDir !== newDir) {
+        // Copy all other files if any
+        const files = fs.readdirSync(oldDir);
+        for (const file of files) {
+          // Skip HTML files as we've already handled the master
+          if (file.endsWith(".html") && file.includes("transcript")) {
+            continue;
+          }
+
+          const oldFilePath = path.join(oldDir, file);
+          const newFilePath = path.join(newDir, file);
+
+          // Copy file
+          fs.copyFileSync(oldFilePath, newFilePath);
+        }
+
+        // Delete old directory with all its contents
+        this.deleteDirectory(oldDir);
+
+        console.log(
+          `[TranscriptManager:${this.instanceId}] Renamed transcript folder from ${oldDir} to ${newDir}`
+        );
+      }
+
+      return true;
+    } catch (error) {
+      console.error(
+        `[TranscriptManager:${this.instanceId}] Error updating username in transcripts:`,
+        error
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Update username in transcript content
+   * @param {string} phoneNumber - Phone number
+   * @param {string} oldUsername - Old username
+   * @param {string} newUsername - New username
+   * @returns {Promise<boolean>} - Success status
+   */
   async updateUsernameInTranscripts(phoneNumber, oldUsername, newUsername) {
     try {
       if (!phoneNumber || !oldUsername || !newUsername) {
@@ -123,20 +269,23 @@ class TranscriptManager {
       // Get new directory path
       const newDir = this.getUserDir(phoneNumber, newUsername);
 
-      // Update transcripts in the folder - find all HTML and master transcripts
+      // Look for any master transcript file patterns
+      let masterFiles = [];
       const files = fs.readdirSync(oldDir);
-      const transcriptFiles = files.filter(
-        (file) =>
-          (file.endsWith(".html") && file.startsWith("transcript-")) ||
-          file === "transcript-master.html"
-      );
+      for (const file of files) {
+        if (file.endsWith(".html") && file.includes("transcript")) {
+          masterFiles.push(file);
+        }
+      }
 
-      // Update each transcript file
-      for (const file of transcriptFiles) {
-        const filePath = path.join(oldDir, file);
+      // Process each found file
+      let updatedAnyFile = false;
+      for (const file of masterFiles) {
+        const oldFilePath = path.join(oldDir, file);
+
         try {
           // Read file content
-          let content = fs.readFileSync(filePath, "utf8");
+          let content = fs.readFileSync(oldFilePath, "utf8");
 
           // Replace all instances of old username with new username
           const escapeRegExp = (string) =>
@@ -150,11 +299,44 @@ class TranscriptManager {
             `<p><strong>User:</strong> ${newUsername}</p>`
           );
 
-          // Write updated content back to file
-          fs.writeFileSync(filePath, content, "utf8");
-          console.log(
-            `[TranscriptManager:${this.instanceId}] Updated username in transcript: ${file}`
+          // Update author names in message divs
+          const authorRegex = new RegExp(
+            `<div class="author">${escapeRegExp(oldUsername)}</div>`,
+            "g"
           );
+          content = content.replace(
+            authorRegex,
+            `<div class="author">${newUsername}</div>`
+          );
+
+          // Create the new filename using the updated username
+          const sanitizedNewUsername = newUsername.replace(
+            /[^a-zA-Z0-9]/g,
+            "-"
+          );
+          const newFilename = `${sanitizedNewUsername}-transcript-master.html`;
+          const newFilePath = path.join(newDir, newFilename);
+
+          // Ensure the directory exists
+          if (!fs.existsSync(path.dirname(newFilePath))) {
+            fs.mkdirSync(path.dirname(newFilePath), { recursive: true });
+          }
+
+          // Write updated content to new file location
+          fs.writeFileSync(newFilePath, content, "utf8");
+          console.log(
+            `[TranscriptManager:${this.instanceId}] Updated username in transcript: ${file} -> ${newFilename}`
+          );
+
+          // If this isn't the target master file, delete it after copying
+          if (oldFilePath !== newFilePath) {
+            fs.unlinkSync(oldFilePath);
+            console.log(
+              `[TranscriptManager:${this.instanceId}] Deleted old transcript: ${oldFilePath}`
+            );
+          }
+
+          updatedAnyFile = true;
         } catch (fileError) {
           console.error(
             `[TranscriptManager:${this.instanceId}] Error updating transcript ${file}:`,
@@ -163,21 +345,34 @@ class TranscriptManager {
         }
       }
 
-      // Create parent directory for new path if needed
-      const parentDir = path.dirname(newDir);
-      if (!fs.existsSync(parentDir)) {
-        fs.mkdirSync(parentDir, { recursive: true });
-      }
-
-      // Now rename the directory if paths are different
+      // If directories are different, move any other files and delete old dir
       if (oldDir !== newDir) {
-        fs.renameSync(oldDir, newDir);
+        // Ensure new directory exists
+        if (!fs.existsSync(newDir)) {
+          fs.mkdirSync(newDir, { recursive: true });
+        }
+
+        // Copy any remaining files
+        const remainingFiles = fs.readdirSync(oldDir);
+        for (const file of remainingFiles) {
+          const oldFilePath = path.join(oldDir, file);
+          const newFilePath = path.join(newDir, file);
+
+          // Copy the file if it's not an HTML transcript
+          if (!file.endsWith(".html") || !file.includes("transcript")) {
+            fs.copyFileSync(oldFilePath, newFilePath);
+          }
+        }
+
+        // Try to delete the old directory
+        this.deleteDirectory(oldDir);
+
         console.log(
           `[TranscriptManager:${this.instanceId}] Renamed transcript folder from ${oldDir} to ${newDir}`
         );
       }
 
-      return true;
+      return updatedAnyFile || oldDir !== newDir;
     } catch (error) {
       console.error(
         `[TranscriptManager:${this.instanceId}] Error updating username in transcripts:`,
@@ -188,15 +383,50 @@ class TranscriptManager {
   }
 
   /**
-   * Create or update master transcript
+   * Recursively delete a directory and all its contents
+   * @param {string} dirPath - Directory path
+   */
+  deleteDirectory(dirPath) {
+    if (!fs.existsSync(dirPath)) return;
+
+    const files = fs.readdirSync(dirPath);
+
+    for (const file of files) {
+      const filePath = path.join(dirPath, file);
+
+      if (fs.statSync(filePath).isDirectory()) {
+        this.deleteDirectory(filePath);
+      } else {
+        fs.unlinkSync(filePath);
+      }
+    }
+
+    fs.rmdirSync(dirPath);
+    console.log(
+      `[TranscriptManager:${this.instanceId}] Deleted directory: ${dirPath}`
+    );
+  }
+
+  /**
+   * Create and save transcript
    * @param {Object} channel - Discord channel
    * @param {string} username - Username
    * @param {string} phoneNumber - Phone number
-   * @returns {Promise<string>} - Path to master transcript
+   * @returns {Promise<string>} - Path to transcript
    */
-  async createOrUpdateMasterTranscript(channel, username, phoneNumber) {
+  async createAndSaveTranscript(channel, username, phoneNumber) {
     try {
-      // Get user directory
+      // Check if disabled
+      if (this.isDisabled) {
+        console.log(
+          `[TranscriptManager:${this.instanceId}] Transcript creation disabled`
+        );
+        return null;
+      }
+
+      // Create master transcript filename
+      const sanitizedUsername = username.replace(/[^a-zA-Z0-9]/g, "-");
+      const masterFilename = `${sanitizedUsername}-transcript-master.html`;
       const userDir = this.getUserDir(phoneNumber, username);
 
       // Ensure directory exists
@@ -205,9 +435,7 @@ class TranscriptManager {
       }
 
       // Path to master transcript
-      const masterPath = path.join(userDir, "transcript-master.html");
-
-      // Check if master transcript already exists
+      const masterPath = path.join(userDir, masterFilename);
       const masterExists = fs.existsSync(masterPath);
 
       // Fetch messages from the channel (up to 100)
@@ -218,54 +446,100 @@ class TranscriptManager {
         (a, b) => a.createdTimestamp - b.createdTimestamp
       );
 
-      // Start building HTML or get existing content
-      let html;
+      // Filter out system messages and only keep user/staff messages
+      const filteredMessages = this.filterMessagesForTranscript(sortedMessages);
+
+      let html = "";
 
       if (masterExists) {
-        // Read existing master transcript
+        // If master exists, read it and append new messages
+        console.log(
+          `[TranscriptManager:${this.instanceId}] Found existing master transcript, appending new messages`
+        );
         const existingHtml = fs.readFileSync(masterPath, "utf8");
 
-        // Extract the main body part before the closing tags
-        const bodyEndIndex = existingHtml.lastIndexOf("</div>");
-        if (bodyEndIndex !== -1) {
-          html = existingHtml.substring(0, bodyEndIndex);
-        } else {
-          // If we can't find the end point, start fresh
-          html = this.createTranscriptHeader(username, phoneNumber);
-        }
+        // Find where to insert new content (before closing body/html tags)
+        const insertPosition = existingHtml.lastIndexOf("</body>");
 
-        // Add a separator for new content
-        html += `
+        if (insertPosition !== -1) {
+          // Create a separator for the new session
+          const separator = `
   <div class="separator">
     <hr>
-    <p class="update-info">--- Updated on ${new Date().toLocaleString()} ---</p>
+    <p class="update-info">--- New conversation on ${new Date().toLocaleString()} ---</p>
     <hr>
   </div>`;
+
+          // Build HTML by inserting new content before closing tags
+          html =
+            existingHtml.substring(0, insertPosition) +
+            separator +
+            this.formatMessagesHtml(filteredMessages) +
+            existingHtml.substring(insertPosition);
+
+          // Update the "Last Updated" timestamp
+          html = html.replace(
+            /<p><strong>Last Updated:<\/strong>.*?<\/p>/,
+            `<p><strong>Last Updated:</strong> ${new Date().toLocaleString()}</p>`
+          );
+        } else {
+          // If we can't find insertion point, create new content but preserve history
+          console.log(
+            `[TranscriptManager:${this.instanceId}] Couldn't find insertion point, rebuilding transcript`
+          );
+          html = this.createTranscriptContent(
+            username,
+            phoneNumber,
+            filteredMessages
+          );
+        }
       } else {
-        // Create new transcript with header
-        html = this.createTranscriptHeader(username, phoneNumber);
+        // If master doesn't exist, create new content
+        console.log(
+          `[TranscriptManager:${this.instanceId}] Creating new master transcript`
+        );
+        html = this.createTranscriptContent(
+          username,
+          phoneNumber,
+          filteredMessages
+        );
       }
 
-      // Add latest messages
-      html += this.formatMessagesHtml(sortedMessages);
-
-      // Close HTML
-      html += `
-</body>
-</html>`;
-
-      // Write file
+      // Write to master file
       fs.writeFileSync(masterPath, html, "utf8");
       console.log(
-        `[TranscriptManager:${this.instanceId}] ${
-          masterExists ? "Updated" : "Created"
-        } master transcript at ${masterPath}`
+        `[TranscriptManager:${this.instanceId}] Updated master transcript at ${masterPath}`
       );
+
+      // If we need to send to a transcript channel, create a temporary copy
+      if (this.transcriptChannelId && this.discordClient && this.guildId) {
+        // Create a temporary copy for sending to the channel
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const tempFilename = `temp-transcript-${timestamp}.html`;
+        const tempPath = path.join(userDir, tempFilename);
+
+        // Copy the master to temp file
+        fs.copyFileSync(masterPath, tempPath);
+
+        // Send to transcript channel
+        await this.sendTranscriptToChannel(tempPath, username, phoneNumber);
+
+        // Delete the temporary file
+        if (fs.existsSync(tempPath)) {
+          fs.unlinkSync(tempPath);
+          console.log(
+            `[TranscriptManager:${this.instanceId}] Deleted temporary transcript: ${tempPath}`
+          );
+        }
+
+        // Return the master path since the temp file is deleted
+        return masterPath;
+      }
 
       return masterPath;
     } catch (error) {
       console.error(
-        `[TranscriptManager:${this.instanceId}] Error with master transcript:`,
+        `[TranscriptManager:${this.instanceId}] Error creating transcript:`,
         error
       );
       throw error;
@@ -273,18 +547,55 @@ class TranscriptManager {
   }
 
   /**
-   * Create transcript header HTML
+   * Filter out system messages and only keep user/staff messages
+   * @param {Array} messages - Array of Discord messages
+   * @returns {Array} - Filtered messages
+   */
+  filterMessagesForTranscript(messages) {
+    return messages.filter((message) => {
+      // Skip messages with no content or embed-only messages from the bot
+      if (message.author.bot) {
+        // Check if this is a system message we want to skip
+        const isSystemMessage =
+          // Skip transcript messages
+          message.content.includes("Transcript") ||
+          // Skip ticket tool embeds
+          (message.embeds.length > 0 &&
+            (message.embeds[0].title === "Ticket Tool" ||
+              message.embeds[0].title === "Support Ticket Transcript" ||
+              message.embeds.some(
+                (embed) =>
+                  embed.description && embed.description.includes("transcript")
+              ))) ||
+          // Skip countdown messages
+          message.content.includes("ticket will be closed in") ||
+          // Skip transcript notes
+          message.content.includes(
+            "All messages in this channel will be included"
+          );
+
+        return !isSystemMessage;
+      }
+
+      // Keep real user messages
+      return true;
+    });
+  }
+
+  /**
+   * Create complete transcript HTML content
    * @param {string} username - Username
    * @param {string} phoneNumber - Phone number
-   * @returns {string} - HTML header
+   * @param {Array} messages - Filtered messages
+   * @returns {string} - Complete HTML content
    */
-  createTranscriptHeader(username, phoneNumber) {
+  createTranscriptContent(username, phoneNumber, messages) {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ticket Transcript: ${username}</title>
+  <title>Support Ticket: ${username}</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -358,14 +669,16 @@ class TranscriptManager {
     <p><strong>User:</strong> ${username}</p>
     <p><strong>WhatsApp:</strong> ${phoneNumber}</p>
     <p><strong>Instance:</strong> ${this.instanceId}</p>
-    <p><strong>First Created:</strong> ${new Date().toLocaleString()}</p>
+    <p><strong>Last Updated:</strong> ${new Date().toLocaleString()}</p>
   </div>
-  <h2>Messages</h2>
-`;
+  <h2>Conversation</h2>
+  ${this.formatMessagesHtml(messages)}
+</body>
+</html>`;
   }
 
   /**
-   * Format messages as HTML
+   * Format messages as HTML, filtering out system messages
    * @param {Array} messages - Array of Discord messages
    * @returns {string} - HTML content
    */
@@ -373,13 +686,37 @@ class TranscriptManager {
     let html = "";
 
     for (const message of messages) {
-      const author = message.member?.nickname || message.author.username;
-      const isBot = message.author.bot;
-      const botPrefix = isBot ? "[BOT] " : "";
+      // Skip empty messages
+      if (
+        !message.content &&
+        message.attachments.size === 0 &&
+        message.embeds.length === 0
+      ) {
+        continue;
+      }
+
+      // Get the author name
+      let authorName = message.member?.nickname || message.author.username;
+
+      // If the message is from a bot and is a user message (from WhatsApp)
+      const isWhatsAppUserMessage =
+        message.author.bot &&
+        message.content.includes("**") &&
+        message.content.includes(":");
+
+      if (isWhatsAppUserMessage) {
+        // Extract the username from the message format "**Username**: message"
+        const match = message.content.match(/^\*\*(.*?)\*\*:/);
+        if (match && match[1]) {
+          authorName = match[1];
+          // Remove the prefix from the content
+          message.content = message.content.replace(/^\*\*.*?\*\*: /, "");
+        }
+      }
 
       html += `
   <div class="message">
-    <div class="author">${botPrefix}${author}</div>
+    <div class="author">${authorName}</div>
     <div class="content">
       <div class="time">${message.createdAt.toLocaleString()}</div>
       <div class="text">${message.content || ""}</div>`;
@@ -399,15 +736,22 @@ class TranscriptManager {
         }
       }
 
-      // Add embeds
-      if (message.embeds.length > 0) {
-        for (const embed of message.embeds) {
+      // Only include relevant embeds (skip ticket tool embeds)
+      const relevantEmbeds = message.embeds.filter(
+        (embed) =>
+          embed.title !== "Ticket Tool" &&
+          !embed.description?.includes("transcript") &&
+          !embed.title?.includes("Transcript")
+      );
+
+      if (relevantEmbeds.length > 0) {
+        for (const embed of relevantEmbeds) {
           html += `
       <div class="embed">
         ${embed.title ? `<div><strong>${embed.title}</strong></div>` : ""}
         ${embed.description ? `<div>${embed.description}</div>` : ""}`;
 
-          if (embed.fields.length > 0) {
+          if (embed.fields && embed.fields.length > 0) {
             for (const field of embed.fields) {
               html += `
         <div><strong>${field.name}:</strong> ${field.value}</div>`;
@@ -425,58 +769,6 @@ class TranscriptManager {
     }
 
     return html;
-  }
-
-  /**
-   * Create and save transcript
-   * @param {Object} channel - Discord channel
-   * @param {string} username - Username
-   * @param {string} phoneNumber - Phone number
-   * @returns {Promise<string>} - Path to transcript
-   */
-  async createAndSaveTranscript(channel, username, phoneNumber) {
-    try {
-      // Check if disabled
-      if (this.isDisabled) {
-        console.log(
-          `[TranscriptManager:${this.instanceId}] Transcript creation disabled`
-        );
-        return null;
-      }
-
-      // First update or create master transcript
-      const masterTranscriptPath = await this.createOrUpdateMasterTranscript(
-        channel,
-        username,
-        phoneNumber
-      );
-
-      // Create a timestamped copy for this specific closure
-      const userDir = this.getUserDir(phoneNumber, username);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filename = `transcript-${timestamp}.html`;
-      const filepath = path.join(userDir, filename);
-
-      // Copy the master transcript to the timestamped version
-      fs.copyFileSync(masterTranscriptPath, filepath);
-
-      console.log(
-        `[TranscriptManager:${this.instanceId}] Created timestamped transcript copy at ${filepath}`
-      );
-
-      // Send to transcript channel if available
-      if (this.transcriptChannelId && this.discordClient && this.guildId) {
-        await this.sendTranscriptToChannel(filepath, username, phoneNumber);
-      }
-
-      return filepath;
-    } catch (error) {
-      console.error(
-        `[TranscriptManager:${this.instanceId}] Error creating transcript:`,
-        error
-      );
-      throw error;
-    }
   }
 
   /**
@@ -605,88 +897,6 @@ class TranscriptManager {
     } catch (error) {
       console.error(
         `[TranscriptManager:${this.instanceId}] Error adding user message:`,
-        error
-      );
-      return false;
-    }
-  }
-
-  /**
-   * Update the user directory name when username changes
-   * @param {string} phoneNumber - Phone number
-   * @param {string} oldUsername - Old username
-   * @param {string} newUsername - New username
-   * @returns {Promise<boolean>} - Success status
-   */
-  async updateUsername(phoneNumber, oldUsername, newUsername) {
-    try {
-      if (!phoneNumber || !oldUsername || !newUsername) {
-        console.log(
-          `[TranscriptManager:${this.instanceId}] Missing parameters for updateUsername`
-        );
-        return false;
-      }
-
-      console.log(
-        `[TranscriptManager:${this.instanceId}] Updating username from ${oldUsername} to ${newUsername} for ${phoneNumber}`
-      );
-
-      // Get old and new directory paths
-      const oldDir = this.getUserDir(phoneNumber, oldUsername);
-      const newDir = this.getUserDir(phoneNumber, newUsername);
-
-      // Check if old directory exists
-      if (!fs.existsSync(oldDir)) {
-        console.log(
-          `[TranscriptManager:${this.instanceId}] Old directory not found: ${oldDir}`
-        );
-        // Check alternative formats for the old directory
-        const alternativePaths = [
-          path.join(this.baseDir, `${oldUsername}(${phoneNumber})`),
-          path.join(this.baseDir, `${oldUsername} (${phoneNumber})`),
-          path.join(this.baseDir, `${oldUsername}-${phoneNumber}`),
-          path.join(this.baseDir, phoneNumber),
-          path.join(this.baseDir, `${phoneNumber}/${oldUsername}`),
-        ];
-
-        let foundPath = null;
-        for (const altPath of alternativePaths) {
-          if (fs.existsSync(altPath)) {
-            foundPath = altPath;
-            console.log(
-              `[TranscriptManager:${this.instanceId}] Found alternative path: ${altPath}`
-            );
-            break;
-          }
-        }
-
-        if (!foundPath) {
-          console.log(
-            `[TranscriptManager:${this.instanceId}] No existing directory found for ${phoneNumber} with username ${oldUsername}`
-          );
-          return false;
-        }
-
-        // Set oldDir to the found path
-        oldDir = foundPath;
-      }
-
-      // Ensure parent directory exists for new path
-      const parentDir = path.dirname(newDir);
-      if (!fs.existsSync(parentDir)) {
-        fs.mkdirSync(parentDir, { recursive: true });
-      }
-
-      // Rename directory
-      fs.renameSync(oldDir, newDir);
-      console.log(
-        `[TranscriptManager:${this.instanceId}] Renamed directory from ${oldDir} to ${newDir}`
-      );
-
-      return true;
-    } catch (error) {
-      console.error(
-        `[TranscriptManager:${this.instanceId}] Error updating username:`,
         error
       );
       return false;
