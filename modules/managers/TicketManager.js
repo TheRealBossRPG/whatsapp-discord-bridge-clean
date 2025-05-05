@@ -117,10 +117,36 @@ class TicketManager {
         return null;
       }
 
+      // Get latest username from user card manager if available
+      let updatedUsername = username;
+      if (this.userCardManager) {
+        try {
+          const userInfo = await this.userCardManager.getUserInfo(phoneNumber);
+          if (userInfo) {
+            if (typeof userInfo === "string") {
+              updatedUsername = userInfo;
+            } else if (userInfo.username) {
+              updatedUsername = userInfo.username;
+            } else if (userInfo.name) {
+              updatedUsername = userInfo.name;
+            }
+            console.log(
+              `[TicketManager:${this.instanceId}] Found updated username in user card: ${updatedUsername}`
+            );
+          }
+        } catch (userCardError) {
+          console.error(
+            `[TicketManager:${this.instanceId}] Error getting user info:`,
+            userCardError
+          );
+          // Continue with provided username on error
+        }
+      }
+
       const existingChannelId = this.channelManager.getUserChannel(phoneNumber);
       if (existingChannelId) {
         console.log(
-          `[TicketManager:${this.instanceId}] User ${username} (${phoneNumber}) already has channel ${existingChannelId}`
+          `[TicketManager:${this.instanceId}] User ${updatedUsername} (${phoneNumber}) already has channel ${existingChannelId}`
         );
 
         // Get the existing channel
@@ -161,7 +187,7 @@ class TicketManager {
 
       // Clean phone number and format username for channel name
       const cleanPhone = phoneNumber.replace(/\D/g, "");
-      const formattedUsername = username
+      const formattedUsername = updatedUsername
         .toLowerCase()
         .replace(/[^a-z0-9]/g, "-")
         .replace(/-+/g, "-")
@@ -209,14 +235,14 @@ class TicketManager {
 
       // Replace placeholders
       introMessage = introMessage
-        .replace(/{name}/g, username)
+        .replace(/{name}/g, updatedUsername)
         .replace(/{phoneNumber}/g, phoneNumber);
 
       // Check for previous transcripts
       let previousTranscript = null;
       if (this.transcriptManager) {
         previousTranscript = await this.getLatestTranscript(
-          username,
+          updatedUsername,
           phoneNumber
         );
       }
@@ -225,7 +251,9 @@ class TicketManager {
       const embed = new EmbedBuilder()
         .setColor(0x00ae86)
         .setTitle(`Ticket Tool`)
-        .setDescription(`\`\`\`${username}\`\`\` \`\`\`${phoneNumber}\`\`\``)
+        .setDescription(
+          `\`\`\`${updatedUsername}\`\`\` \`\`\`${phoneNumber}\`\`\``
+        )
         .addFields(
           {
             name: "Opened Ticket",
@@ -526,114 +554,59 @@ class TicketManager {
         return null;
       }
 
-      // Get user info to check for previous usernames
-      const userInfo = this.userCardManager
-        ? this.userCardManager.getUserInfo(phoneNumber)
-        : null;
+      // First try to find the directory by phone number
+      let userDir = null;
 
-      // Get the user directory path for current username
-      const userDir = this.transcriptManager.getUserDir(phoneNumber, username);
-
-      // Check if this directory exists
-      const userDirExists = fs.existsSync(userDir);
-      console.log(
-        `[TicketManager:${this.instanceId}] Primary transcript directory ${userDir} exists: ${userDirExists}`
-      );
-
-      // Add directories to check, starting with most likely
-      const dirsToCheck = [userDir];
-
-      // If user directory doesn't exist, try more options
-      if (!userDirExists) {
-        // Try the phone number directory directly
-        const phoneDir = path.join(path.dirname(userDir), phoneNumber);
-        if (fs.existsSync(phoneDir)) {
-          dirsToCheck.push(phoneDir);
-          console.log(
-            `[TicketManager:${this.instanceId}] Found alternate phone directory: ${phoneDir}`
-          );
-        }
-
-        // If we have transcript manager's base directory, look for any matching directories
-        if (
-          this.transcriptManager.baseDir &&
-          fs.existsSync(this.transcriptManager.baseDir)
-        ) {
-          const allDirs = fs.readdirSync(this.transcriptManager.baseDir);
-
-          // Check for directories with this phone number
-          for (const dir of allDirs) {
-            if (dir.includes(`(${phoneNumber})`) || dir === phoneNumber) {
-              const matchingDir = path.join(
-                this.transcriptManager.baseDir,
-                dir
-              );
-              dirsToCheck.push(matchingDir);
-              console.log(
-                `[TicketManager:${this.instanceId}] Found phone number match directory: ${matchingDir}`
-              );
-            }
-          }
-        }
+      // Try to find by phone directly
+      if (this.transcriptManager.findExistingFolderByPhone) {
+        userDir = this.transcriptManager.findExistingFolderByPhone(phoneNumber);
       }
 
-      console.log(
-        `[TicketManager:${this.instanceId}] Checking ${dirsToCheck.length} directories for transcripts`
-      );
-
-      // Check each directory for transcripts
-      let latestTranscript = null;
-      let latestTime = 0;
-
-      for (const dirToCheck of dirsToCheck) {
-        if (fs.existsSync(dirToCheck)) {
-          // Look for HTML transcripts
-          const files = fs
-            .readdirSync(dirToCheck)
-            .filter(
-              (file) =>
-                (file.endsWith(".html") && file.startsWith("transcript-")) ||
-                (file.endsWith(".md") && file.startsWith("transcript-"))
-            )
-            .sort((a, b) => {
-              // Sort by creation time descending (newest first)
-              return (
-                fs.statSync(path.join(dirToCheck, b)).mtime.getTime() -
-                fs.statSync(path.join(dirToCheck, a)).mtime.getTime()
-              );
-            });
-
-          // If files found, check if newer than what we have
-          if (files.length > 0) {
-            const newestFile = files[0];
-            const filePath = path.join(dirToCheck, newestFile);
-            const fileTime = fs.statSync(filePath).mtime.getTime();
-
-            console.log(
-              `[TicketManager:${
-                this.instanceId
-              }] Found transcript in ${dirToCheck}: ${newestFile} (${new Date(
-                fileTime
-              ).toLocaleString()})`
-            );
-
-            // If this is newer than what we have so far, use it
-            if (fileTime > latestTime) {
-              latestTranscript = filePath;
-              latestTime = fileTime;
-              console.log(
-                `[TicketManager:${this.instanceId}] New latest transcript: ${latestTranscript}`
-              );
-            }
-          }
-        }
+      // If not found, try the standard path
+      if (!userDir) {
+        userDir = this.transcriptManager.getUserDir(phoneNumber, username);
       }
 
-      if (latestTranscript) {
+      // Check if directory exists
+      if (!fs.existsSync(userDir)) {
         console.log(
-          `[TicketManager:${this.instanceId}] Returning latest transcript: ${latestTranscript}`
+          `[TicketManager:${this.instanceId}] No transcript directory found for ${username} (${phoneNumber})`
         );
-        return latestTranscript;
+        return null;
+      }
+
+      // First check for master transcript
+      const masterPath = path.join(userDir, "transcript-master.html");
+      if (fs.existsSync(masterPath)) {
+        console.log(
+          `[TicketManager:${this.instanceId}] Found master transcript at ${masterPath}`
+        );
+        return masterPath;
+      }
+
+      // If no master transcript, fall back to standard approach
+      const files = fs
+        .readdirSync(userDir)
+        .filter(
+          (file) =>
+            (file.endsWith(".html") && file.startsWith("transcript-")) ||
+            (file.endsWith(".md") && file.startsWith("transcript-"))
+        )
+        .sort((a, b) => {
+          // Sort by creation time descending (newest first)
+          return (
+            fs.statSync(path.join(userDir, b)).mtime.getTime() -
+            fs.statSync(path.join(userDir, a)).mtime.getTime()
+          );
+        });
+
+      if (files.length > 0) {
+        const newestFile = files[0];
+        const filePath = path.join(userDir, newestFile);
+        console.log(
+          `[TicketManager:${this.instanceId}] Found latest transcript: ${filePath}`
+        );
+        return filePath;
       }
 
       console.log(
