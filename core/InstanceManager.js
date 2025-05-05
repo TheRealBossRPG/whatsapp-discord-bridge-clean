@@ -38,21 +38,22 @@ class InstanceManager {
   saveConfigurations() {
     try {
       // Convert configs to serializable format (no BigInts or circular references)
+      // CRITICAL: Don't store customSettings, only minimal identification info
       const serializable = {};
       
       for (const [instanceId, config] of Object.entries(this.configs)) {
-        // Create a clean copy without non-serializable parts
+        // Create a clean copy with ONLY identification info
         serializable[instanceId] = {
           guildId: config.guildId,
           categoryId: String(config.categoryId), // Convert BigInt to string
           transcriptChannelId: config.transcriptChannelId ? String(config.transcriptChannelId) : null,
           vouchChannelId: config.vouchChannelId ? String(config.vouchChannelId) : null,
-          customSettings: config.customSettings || {}
+          // Deliberately NOT including customSettings
         };
       }
       
       fs.writeFileSync(this.configPath, JSON.stringify(serializable, null, 2), 'utf8');
-      console.log(`Saved ${Object.keys(serializable).length} instance configurations`);
+      console.log(`Saved ${Object.keys(serializable).length} instance configurations (minimal info only)`);
     } catch (error) {
       console.error('Error saving instance configurations:', error);
     }
@@ -145,16 +146,24 @@ class InstanceManager {
       // Add the instance to our map
       this.instances.set(instanceId, instance);
       
-      // Store the configuration (but without the Discord client reference)
+      // Store the minimal configuration for future reference
       this.configs[instanceId] = {
         guildId: options.guildId,
         categoryId: options.categoryId,
         transcriptChannelId: options.transcriptChannelId || null,
         vouchChannelId: options.vouchChannelId || null,
-        customSettings: options.customSettings || {}
+        // Intentionally NOT including customSettings
       };
       
+      // Save minimal configurations for future lookup
       this.saveConfigurations();
+      
+      // If customSettings provided, save them to instance-specific file
+      if (options.customSettings && Object.keys(options.customSettings).length > 0) {
+        const settingsPath = path.join(instanceDir, 'settings.json');
+        fs.writeFileSync(settingsPath, JSON.stringify(options.customSettings, null, 2), 'utf8');
+        console.log(`Saved custom settings to instance-specific file at ${settingsPath}`);
+      }
       
       console.log(`Instance ${instanceId} created successfully`);
       return instance;
@@ -223,178 +232,87 @@ class InstanceManager {
 
   async saveInstanceSettings(instanceId, settings) {
     try {
-      console.log(`Saving settings for instance ${instanceId}`);
+      console.log(`[InstanceManager] Saving settings for instance ${instanceId}`);
       
-      // Try both ways to find the instance - by instanceId and by guildId
+      // Get the instance directory path
+      const instanceDir = path.join(this.instancesDir, instanceId);
+      if (!fs.existsSync(instanceDir)) {
+        fs.mkdirSync(instanceDir, { recursive: true });
+      }
+      
+      // Get the settings file path
+      const settingsPath = path.join(instanceDir, 'settings.json');
+      
+      // Load existing settings first
+      let existingSettings = {};
+      if (fs.existsSync(settingsPath)) {
+        try {
+          existingSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        } catch (e) {
+          console.error(`Error reading existing settings:`, e);
+        }
+      }
+      
+      // Merge with new settings
+      const mergedSettings = {
+        ...existingSettings,
+        ...settings
+      };
+      
+      // Write to instance-specific settings file
+      fs.writeFileSync(settingsPath, JSON.stringify(mergedSettings, null, 2), 'utf8');
+      console.log(`Saved settings to instance-specific file at ${settingsPath}`);
+      
+      // Try to find the instance object to update in-memory settings
       let instance = this.instances.get(instanceId);
       
-      // If not found directly, try finding by guildId
+      // If not found directly, try searching by guild ID
       if (!instance) {
-        // Search through all instances to find one with matching guildId
-        for (const [id, inst] of this.instances) {
+        for (const [id, inst] of this.instances.entries()) {
           if (inst.guildId === instanceId) {
             instance = inst;
+            instanceId = id;
             break;
           }
         }
       }
       
-      if (!instance) {
-        console.error(`Instance ${instanceId} not found in any form. Creating direct file.`);
-        
-        // No instance found, but we can still save the settings to disk
-        const instanceDir = path.join(this.instancesDir, instanceId);
-        if (!fs.existsSync(instanceDir)) {
-          fs.mkdirSync(instanceDir, { recursive: true });
-        }
-        
-        const settingsPath = path.join(instanceDir, 'settings.json');
-        
-        // Read existing settings first if available
-        let existingSettings = {};
-        if (fs.existsSync(settingsPath)) {
-          try {
-            existingSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-          } catch (e) {
-            console.error(`Error reading existing settings:`, e);
-          }
-        }
-        
-        // Merge with new settings
-        const mergedSettings = {
-          ...existingSettings,
-          ...settings
-        };
-        
-        fs.writeFileSync(settingsPath, JSON.stringify(mergedSettings, null, 2), 'utf8');
-        
-        console.log(`Direct settings file created at ${settingsPath}`);
-        
-        // Also try to store in configs
-        if (this.configs) {
-          if (this.configs[instanceId]) {
-            // CRITICAL FIX: Update both customSettings AND direct channel properties
-            this.configs[instanceId].customSettings = {
-              ...this.configs[instanceId].customSettings,
-              ...settings
-            };
-            
-            // If settings contains channel IDs, update them directly too
-            if (settings.transcriptChannelId) {
-              this.configs[instanceId].transcriptChannelId = settings.transcriptChannelId;
-            }
-            if (settings.vouchChannelId) {
-              this.configs[instanceId].vouchChannelId = settings.vouchChannelId;
-            }
-            
-            this.saveConfigurations();
-          }
-        }
-        
-        return true;
-      }
-      
-      // Use instance's saveSettings method if available
-      if (typeof instance.saveSettings === 'function') {
-        return await instance.saveSettings(settings);
-      } else {
-        // Direct save for temporary instances
-        // Update instance settings
+      // Update instance settings if found
+      if (instance) {
+        // Update customSettings directly on the instance
         instance.customSettings = {
           ...instance.customSettings,
           ...settings
         };
         
-        // CRITICAL FIX: Also update direct channel properties if present in settings
-        if (settings.transcriptChannelId) {
-          instance.transcriptChannelId = settings.transcriptChannelId;
-        }
-        if (settings.vouchChannelId) {
-          instance.vouchChannelId = settings.vouchChannelId;
-        }
-        
-        // Save to configs
-        if (this.configs && this.configs[instanceId]) {
-          // Update customSettings
-          this.configs[instanceId].customSettings = instance.customSettings;
-          
-          // CRITICAL FIX: Also update direct channel properties
-          if (settings.transcriptChannelId) {
-            this.configs[instanceId].transcriptChannelId = settings.transcriptChannelId;
-          }
-          if (settings.vouchChannelId) {
-            this.configs[instanceId].vouchChannelId = settings.vouchChannelId;
-          }
-          
-          this.saveConfigurations();
-        }
-        
-        // Direct file save
-        const instanceDir = path.join(this.instancesDir, instance.instanceId || instanceId);
-        const settingsPath = path.join(instanceDir, 'settings.json');
-        
-        if (!fs.existsSync(instanceDir)) {
-          fs.mkdirSync(instanceDir, { recursive: true });
-        }
-        
-        // Read existing settings first if available
-        let existingSettings = {};
-        if (fs.existsSync(settingsPath)) {
-          try {
-            existingSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-          } catch (e) {
-            console.error(`Error reading existing settings:`, e);
-          }
-        }
-        
-        // Merge with new settings and write
-        const mergedSettings = {
-          ...existingSettings,
-          ...settings
-        };
-        
-        fs.writeFileSync(settingsPath, JSON.stringify(mergedSettings, null, 2), 'utf8');
-        
-        return true;
+        console.log(`Updated settings in memory for instance ${instanceId}`);
       }
+      
+      // IMPORTANT: Only store minimal identification info in configs
+      // Remove all custom messages and detailed settings
+      if (this.configs && this.configs[instanceId]) {
+        // Only save non-custom settings to the global config
+        // Do NOT save any customSettings or message templates
+        
+        // Only update essential connection fields like channel IDs
+        if (settings.transcriptChannelId !== undefined) {
+          this.configs[instanceId].transcriptChannelId = settings.transcriptChannelId;
+        }
+        if (settings.vouchChannelId !== undefined) {
+          this.configs[instanceId].vouchChannelId = settings.vouchChannelId;
+        }
+        
+        // Save minimal global configs
+        this.saveConfigurations();
+      }
+      
+      return true;
     } catch (error) {
       console.error(`Error saving instance settings for ${instanceId}:`, error);
-      
-      // Last resort emergency save
-      try {
-        const instanceDir = path.join(this.instancesDir, instanceId);
-        if (!fs.existsSync(instanceDir)) {
-          fs.mkdirSync(instanceDir, { recursive: true });
-        }
-        
-        const settingsPath = path.join(instanceDir, 'settings.json');
-        
-        // Read existing settings first if available
-        let existingSettings = {};
-        if (fs.existsSync(settingsPath)) {
-          try {
-            existingSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-          } catch (e) {
-            console.error(`Error reading existing settings:`, e);
-          }
-        }
-        
-        // Merge with new settings
-        const mergedSettings = {
-          ...existingSettings,
-          ...settings
-        };
-        
-        fs.writeFileSync(settingsPath, JSON.stringify(mergedSettings, null, 2), 'utf8');
-        console.log(`Emergency direct save to ${settingsPath}`);
-        
-        return true;
-      } catch (emergencyError) {
-        console.error(`Even emergency save failed:`, emergencyError);
-        return false;
-      }
+      return false;
     }
   }
+  
   
   // MODIFIED: Now uses QRCodeUtils
   async generateQRCode(options) {

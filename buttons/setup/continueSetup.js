@@ -1,4 +1,8 @@
+// buttons/setup/continueSetup.js - Complete rewrite for proper instance isolation
+
 const Button = require('../../templates/Button');
+const fs = require('fs');
+const path = require('path');
 
 class ContinueSetupButton extends Button {
   constructor() {
@@ -9,31 +13,49 @@ class ContinueSetupButton extends Button {
   
   async execute(interaction, instance) {
     try {
+      console.log(`[ContinueSetup] Processing button click`);
+      
+      // First defer the update to prevent timeout
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.update({
+          content: "Continuing with setup.\n\nGenerating QR code...",
+          components: [],
+        }).catch(err => {
+          console.error(`[ContinueSetup] Error updating interaction:`, err);
+        });
+      }
+      
+      // Get guild ID for instance identification
       const guildId = interaction.guild.id;
   
       // Get setup info from storage
-      const setupParams = global.setupStorage.getSetupParams(guildId);
-  
+      let setupParams = null;
+      try {
+        const setupStoragePath = path.join(__dirname, '..', '..', 'setup_storage', `${guildId}_setup.json`);
+        if (fs.existsSync(setupStoragePath)) {
+          const setupData = fs.readFileSync(setupStoragePath, 'utf8');
+          setupParams = JSON.parse(setupData);
+          console.log(`[ContinueSetup] Loaded setup params directly from file`);
+        } else if (global.setupStorage && typeof global.setupStorage.getSetupParams === 'function') {
+          setupParams = global.setupStorage.getSetupParams(guildId);
+          console.log(`[ContinueSetup] Loaded setup params from global.setupStorage`);
+        }
+      } catch (paramError) {
+        console.error(`[ContinueSetup] Error loading setup parameters:`, paramError);
+        setupParams = {}; // Fallback to empty object
+      }
+      
       if (!setupParams || !setupParams.categoryId) {
-        console.error(`Setup parameters not found for guild ${guildId}`);
-        await interaction.update({
+        console.error(`[ContinueSetup] Setup parameters not found for guild ${guildId}`);
+        await interaction.editReply({
           content: "❌ Error: Setup information not found. Please run /setup again.",
           components: [],
         });
         return;
       }
   
-      // Update the button message
-      await interaction.update({
-        content: `Continuing with setup and generating QR code...`,
-        components: [],
-      });
-  
-      // Check multiple sources for custom settings:
-      // 1. First check if there are custom settings in the setupParams
-      // 2. Then check the global variable
-      // 3. Fall back to defaults if neither exists
-      let customSettings = setupParams.customSettings || global.lastCustomSettings || {
+      // Check for custom settings in global variable or use defaults
+      const customSettings = global.lastCustomSettings || {
         welcomeMessage: "Welcome to Support! 😊 We're here to help. What's your name so we can get you connected?",
         introMessage: "Nice to meet you, {name}! 😊 I'm setting up your support ticket right now. Our team will be with you soon to help with your request!",
         reopenTicketMessage: "Welcome back, {name}! 👋 Our team will continue assisting you with your request.",
@@ -45,32 +67,53 @@ class ContinueSetupButton extends Button {
         transcriptsEnabled: !!setupParams.transcriptChannelId,
         vouchEnabled: !!setupParams.vouchChannelId,
       };
-  
-      // Log which source we're using for customSettings
-      if (setupParams.customSettings) {
-        console.log(`Using custom settings from setupParams for guild ${guildId}`);
-        console.log("Custom settings content:", JSON.stringify(setupParams.customSettings, null, 2));
-      } else if (global.lastCustomSettings) {
-        console.log(`Using custom settings from global.lastCustomSettings for guild ${guildId}`);
-        console.log("Custom settings content:", JSON.stringify(global.lastCustomSettings, null, 2));
-      } else {
-        console.log(`Using default settings for guild ${guildId}`);
-      }
-  
-      // IMPORTANT: Save these settings directly to ensure they are persisted
-      // Get bridge instance manager
-      const InstanceManager = require('../../core/InstanceManager');
       
-      // Clear the global variable
+      // Add channel IDs from setupParams to custom settings
+      customSettings.categoryId = setupParams.categoryId;
+      if (setupParams.transcriptChannelId) {
+        customSettings.transcriptChannelId = setupParams.transcriptChannelId;
+      }
+      if (setupParams.vouchChannelId) {
+        customSettings.vouchChannelId = setupParams.vouchChannelId;
+      }
+      
+      // Clean up global variable after using it
       global.lastCustomSettings = null;
   
-      // Generate QR code with this configuration
+      // Log which source we're using for customSettings
+      if (global.lastCustomSettings) {
+        console.log(`[ContinueSetup] Using custom settings from global.lastCustomSettings for guild ${guildId}`);
+        console.log("Custom settings content:", JSON.stringify(customSettings, null, 2));
+      } else {
+        console.log(`[ContinueSetup] Using default settings for guild ${guildId}`);
+      }
+  
+      // CRITICAL: Save settings directly to instance folder first
+      try {
+        // Create instance directory
+        const instanceDir = path.join(__dirname, '..', '..', 'instances', guildId);
+        if (!fs.existsSync(instanceDir)) {
+          fs.mkdirSync(instanceDir, { recursive: true });
+        }
+        
+        // Save settings to instance settings file
+        const settingsPath = path.join(instanceDir, 'settings.json');
+        fs.writeFileSync(settingsPath, JSON.stringify(customSettings, null, 2), 'utf8');
+        
+        console.log(`[ContinueSetup] Saved settings to instance-specific file at ${settingsPath}`);
+      } catch (saveError) {
+        console.error(`[ContinueSetup] Error saving settings to instance file:`, saveError);
+      }
+  
+      // Generate QR code
+      const InstanceManager = require('../../core/InstanceManager');
+      
+      // Only pass essential connection information to QR generator, not all settings
       const qrCode = await InstanceManager.generateQRCode({
         guildId,
         categoryId: setupParams.categoryId,
         transcriptChannelId: setupParams.transcriptChannelId,
         vouchChannelId: setupParams.vouchChannelId,
-        customSettings,
         discordClient: interaction.client,
       });
   
@@ -80,15 +123,32 @@ class ContinueSetupButton extends Button {
           components: [],
         });
   
-        // Even though already connected, make sure the settings are saved
-        const existingInstance = InstanceManager.getInstanceByGuildId(guildId);
-        if (existingInstance) {
-          await InstanceManager.saveInstanceSettings(existingInstance.instanceId, customSettings);
-          console.log(`Saved settings to existing instance ${existingInstance.instanceId}`);
+        // Even if already connected, ensure instance has correct settings
+        try {
+          const existingInstance = InstanceManager.getInstanceByGuildId(guildId);
+          if (existingInstance) {
+            await InstanceManager.saveInstanceSettings(existingInstance.instanceId, customSettings);
+            console.log(`[ContinueSetup] Saved settings to existing instance ${existingInstance.instanceId}`);
+          }
+        } catch (instanceError) {
+          console.error(`[ContinueSetup] Error saving to existing instance:`, instanceError);
         }
         
         // Clean up setup params
-        global.setupStorage.cleanupSetupParams(guildId);
+        try {
+          if (global.setupStorage && typeof global.setupStorage.cleanupSetupParams === 'function') {
+            global.setupStorage.cleanupSetupParams(guildId);
+          } else {
+            const setupStoragePath = path.join(__dirname, '..', '..', 'setup_storage', `${guildId}_setup.json`);
+            if (fs.existsSync(setupStoragePath)) {
+              fs.unlinkSync(setupStoragePath);
+              console.log(`[ContinueSetup] Manually removed setup params file`);
+            }
+          }
+        } catch (cleanupError) {
+          console.error(`[ContinueSetup] Error cleaning up setup params:`, cleanupError);
+        }
+        
         return;
       }
   
@@ -99,24 +159,50 @@ class ContinueSetupButton extends Button {
         });
   
         // Clean up setup params
-        global.setupStorage.cleanupSetupParams(guildId);
+        try {
+          if (global.setupStorage && typeof global.setupStorage.cleanupSetupParams === 'function') {
+            global.setupStorage.cleanupSetupParams(guildId);
+          } else {
+            const setupStoragePath = path.join(__dirname, '..', '..', 'setup_storage', `${guildId}_setup.json`);
+            if (fs.existsSync(setupStoragePath)) {
+              fs.unlinkSync(setupStoragePath);
+              console.log(`[ContinueSetup] Manually removed setup params file`);
+            }
+          }
+        } catch (cleanupError) {
+          console.error(`[ContinueSetup] Error cleaning up setup params:`, cleanupError);
+        }
+        
         return;
       }
   
-      // Import and use the QR code display function
+      // Display QR code
       const { displayQRCode } = require('../../utils/qrCodeUtils');
       await displayQRCode(interaction, qrCode, guildId);
   
-      // Clean up setup params after successful QR code display
-      global.setupStorage.cleanupSetupParams(guildId);
+      // Clean up setup params
+      try {
+        if (global.setupStorage && typeof global.setupStorage.cleanupSetupParams === 'function') {
+          global.setupStorage.cleanupSetupParams(guildId);
+        } else {
+          const setupStoragePath = path.join(__dirname, '..', '..', 'setup_storage', `${guildId}_setup.json`);
+          if (fs.existsSync(setupStoragePath)) {
+            fs.unlinkSync(setupStoragePath);
+            console.log(`[ContinueSetup] Manually removed setup params file`);
+          }
+        }
+      } catch (cleanupError) {
+        console.error(`[ContinueSetup] Error cleaning up setup params:`, cleanupError);
+      }
     } catch (error) {
-      console.error("Error handling continue setup button:", error);
+      console.error("[ContinueSetup] Error handling continue setup button:", error);
+      
       try {
         await interaction.editReply({
           content: `❌ Error continuing setup: ${error.message}`,
         });
       } catch (followupError) {
-        console.error("Error sending error message:", followupError);
+        console.error("[ContinueSetup] Error sending error message:", followupError);
       }
     }
   }

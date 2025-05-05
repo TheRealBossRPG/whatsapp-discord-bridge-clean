@@ -1,6 +1,9 @@
-// modals/ticket/editTicketModal.js
+// modals/ticket/editTicketModal.js - Complete rewrite for proper username persistence
+
 const { EmbedBuilder } = require('discord.js');
 const Modal = require('../../templates/Modal');
+const fs = require('fs');
+const path = require('path');
 
 class EditTicketModal extends Modal {
   constructor() {
@@ -28,107 +31,130 @@ class EditTicketModal extends Modal {
       
       console.log(`[EditTicketModal] New values - Username: ${username}, Notes length: ${notes.length}`);
       
-      // Get instance without using InstanceManager
+      // Get instance if not provided (from interactionHandler)
       if (!instance) {
-        console.log(`[EditTicketModal] Finding instance for guild ${interaction.guildId}`);
-        
-        // First check client route map
-        if (interaction.client._instanceRoutes) {
-          // Try by category ID
-          if (interaction.channel && interaction.channel.parentId) {
-            const categoryId = interaction.channel.parentId;
-            if (interaction.client._instanceRoutes.has(categoryId)) {
-              instance = interaction.client._instanceRoutes.get(categoryId).instance;
-              console.log(`[EditTicketModal] Found instance by category: ${instance?.instanceId || 'unknown'}`);
+        // We'll try to work with minimal info even without a proper instance
+        console.log(`[EditTicketModal] No instance provided, creating minimal instance context`);
+        instance = {
+          instanceId: interaction.guildId,
+          guildId: interaction.guildId,
+          isTemporary: true
+        };
+      }
+      
+      // Update user info - CRITICAL FOR PERSISTENCE
+      let userUpdateSuccess = false;
+      
+      // APPROACH 1: Try to update through UserCardManager if available
+      let userCardManager = null;
+      if (instance.userCardManager) {
+        userCardManager = instance.userCardManager;
+      } else if (instance.managers && instance.managers.userCardManager) {
+        userCardManager = instance.managers.userCardManager;
+      }
+      
+      if (userCardManager) {
+        try {
+          // Try both methods for compatibility
+          if (typeof userCardManager.updateUserInfo === 'function') {
+            await userCardManager.updateUserInfo(phoneNumber, username);
+            userUpdateSuccess = true;
+            console.log(`[EditTicketModal] Updated user info using updateUserInfo`);
+          } else if (typeof userCardManager.setUserInfo === 'function') {
+            await userCardManager.setUserInfo(phoneNumber, username);
+            userUpdateSuccess = true;
+            console.log(`[EditTicketModal] Updated user info using setUserInfo`);
+          }
+          
+          // Force saving if method exists
+          if (typeof userCardManager.saveUserCards === 'function') {
+            await userCardManager.saveUserCards();
+            console.log(`[EditTicketModal] Explicitly saved user cards`);
+          }
+        } catch (userManagerError) {
+          console.error(`[EditTicketModal] Error using UserCardManager:`, userManagerError);
+        }
+      }
+      
+      // APPROACH 2: Direct file update as backup (ensures persistence)
+      if (!userUpdateSuccess) {
+        try {
+          // Determine the instance directory
+          const instanceId = instance.instanceId || interaction.guildId;
+          const instanceDir = path.join(__dirname, '..', '..', 'instances', instanceId);
+          
+          // Create user data directory if it doesn't exist
+          const userDataDir = path.join(instanceDir, 'user_data');
+          if (!fs.existsSync(userDataDir)) {
+            fs.mkdirSync(userDataDir, { recursive: true });
+          }
+          
+          // Path to user cards file
+          const userCardsPath = path.join(userDataDir, 'user_cards.json');
+          
+          // Read existing user cards if available
+          let userCards = {};
+          if (fs.existsSync(userCardsPath)) {
+            try {
+              userCards = JSON.parse(fs.readFileSync(userCardsPath, 'utf8'));
+            } catch (readError) {
+              console.error(`[EditTicketModal] Error reading user cards file:`, readError);
             }
           }
           
-          // If not found by category, try guild ID
-          if (!instance) {
-            for (const [_, routeInfo] of interaction.client._instanceRoutes.entries()) {
-              if (routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
-                instance = routeInfo.instance;
-                console.log(`[EditTicketModal] Found instance by guild: ${instance?.instanceId || 'unknown'}`);
-                break;
-              }
-            }
-          }
-        }
-        
-        // If still no instance, try reading config directly
-        if (!instance) {
-          try {
-            const fs = require('fs');
-            const path = require('path');
-            const configPath = path.join(__dirname, '..', '..', 'instance_configs.json');
-            
-            if (fs.existsSync(configPath)) {
-              const configs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-              
-              // Find config for this guild
-              for (const [instanceId, config] of Object.entries(configs)) {
-                if (config.guildId === interaction.guildId) {
-                  // Create a minimal instance object
-                  instance = {
-                    instanceId,
-                    guildId: interaction.guildId,
-                    categoryId: config.categoryId,
-                    transcriptChannelId: config.transcriptChannelId,
-                    vouchChannelId: config.vouchChannelId,
-                    customSettings: config.customSettings || {},
-                    isTemporary: true
-                  };
-                  console.log(`[EditTicketModal] Created instance from config: ${instanceId}`);
-                  break;
-                }
-              }
-            }
-          } catch (configError) {
-            console.error(`[EditTicketModal] Error loading config:`, configError);
-          }
+          // Clean the phone number
+          const cleanPhone = phoneNumber.replace(/\D/g, '');
+          
+          // Update user info
+          userCards[cleanPhone] = {
+            ...(userCards[cleanPhone] || {}),
+            username: username,
+            lastUpdated: new Date().toISOString()
+          };
+          
+          // Write back to file
+          fs.writeFileSync(userCardsPath, JSON.stringify(userCards, null, 2), 'utf8');
+          
+          userUpdateSuccess = true;
+          console.log(`[EditTicketModal] Updated user info directly in file: ${userCardsPath}`);
+        } catch (fileError) {
+          console.error(`[EditTicketModal] Error updating user info directly in file:`, fileError);
         }
       }
       
-      // Update user info if instance is available
-      let userUpdateSuccess = false;
-      if (instance) {
-        // Try to find user card manager
-        let userCardManager = null;
-        
-        // Try multiple paths to get userCardManager
-        if (instance.userCardManager) {
-          userCardManager = instance.userCardManager;
-        } else if (instance.managers && instance.managers.userCardManager) {
-          userCardManager = instance.managers.userCardManager;
-        }
-        
-        // Update user info if userCardManager available
-        if (userCardManager) {
-          try {
-            // Try using different method names since implementations vary
-            if (typeof userCardManager.updateUserInfo === 'function') {
-              await userCardManager.updateUserInfo(phoneNumber, username);
-              userUpdateSuccess = true;
-            } else if (typeof userCardManager.setUserInfo === 'function') {
-              await userCardManager.setUserInfo(phoneNumber, username);
-              userUpdateSuccess = true;
-            } else {
-              console.log(`[EditTicketModal] UserCardManager has no update methods available`);
+      // APPROACH 3: If WhatsApp client available, update contacts there too
+      try {
+        if (instance.clients && instance.clients.whatsAppClient) {
+          const client = instance.clients.whatsAppClient;
+          
+          // Different clients store contacts differently, try multiple approaches
+          // 1. Direct contacts object (most common)
+          if (client.contacts) {
+            const jid = `${phoneNumber}@s.whatsapp.net`;
+            if (client.contacts[jid]) {
+              client.contacts[jid].name = username;
+              client.contacts[jid].notify = username;
+              console.log(`[EditTicketModal] Updated name in WhatsApp contacts`);
             }
-            
-            if (userUpdateSuccess) {
-              console.log(`[EditTicketModal] Updated user info for ${phoneNumber} to ${username}`);
-            }
-          } catch (updateError) {
-            console.error(`[EditTicketModal] Error updating user info:`, updateError);
-            // Continue anyway to update the embed
           }
-        } else {
-          console.log(`[EditTicketModal] No userCardManager available to update user info`);
+          
+          // 2. Using sock.updateProfileName (for @whiskeysockets/baileys)
+          if (client.sock && typeof client.sock.updateProfileName === 'function') {
+            client.sock.updateProfileName(phoneNumber, username);
+            console.log(`[EditTicketModal] Updated name using sock.updateProfileName`);
+          }
+          
+          // 3. Using client's updateContact method if available
+          if (typeof client.updateContact === 'function') {
+            await client.updateContact(phoneNumber, username);
+            console.log(`[EditTicketModal] Updated contact using updateContact`);
+          }
         }
+      } catch (whatsappError) {
+        console.error(`[EditTicketModal] Error updating WhatsApp client:`, whatsappError);
       }
       
-      // Try to update the channel name if possible
+      // Update channel name to match the new username
       try {
         // Format new channel name
         const formattedUsername = username
@@ -153,7 +179,6 @@ class EditTicketModal extends Modal {
         }
       } catch (channelError) {
         console.error(`[EditTicketModal] Error updating channel name:`, channelError);
-        // Continue anyway
       }
       
       // Find the ticket embed message - try pinned messages first
@@ -271,7 +296,6 @@ class EditTicketModal extends Modal {
             embedUpdateSuccess = true;
           } catch (simplifiedError) {
             console.error(`[EditTicketModal] Error with simplified embed update:`, simplifiedError);
-            // We'll create a new embed as a last resort
           }
         }
       }
@@ -323,37 +347,8 @@ class EditTicketModal extends Modal {
           
           console.log(`[EditTicketModal] Created new ticket embed message`);
           embedUpdateSuccess = true;
-          
-          // Save message ID to instance settings if possible
-          if (instance) {
-            try {
-              // Try different approaches to save message ID
-              if (instance.channelManager && typeof instance.channelManager.saveInstanceSettings === 'function') {
-                await instance.channelManager.saveInstanceSettings(
-                  instance.instanceId || interaction.guildId,
-                  { 
-                    ticketInfoMessages: {
-                      ...(instance.customSettings?.ticketInfoMessages || {}),
-                      [interaction.channelId]: message.id
-                    }
-                  }
-                );
-                console.log(`[EditTicketModal] Saved ticket info message ID to instance settings`);
-              }
-            } catch (saveError) {
-              console.error(`[EditTicketModal] Error saving message ID:`, saveError);
-            }
-          }
         } catch (createError) {
           console.error(`[EditTicketModal] Error creating ticket info:`, createError);
-          
-          // Send an error message if we failed to update or create the embed
-          if (!embedUpdateSuccess) {
-            await interaction.editReply({ 
-              content: `⚠️ Partially updated ticket information. User info was ${userUpdateSuccess ? 'updated' : 'not updated'}, but could not update ticket display.` 
-            });
-            return;
-          }
         }
       }
       

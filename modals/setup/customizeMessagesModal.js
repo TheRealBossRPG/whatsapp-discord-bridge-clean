@@ -1,6 +1,9 @@
-// modals/setup/customizeMessagesModal.js - Fixed for proper settings saving
+// modals/setup/customizeMessagesModal.js - Complete rewrite for proper instance isolation
+
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const Modal = require('../../templates/Modal');
+const fs = require('fs');
+const path = require('path');
 
 class CustomizeMessagesModal extends Modal {
   constructor() {
@@ -11,7 +14,10 @@ class CustomizeMessagesModal extends Modal {
   
   async execute(interaction, instance) {
     try {
-      console.log(`Processing modal submission for ${interaction.customId}`);
+      console.log(`[CustomizeMessagesModal] Processing modal submission for ${interaction.customId}`);
+      
+      // Defer the reply to prevent timeout
+      await interaction.deferReply({ ephemeral: true });
   
       // Get values from the modal fields
       const welcomeMessage = interaction.fields.getTextInputValue("welcome_message");
@@ -46,24 +52,94 @@ class CustomizeMessagesModal extends Modal {
       // Store in global variable for later use in QR code generation
       global.lastCustomSettings = customSettings;
   
-      // Get bridge instance manager
-      const InstanceManager = require('../../core/InstanceManager');
+      // Get the guild ID to determine instance
+      const guildId = interaction.guild.id;
       
-      // Try to get an instance - but don't fail if we can't find one (setup flow)
+      // Get setup params from storage
+      let setupParams = null;
+      try {
+        const setupStoragePath = path.join(__dirname, '..', '..', 'setup_storage', `${guildId}_setup.json`);
+        if (fs.existsSync(setupStoragePath)) {
+          setupParams = JSON.parse(fs.readFileSync(setupStoragePath, 'utf8'));
+        } else if (global.setupStorage && typeof global.setupStorage.getSetupParams === 'function') {
+          setupParams = global.setupStorage.getSetupParams(guildId);
+        }
+      } catch (setupError) {
+        console.error(`[CustomizeMessagesModal] Error getting setup params:`, setupError);
+      }
+      
+      // Add channel IDs from setup params to settings, if available
+      if (setupParams) {
+        if (setupParams.categoryId) {
+          customSettings.categoryId = setupParams.categoryId;
+        }
+        if (setupParams.transcriptChannelId) {
+          customSettings.transcriptChannelId = setupParams.transcriptChannelId;
+          customSettings.transcriptsEnabled = true;
+        }
+        if (setupParams.vouchChannelId) {
+          customSettings.vouchChannelId = setupParams.vouchChannelId;
+          customSettings.vouchEnabled = true;
+        }
+      }
+      
+      // CRITICAL: Save settings directly to instance folder
+      try {
+        // Create instance directory
+        const instanceDir = path.join(__dirname, '..', '..', 'instances', guildId);
+        if (!fs.existsSync(instanceDir)) {
+          fs.mkdirSync(instanceDir, { recursive: true });
+        }
+        
+        // Check if there's already a settings file
+        const settingsPath = path.join(instanceDir, 'settings.json');
+        let existingSettings = {};
+        
+        if (fs.existsSync(settingsPath)) {
+          try {
+            existingSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+          } catch (readError) {
+            console.error(`[CustomizeMessagesModal] Error reading existing settings:`, readError);
+          }
+        }
+        
+        // Merge settings
+        const mergedSettings = {
+          ...existingSettings,
+          ...customSettings
+        };
+        
+        // Save to file
+        fs.writeFileSync(settingsPath, JSON.stringify(mergedSettings, null, 2), 'utf8');
+        
+        console.log(`[CustomizeMessagesModal] Saved settings directly to instance file: ${settingsPath}`);
+      } catch (saveError) {
+        console.error(`[CustomizeMessagesModal] Error saving settings:`, saveError);
+      }
+      
+      // If we're in an existing instance, update settings there too
       if (instance && !instance.isTemporary) {
-        // If we have a real instance, update its settings too
-        console.log(`Updating existing instance ${instance.instanceId} settings`);
-        
-        // Save settings through the instance manager to ensure proper persistence
-        await InstanceManager.saveInstanceSettings(instance.instanceId, customSettings);
-      } else {
-        // We're in setup mode, just log that we're storing temporary settings
-        console.log("No existing instance found - storing settings for later use in setup");
-        
-        // Make sure these settings are saved to setupStorage too
-        const setupParams = global.setupStorage.getSetupParams(interaction.guildId) || {};
-        setupParams.customSettings = customSettings;
-        global.setupStorage.saveSetupParams(interaction.guildId, setupParams);
+        try {
+          // Update instance settings directly
+          instance.customSettings = {
+            ...instance.customSettings,
+            ...customSettings
+          };
+          
+          // Save settings through instance
+          if (typeof instance.saveSettings === 'function') {
+            await instance.saveSettings(customSettings);
+            console.log(`[CustomizeMessagesModal] Saved settings through instance.saveSettings`);
+          }
+          
+          // Apply settings if method available
+          if (typeof instance.applySettings === 'function') {
+            await instance.applySettings(customSettings);
+            console.log(`[CustomizeMessagesModal] Applied settings to instance components`);
+          }
+        } catch (instanceError) {
+          console.error(`[CustomizeMessagesModal] Error updating instance:`, instanceError);
+        }
       }
   
       // Create continue setup button
@@ -75,10 +151,9 @@ class CustomizeMessagesModal extends Modal {
       );
   
       // Reply with success message and continue button
-      await interaction.reply({
+      await interaction.editReply({
         content: "✅ Messages customized successfully! Click 'Continue Setup' to proceed.",
         components: [continueRow],
-        ephemeral: true,
       });
   
       // Show preview of the customized messages
@@ -112,22 +187,22 @@ class CustomizeMessagesModal extends Modal {
           ephemeral: true,
         });
       } catch (followupError) {
-        console.error("Error sending preview followup:", followupError);
+        console.error("[CustomizeMessagesModal] Error sending preview followup:", followupError);
         // Try again with a simpler message
         try {
           await interaction.followUp({
-            content: "Messages saved successfully. Click 'Continue Setup' to proceed.",
+            content: "Settings saved successfully. Click 'Continue Setup' to proceed.",
             ephemeral: true,
           });
         } catch (retryError) {
-          console.error("Error sending simplified followup:", retryError);
+          console.error("[CustomizeMessagesModal] Error sending simplified followup:", retryError);
         }
       }
   
-      console.log(`Setup customization completed by ${interaction.user.tag}`);
+      console.log(`[CustomizeMessagesModal] Setup customization completed by ${interaction.user.tag}`);
       return true;
     } catch (modalError) {
-      console.error("Error handling customization modal:", modalError);
+      console.error("[CustomizeMessagesModal] Error handling customization modal:", modalError);
   
       try {
         if (!interaction.replied) {
@@ -142,7 +217,7 @@ class CustomizeMessagesModal extends Modal {
           });
         }
       } catch (finalError) {
-        console.error("Failed to send error message:", finalError);
+        console.error("[CustomizeMessagesModal] Failed to send error message:", finalError);
       }
   
       // Create continue button anyway to prevent users from getting stuck
@@ -168,7 +243,7 @@ class CustomizeMessagesModal extends Modal {
           });
         }
       } catch (buttonError) {
-        console.error("Failed to create continue button:", buttonError);
+        console.error("[CustomizeMessagesModal] Failed to create continue button:", buttonError);
       }
   
       return false;

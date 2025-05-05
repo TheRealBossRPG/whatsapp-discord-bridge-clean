@@ -778,22 +778,23 @@ async connect(showQrCode = false) {
   async loadSettings() {
     try {
       const settingsPath = path.join(this.baseDir, "settings.json");
-
+  
       if (fs.existsSync(settingsPath)) {
         // Read settings file
         const fileContent = fs.readFileSync(settingsPath, "utf8");
         if (fileContent.trim() === "") {
           return this.customSettings || {};
         }
-
+  
         const settings = JSON.parse(fileContent);
-
+  
         // Update instance settings
         this.customSettings = settings;
-
+  
         // Apply settings to components
         await this.applySettings(settings);
-
+  
+        console.log(`[Instance:${this.instanceId}] Loaded settings from instance-specific file`);
         return settings;
       } else {
         // Create default settings file
@@ -816,11 +817,12 @@ async connect(showQrCode = false) {
           transcriptsEnabled: true,
           vouchEnabled: true,
         };
-
+  
         // Save default settings
         this.customSettings = defaultSettings;
         await this.saveSettings(defaultSettings);
-
+  
+        console.log(`[Instance:${this.instanceId}] Created new settings file with defaults`);
         return defaultSettings;
       }
     } catch (error) {
@@ -837,23 +839,24 @@ async connect(showQrCode = false) {
   async saveSettings(settings) {
     try {
       const settingsPath = path.join(this.baseDir, "settings.json");
-
+  
       // Merge with existing settings
       this.customSettings = {
         ...this.customSettings,
         ...settings,
       };
-
-      // Save to disk
+  
+      // Save to disk - ONLY to instance-specific file
       fs.writeFileSync(
         settingsPath,
         JSON.stringify(this.customSettings, null, 2),
         "utf8"
       );
-
+  
       // Apply settings to components
       await this.applySettings(settings);
-
+  
+      console.log(`[Instance:${this.instanceId}] Saved settings to instance file: ${settingsPath}`);
       return true;
     } catch (error) {
       console.error(`Error saving settings for instance ${this.instanceId}: ${error.message}`);
