@@ -3,10 +3,6 @@
 const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
 const Button = require('../../templates/Button');
 
-/**
- * Button handler for editing user information
- * FIXED: Better regex matching and error handling
- */
 class EditUserButton extends Button {
   constructor() {
     super({
@@ -14,11 +10,6 @@ class EditUserButton extends Button {
     });
   }
   
-  /**
-   * Custom matching function to handle the edit-user pattern
-   * @param {string} customId - The button's customId
-   * @returns {boolean} - Whether this handler should handle the button
-   */
   matches(customId) {
     return customId.startsWith('edit-user-');
   }
@@ -31,79 +22,117 @@ class EditUserButton extends Button {
       const phoneNumber = interaction.customId.replace('edit-user-', '');
       console.log(`[EditUserButton] Phone number from button: ${phoneNumber}`);
       
-      // Get instance if not provided - FIXED: Avoid circular dependency
+      // Get instance if not provided - FIXED: Avoid circular dependency completely
       if (!instance) {
-        console.log(`[EditUserButton] Instance not provided, will use instance from route map`);
+        console.log(`[EditUserButton] Instance not provided, getting from route map`);
         
-        // Try to get instance from Discord client route map first
+        // Look directly in route map without using InstanceManager
         if (interaction.client._instanceRoutes) {
-          // Get the category ID for the current channel
+          // First try by channel's parent category
           const categoryId = interaction.channel.parentId;
+          console.log(`[EditUserButton] Channel parent ID: ${categoryId}`);
+          
           if (categoryId && interaction.client._instanceRoutes.has(categoryId)) {
             instance = interaction.client._instanceRoutes.get(categoryId).instance;
-            console.log(`[EditUserButton] Found instance from route map with ID: ${instance?.instanceId || 'unknown'}`);
-          }
-          
-          // If not found, check all instances for matching guild ID
-          if (!instance) {
+            console.log(`[EditUserButton] Found instance via category: ${instance?.instanceId || 'unknown'}`);
+          } else {
+            // If no direct match, look for any instance with this guild ID
             for (const [_, routeInfo] of interaction.client._instanceRoutes.entries()) {
               if (routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
                 instance = routeInfo.instance;
-                console.log(`[EditUserButton] Found instance via guild ID match: ${instance?.instanceId || 'unknown'}`);
+                console.log(`[EditUserButton] Found instance via guild match: ${instance?.instanceId || 'unknown'}`);
                 break;
               }
             }
           }
         }
         
-        // If still no instance, send error
         if (!instance) {
-          console.error(`[EditUserButton] Could not find instance for this channel`);
-          await interaction.reply({
-            content: '❌ System error: Could not find WhatsApp bridge instance for this channel.',
-            ephemeral: true
-          });
-          return false;
+          // As a last resort, try to read config file directly
+          try {
+            const fs = require('fs');
+            const path = require('path');
+            const configPath = path.join(__dirname, '..', '..', 'instance_configs.json');
+            
+            if (fs.existsSync(configPath)) {
+              const configs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+              
+              // Find config for this guild
+              for (const [instanceId, config] of Object.entries(configs)) {
+                if (config.guildId === interaction.guildId) {
+                  // Create a minimal instance object
+                  instance = {
+                    instanceId,
+                    guildId: interaction.guildId,
+                    categoryId: config.categoryId,
+                    transcriptChannelId: config.transcriptChannelId,
+                    vouchChannelId: config.vouchChannelId,
+                    customSettings: config.customSettings || {},
+                    isTemporary: true
+                  };
+                  console.log(`[EditUserButton] Created instance from config: ${instanceId}`);
+                  break;
+                }
+              }
+            }
+          } catch (configError) {
+            console.error(`[EditUserButton] Error loading config:`, configError);
+          }
         }
       }
       
       // Log instance details
-      console.log(`[EditUserButton] Using instance with ID: ${instance.instanceId || 'unknown'}`);
-      console.log(`[EditUserButton] Instance has userCardManager: ${instance.userCardManager ? 'Yes' : 'No'}`);
-      if (instance.managers) {
-        console.log(`[EditUserButton] Instance has managers.userCardManager: ${instance.managers?.userCardManager ? 'Yes' : 'No'}`);
+      if (instance) {
+        console.log(`[EditUserButton] Using instance with ID: ${instance.instanceId || 'unknown'}`);
+        console.log(`[EditUserButton] Instance has userCardManager: ${!!instance.userCardManager}`);
+        if (instance.managers) {
+          console.log(`[EditUserButton] Instance has managers.userCardManager: ${!!instance.managers?.userCardManager}`);
+        }
+      } else {
+        console.log(`[EditUserButton] No instance found, continuing with defaults`);
       }
       
       // Try to find user info through multiple paths
       let username = 'Unknown User';
       let userCardManager = null;
       
-      // Try multiple paths to find userCardManager
-      if (instance.userCardManager) {
-        userCardManager = instance.userCardManager;
-      } else if (instance.managers && instance.managers.userCardManager) {
-        userCardManager = instance.managers.userCardManager;
+      // Find userCardManager from all possible paths
+      if (instance) {
+        if (instance.userCardManager) {
+          userCardManager = instance.userCardManager;
+          console.log(`[EditUserButton] Found userCardManager directly on instance`);
+        } else if (instance.managers && instance.managers.userCardManager) {
+          userCardManager = instance.managers.userCardManager;
+          console.log(`[EditUserButton] Found userCardManager in instance.managers`);
+        } else if (instance.handlers && instance.handlers.userCardHandler) {
+          userCardManager = instance.handlers.userCardHandler;
+          console.log(`[EditUserButton] Found userCardHandler in instance.handlers`);
+        }
       }
       
       // Try to get user info if userCardManager is available
       if (userCardManager && typeof userCardManager.getUserInfo === 'function') {
         try {
-          const userInfo = userCardManager.getUserInfo(phoneNumber);
-          if (userInfo && userInfo.username) {
-            username = userInfo.username;
+          const userInfo = await userCardManager.getUserInfo(phoneNumber);
+          if (userInfo) {
+            if (typeof userInfo === 'string') {
+              username = userInfo;
+            } else if (userInfo.username) {
+              username = userInfo.username;
+            } else if (userInfo.name) {
+              username = userInfo.name;
+            }
             console.log(`[EditUserButton] Found username: ${username}`);
-          } else {
-            console.log(`[EditUserButton] No username found for phone number: ${phoneNumber}`);
           }
         } catch (userInfoError) {
           console.error(`[EditUserButton] Error getting user info:`, userInfoError);
           // Continue with default username
         }
       } else {
-        console.log(`[EditUserButton] UserCardManager not available or missing getUserInfo method`);
+        console.log(`[EditUserButton] No userCardManager available or missing getUserInfo method`);
       }
       
-      // Find the embed message for current notes - try pinned messages first
+      // Find the ticket embed message for current notes
       let currentNotes = '';
       try {
         const pinnedMessages = await interaction.channel.messages.fetchPinned();
@@ -124,33 +153,30 @@ class EditUserButton extends Button {
           }
           console.log(`[EditUserButton] Found existing notes from embed`);
         } else {
-          console.log(`[EditUserButton] No pinned ticket embed found`);
+          console.log(`[EditUserButton] No pinned ticket embed found, checking recent messages`);
           
-          // Try looking in recent messages if pinned message not found
-          try {
-            console.log(`[EditUserButton] Looking for embed in recent messages`);
-            const messages = await interaction.channel.messages.fetch({ limit: 20 });
-            const recentEmbed = messages.find(
-              m => m.embeds.length > 0 && 
-              m.embeds[0].title === 'Ticket Tool'
-            );
-            
-            if (recentEmbed && recentEmbed.embeds[0]) {
-              const notesField = recentEmbed.embeds[0].fields.find(field => field.name === 'Notes');
-              if (notesField && notesField.value) {
-                currentNotes = notesField.value.replace(/```/g, '').trim();
-                if (currentNotes === 'No notes provided yet. Use the Edit button to add details.') {
-                  currentNotes = '';
-                }
-                console.log(`[EditUserButton] Found notes in recent message`);
+          // Look in recent messages as fallback
+          const messages = await interaction.channel.messages.fetch({ limit: 20 });
+          const recentEmbed = messages.find(
+            m => m.embeds.length > 0 && 
+            m.embeds[0].title === 'Ticket Tool'
+          );
+          
+          if (recentEmbed && recentEmbed.embeds[0]) {
+            const notesField = recentEmbed.embeds[0].fields.find(field => field.name === 'Notes');
+            if (notesField && notesField.value) {
+              currentNotes = notesField.value.replace(/```/g, '').trim();
+              if (currentNotes === 'No notes provided yet. Use the Edit button to add details.') {
+                currentNotes = '';
               }
+              console.log(`[EditUserButton] Found notes in recent message`);
             }
-          } catch (recentError) {
-            console.error(`[EditUserButton] Error checking recent messages:`, recentError);
+          } else {
+            console.log(`[EditUserButton] No embed found with notes`);
           }
         }
       } catch (error) {
-        console.error(`[EditUserButton] Error fetching pinned messages:`, error);
+        console.error(`[EditUserButton] Error fetching messages:`, error);
         // Continue with empty notes
       }
       
@@ -167,13 +193,13 @@ class EditUserButton extends Button {
         .setValue(username)
         .setRequired(true);
       
-      // Notes input - IMPORTANT: Make this NOT required
+      // Notes input - NOT required
       const notesInput = new TextInputBuilder()
         .setCustomId('ticket_notes')
         .setLabel('Notes')
         .setStyle(TextInputStyle.Paragraph)
         .setValue(currentNotes)
-        .setRequired(false) // Make notes optional
+        .setRequired(false)
         .setPlaceholder('Add notes about this support ticket here (optional)');
       
       const firstRow = new ActionRowBuilder().addComponents(usernameInput);
@@ -189,6 +215,7 @@ class EditUserButton extends Button {
       console.error(`[EditUserButton] Error handling edit user button:`, error);
       
       try {
+        // FIXED: Use flags instead of ephemeral directly
         await interaction.reply({
           content: `❌ Error: ${error.message}`,
           ephemeral: true

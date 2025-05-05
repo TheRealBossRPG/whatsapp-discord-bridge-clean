@@ -2,14 +2,9 @@
 const { EmbedBuilder } = require('discord.js');
 const Modal = require('../../templates/Modal');
 
-/**
- * Modal handler for the ticket edit modal
- * FIXED: Removed InstanceManager dependency to prevent circular references
- */
 class EditTicketModal extends Modal {
   constructor() {
     super({
-      // This will match any edit_ticket_modal_* ID
       regex: /^edit_ticket_modal_\d+/
     });
   }
@@ -24,7 +19,7 @@ class EditTicketModal extends Modal {
       const phoneNumber = interaction.customId.replace('edit_ticket_modal_', '');
       console.log(`[EditTicketModal] Processing edit for phone number: ${phoneNumber}`);
       
-      // Defer reply for longer processing
+      // Defer reply to give us time to process
       await interaction.deferReply({ ephemeral: true });
       
       // Get values from the modal
@@ -33,23 +28,63 @@ class EditTicketModal extends Modal {
       
       console.log(`[EditTicketModal] New values - Username: ${username}, Notes length: ${notes.length}`);
       
-      // Get instance if not provided
+      // Get instance without using InstanceManager
       if (!instance) {
-        // Try to get instance from Discord client route map
+        console.log(`[EditTicketModal] Finding instance for guild ${interaction.guildId}`);
+        
+        // First check client route map
         if (interaction.client._instanceRoutes) {
-          const categoryId = interaction.channel.parentId;
-          if (categoryId && interaction.client._instanceRoutes.has(categoryId)) {
-            instance = interaction.client._instanceRoutes.get(categoryId).instance;
-            console.log(`[EditTicketModal] Found instance from route map: ${instance?.instanceId || 'unknown'}`);
-          } else {
-            // Look through all routes to find matching guild
+          // Try by category ID
+          if (interaction.channel && interaction.channel.parentId) {
+            const categoryId = interaction.channel.parentId;
+            if (interaction.client._instanceRoutes.has(categoryId)) {
+              instance = interaction.client._instanceRoutes.get(categoryId).instance;
+              console.log(`[EditTicketModal] Found instance by category: ${instance?.instanceId || 'unknown'}`);
+            }
+          }
+          
+          // If not found by category, try guild ID
+          if (!instance) {
             for (const [_, routeInfo] of interaction.client._instanceRoutes.entries()) {
               if (routeInfo.instance && routeInfo.instance.guildId === interaction.guildId) {
                 instance = routeInfo.instance;
-                console.log(`[EditTicketModal] Found instance from guild ID match: ${instance?.instanceId || 'unknown'}`);
+                console.log(`[EditTicketModal] Found instance by guild: ${instance?.instanceId || 'unknown'}`);
                 break;
               }
             }
+          }
+        }
+        
+        // If still no instance, try reading config directly
+        if (!instance) {
+          try {
+            const fs = require('fs');
+            const path = require('path');
+            const configPath = path.join(__dirname, '..', '..', 'instance_configs.json');
+            
+            if (fs.existsSync(configPath)) {
+              const configs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+              
+              // Find config for this guild
+              for (const [instanceId, config] of Object.entries(configs)) {
+                if (config.guildId === interaction.guildId) {
+                  // Create a minimal instance object
+                  instance = {
+                    instanceId,
+                    guildId: interaction.guildId,
+                    categoryId: config.categoryId,
+                    transcriptChannelId: config.transcriptChannelId,
+                    vouchChannelId: config.vouchChannelId,
+                    customSettings: config.customSettings || {},
+                    isTemporary: true
+                  };
+                  console.log(`[EditTicketModal] Created instance from config: ${instanceId}`);
+                  break;
+                }
+              }
+            }
+          } catch (configError) {
+            console.error(`[EditTicketModal] Error loading config:`, configError);
           }
         }
       }
@@ -95,14 +130,36 @@ class EditTicketModal extends Modal {
       
       // Try to update the channel name if possible
       try {
-        await this.updateChannelName(interaction, instance, phoneNumber, username);
+        // Format new channel name
+        const formattedUsername = username
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "-")
+          .replace(/-+/g, "-")
+          .substring(0, 25);
+        
+        const newChannelName = `📋-${formattedUsername}`;
+        
+        // Get current channel
+        const channel = interaction.channel;
+        
+        // Check if name needs to change
+        if (channel.name !== newChannelName) {
+          // Check permissions
+          const botMember = interaction.guild.members.me;
+          if (channel.permissionsFor(botMember).has('ManageChannels')) {
+            await channel.setName(newChannelName, "Updated username");
+            console.log(`[EditTicketModal] Updated channel name to ${newChannelName}`);
+          }
+        }
       } catch (channelError) {
         console.error(`[EditTicketModal] Error updating channel name:`, channelError);
-        // Continue anyway to update the embed
+        // Continue anyway
       }
       
       // Find the ticket embed message - try pinned messages first
       let embedMessage = null;
+      let embedUpdateSuccess = false;
+      
       try {
         const pinnedMessages = await interaction.channel.messages.fetchPinned();
         embedMessage = pinnedMessages.find(
@@ -129,13 +186,12 @@ class EditTicketModal extends Modal {
       }
       
       // Update or create embed message
-      let embedUpdateSuccess = false;
       if (embedMessage) {
         try {
           // Get current embed
           const currentEmbed = embedMessage.embeds[0];
           
-          // Create updated embed with proper Discord.js v14 approach
+          // Create updated embed
           const updatedEmbed = new EmbedBuilder()
             .setColor(currentEmbed.color || 0x00AE86)
             .setTitle(currentEmbed.title || 'Ticket Tool')
@@ -225,7 +281,6 @@ class EditTicketModal extends Modal {
         try {
           console.log(`[EditTicketModal] Creating new ticket embed message`);
           
-          // FIXED: Use proper Discord.js v14 builder pattern
           const newEmbed = new EmbedBuilder()
             .setColor(0x00AE86)
             .setTitle('Ticket Tool')
@@ -327,108 +382,6 @@ class EditTicketModal extends Modal {
       }
       
       return false;
-    }
-  }
-  
-  /**
-   * Attempt to update the channel name with the new username
-   * @param {Interaction} interaction - Discord interaction
-   * @param {Object} instance - Server instance
-   * @param {string} phoneNumber - Phone number
-   * @param {string} newUsername - New username
-   */
-  async updateChannelName(interaction, instance, phoneNumber, newUsername) {
-    try {
-      console.log(`[UpdateChannelName] Starting channel rename attempt`);
-      
-      // Try current channel first (most reliable)
-      const currentChannelId = interaction.channelId;
-      console.log(`[UpdateChannelName] Current channel ID: ${currentChannelId}`);
-      
-      // Format new channel name
-      const formattedUsername = newUsername
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, "-")
-        .replace(/-+/g, "-")
-        .substring(0, 25);
-      const newChannelName = `📋-${formattedUsername}`;
-      console.log(`[UpdateChannelName] New channel name would be: ${newChannelName}`);
-      
-      // Get current channel
-      let channel = interaction.channel;
-      console.log(`[UpdateChannelName] Current channel name: ${channel.name}`);
-      
-      // Check if name actually needs to change
-      if (channel.name === newChannelName) {
-        console.log(`[UpdateChannelName] Channel name already matches, no update needed`);
-        return;
-      }
-      
-      // Check if we have permission to update the channel
-      const botMember = interaction.guild.members.me;
-      const hasPermission = channel.permissionsFor(botMember).has('ManageChannels');
-      console.log(`[UpdateChannelName] Bot has ManageChannels permission: ${hasPermission}`);
-      
-      if (!hasPermission) {
-        console.log(`[UpdateChannelName] Cannot update channel name - missing permission`);
-        return;
-      }
-      
-      // Try to rename the channel
-      console.log(`[UpdateChannelName] Attempting to rename to: ${newChannelName}`);
-      await channel.setName(newChannelName, "Updated username");
-      console.log(`[UpdateChannelName] Channel renamed successfully`);
-      
-      // Also update the channelManager mapping if available
-      try {
-        // Find channel manager through different paths
-        let channelManager = null;
-        
-        if (instance.channelManager) {
-          channelManager = instance.channelManager;
-        } else if (instance.managers && instance.managers.channelManager) {
-          channelManager = instance.managers.channelManager;
-        }
-        
-        // Check if channelMap exists and initialize if needed
-        if (channelManager) {
-          // Ensure channelMap exists
-          if (!channelManager.channelMap) {
-            channelManager.channelMap = new Map();
-          }
-          
-          // Use a safe version of mapUserToChannel
-          if (typeof channelManager.mapUserToChannel === 'function') {
-            // Make sure channelMap is a Map before trying to set a value
-            if (!(channelManager.channelMap instanceof Map)) {
-              channelManager.channelMap = new Map();
-            }
-            
-            await channelManager.mapUserToChannel(phoneNumber, currentChannelId, newUsername);
-            console.log(`[UpdateChannelName] Updated channel mapping in channel manager`);
-          } else {
-            console.log(`[UpdateChannelName] Could not find mapUserToChannel method`);
-            
-            // Direct update if method not available
-            try {
-              if (channelManager.channelMap instanceof Map) {
-                const cleanPhone = phoneNumber.replace(/@.*$/, '');
-                channelManager.channelMap.set(cleanPhone, currentChannelId);
-                console.log(`[UpdateChannelName] Directly updated channelMap`);
-              }
-            } catch (directUpdateError) {
-              console.error(`[UpdateChannelName] Error directly updating channel map:`, directUpdateError);
-            }
-          }
-        } else {
-          console.log(`[UpdateChannelName] No channelManager found on instance`);
-        }
-      } catch (mappingError) {
-        console.error(`[UpdateChannelName] Error updating channel mapping:`, mappingError);
-      }
-    } catch (error) {
-      console.error(`[UpdateChannelName] Channel rename failed:`, error);
-      // Just log the error, don't throw - allow the modal to continue processing
     }
   }
 }
