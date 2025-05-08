@@ -1,4 +1,4 @@
-// utils/MentionProcessor.js
+// utils/mentionProcessor.js
 const fs = require('fs');
 const path = require('path');
 
@@ -7,51 +7,14 @@ const path = require('path');
  */
 class MentionProcessor {
   /**
-   * Create a new MentionProcessor
-   * @param {Object} options - Configuration options
-   */
-  constructor(options = {}) {
-    this.instanceId = options.instanceId || 'default';
-    this.discordClient = options.discordClient;
-    this.guildId = options.guildId;
-    this.instance = options.instance;
-    
-    // Store the special channels map
-    this.specialChannels = {};
-    
-    // Load special channels from instance if available
-    this.loadSpecialChannels();
-    
-    console.log(`[MentionProcessor:${this.instanceId}] Initialized`);
-  }
-  
-  /**
-   * Load special channels from instance
-   */
-  loadSpecialChannels() {
-    try {
-      if (this.instance && this.instance.customSettings && this.instance.customSettings.specialChannels) {
-        this.specialChannels = this.instance.customSettings.specialChannels;
-        console.log(`[MentionProcessor:${this.instanceId}] Loaded ${Object.keys(this.specialChannels).length} special channels`);
-        
-        // Log each special channel for debugging
-        for (const [channelId, config] of Object.entries(this.specialChannels)) {
-          console.log(`[MentionProcessor:${this.instanceId}] Special channel: ${channelId} (${config.channelName}) - "${config.message}"`);
-        }
-      } else {
-        console.log(`[MentionProcessor:${this.instanceId}] No special channels found in instance settings`);
-      }
-    } catch (error) {
-      console.error(`[MentionProcessor:${this.instanceId}] Error loading special channels:`, error);
-    }
-  }
-  
-  /**
    * Process WhatsApp message for sending to Discord
    * @param {string} text - Message text from WhatsApp
+   * @param {Object} discordClient - Discord client
+   * @param {string} guildId - Guild ID
+   * @param {Object} specialChannels - Special channels map
    * @returns {string} - Processed text with Discord mentions
    */
-  processWhatsAppMessage(text) {
+  static processWhatsAppMessage(text, discordClient, guildId, specialChannels = {}) {
     if (!text) return text;
     
     let processedText = text;
@@ -65,8 +28,8 @@ class MentionProcessor {
         const originalText = match.originalText;
         
         // Try to find the channel
-        if (this.discordClient && this.guildId) {
-          const guild = this.discordClient.guilds.cache.get(this.guildId);
+        if (discordClient && guildId) {
+          const guild = discordClient.guilds.cache.get(guildId);
           if (guild) {
             const channel = guild.channels.cache.find(c => 
               c.name.toLowerCase() === channelName.toLowerCase() || 
@@ -75,14 +38,14 @@ class MentionProcessor {
             
             if (channel) {
               // Check if this is a special channel
-              if (this.specialChannels[channel.id]) {
-                const specialMessage = this.specialChannels[channel.id].message;
+              if (specialChannels[channel.id]) {
+                const specialMessage = specialChannels[channel.id].message;
                 processedText = processedText.replace(originalText, specialMessage);
-                console.log(`[MentionProcessor:${this.instanceId}] Replaced special channel mention: ${originalText} -> ${specialMessage}`);
+                console.log(`[MentionProcessor] Replaced special channel mention: ${originalText} -> ${specialMessage}`);
               } else {
                 // Regular channel mention
                 processedText = processedText.replace(originalText, `<#${channel.id}>`);
-                console.log(`[MentionProcessor:${this.instanceId}] Replaced channel mention: ${originalText} -> <#${channel.id}>`);
+                console.log(`[MentionProcessor] Replaced channel mention: ${originalText} -> <#${channel.id}>`);
               }
             }
           }
@@ -97,8 +60,8 @@ class MentionProcessor {
         const originalText = match.originalText;
         
         // Try to find the user
-        if (this.discordClient && this.guildId) {
-          const guild = this.discordClient.guilds.cache.get(this.guildId);
+        if (discordClient && guildId) {
+          const guild = discordClient.guilds.cache.get(guildId);
           if (guild) {
             const member = guild.members.cache.find(m => 
               m.user.username.toLowerCase() === username.toLowerCase() || 
@@ -107,13 +70,13 @@ class MentionProcessor {
             
             if (member) {
               processedText = processedText.replace(originalText, `<@${member.id}>`);
-              console.log(`[MentionProcessor:${this.instanceId}] Replaced user mention: ${originalText} -> <@${member.id}>`);
+              console.log(`[MentionProcessor] Replaced user mention: ${originalText} -> <@${member.id}>`);
             }
           }
         }
       }
     } catch (error) {
-      console.error(`[MentionProcessor:${this.instanceId}] Error processing WhatsApp message:`, error);
+      console.error(`[MentionProcessor] Error processing WhatsApp message:`, error);
     }
     
     return processedText;
@@ -122,9 +85,12 @@ class MentionProcessor {
   /**
    * Convert Discord mentions to readable text (for sending to WhatsApp)
    * @param {string} text - Message text with Discord mentions
+   * @param {Object} discordClient - Discord client
+   * @param {string} guildId - Guild ID
+   * @param {Object} specialChannels - Special channels map
    * @returns {string} - Human-readable text
    */
-  convertDiscordMentionsToText(text) {
+  static convertDiscordMentionsToText(text, discordClient, guildId, specialChannels = {}) {
     if (!text) return text;
     
     let processedText = text;
@@ -138,19 +104,19 @@ class MentionProcessor {
         const channelId = match[1];
         
         // Check if this is a special channel
-        if (this.specialChannels && this.specialChannels[channelId]) {
+        if (specialChannels && specialChannels[channelId]) {
           // Replace with special channel message
-          const specialMessage = this.specialChannels[channelId].message;
+          const specialMessage = specialChannels[channelId].message;
           processedText = processedText.replace(match[0], specialMessage);
-          console.log(`[MentionProcessor:${this.instanceId}] Replaced special channel ID with message: ${match[0]} -> ${specialMessage}`);
-        } else if (this.discordClient) {
+          console.log(`[MentionProcessor] Replaced special channel ID with message: ${match[0]} -> ${specialMessage}`);
+        } else if (discordClient) {
           // Get the actual channel name
-          const guild = this.discordClient.guilds.cache.get(this.guildId);
+          const guild = discordClient.guilds.cache.get(guildId);
           if (guild) {
             const channel = guild.channels.cache.get(channelId);
             if (channel) {
               processedText = processedText.replace(match[0], `#${channel.name}`);
-              console.log(`[MentionProcessor:${this.instanceId}] Replaced channel mention: ${match[0]} -> #${channel.name}`);
+              console.log(`[MentionProcessor] Replaced channel mention: ${match[0]} -> #${channel.name}`);
             }
           }
         }
@@ -163,20 +129,20 @@ class MentionProcessor {
       for (const match of userMatches) {
         const userId = match[1];
         
-        if (this.discordClient) {
-          const guild = this.discordClient.guilds.cache.get(this.guildId);
+        if (discordClient) {
+          const guild = discordClient.guilds.cache.get(guildId);
           if (guild) {
             const member = guild.members.cache.get(userId);
             if (member) {
               const displayName = member.nickname || member.user.username;
               processedText = processedText.replace(match[0], `@${displayName}`);
-              console.log(`[MentionProcessor:${this.instanceId}] Replaced user mention: ${match[0]} -> @${displayName}`);
+              console.log(`[MentionProcessor] Replaced user mention: ${match[0]} -> @${displayName}`);
             }
           }
         }
       }
     } catch (error) {
-      console.error(`[MentionProcessor:${this.instanceId}] Error converting Discord mentions to text:`, error);
+      console.error(`[MentionProcessor] Error converting Discord mentions to text:`, error);
     }
     
     return processedText;
@@ -187,7 +153,7 @@ class MentionProcessor {
    * @param {string} text - Text to process
    * @returns {Array} - Array of matches with name and originalText
    */
-  extractHashtagMentions(text) {
+  static extractHashtagMentions(text) {
     const matches = [];
     
     try {
@@ -202,7 +168,7 @@ class MentionProcessor {
         });
       }
     } catch (error) {
-      console.error(`[MentionProcessor:${this.instanceId}] Error extracting hashtag mentions:`, error);
+      console.error(`[MentionProcessor] Error extracting hashtag mentions:`, error);
     }
     
     return matches;
@@ -213,7 +179,7 @@ class MentionProcessor {
    * @param {string} text - Text to process
    * @returns {Array} - Array of matches with name and originalText
    */
-  extractUserMentions(text) {
+  static extractUserMentions(text) {
     const matches = [];
     
     try {
@@ -228,18 +194,23 @@ class MentionProcessor {
         });
       }
     } catch (error) {
-      console.error(`[MentionProcessor:${this.instanceId}] Error extracting user mentions:`, error);
+      console.error(`[MentionProcessor] Error extracting user mentions:`, error);
     }
     
     return matches;
   }
   
   /**
-   * Reload special channels configuration
-   * Useful when configuration changes
+   * Process channel and user mentions in messages
+   * @param {string} text - Message text
+   * @param {Object} discordClient - Discord client
+   * @param {string} guildId - Guild ID
+   * @param {Object} specialChannels - Special channels map
+   * @returns {string} - Processed text
    */
-  reloadSpecialChannels() {
-    this.loadSpecialChannels();
+  static processChannelAndUserMentions(text, discordClient, guildId, specialChannels = {}) {
+    // This is a convenience method that combines both mention processing functions
+    return this.convertDiscordMentionsToText(text, discordClient, guildId, specialChannels);
   }
 }
 
