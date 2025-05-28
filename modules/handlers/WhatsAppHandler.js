@@ -1,4 +1,4 @@
-// modules/handlers/WhatsAppHandler.js
+// modules/handlers/WhatsAppHandler.js - Updated with proper vouch detection
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
@@ -54,8 +54,9 @@ class WhatsAppHandler {
     console.log(`[WhatsAppHandler:${this.instanceId}] Initialized`);
   }
 
-  /**
-   * Handle incoming WhatsApp message
+  
+/**
+   * Handle incoming WhatsApp message - FIXED for better vouch detection
    * @param {Object} message - WhatsApp message
    * @returns {Promise<boolean>} - Success status
    */
@@ -73,6 +74,50 @@ class WhatsAppHandler {
       // Get message content
       const content = this.getTextFromMessage(message);
       const hasMedia = this.isMediaMessage(message);
+
+      // CRITICAL FIX: Check for vouch FIRST before any other processing
+      // Look for "Vouch!" in text content OR in media captions
+      let isVouchMessage = false;
+      let vouchText = '';
+      
+      if (content && content.trim().toLowerCase().startsWith('vouch!')) {
+        isVouchMessage = true;
+        vouchText = content;
+      } else if (hasMedia) {
+        // Check captions in media messages for "Vouch!"
+        let caption = '';
+        if (message.message?.imageMessage?.caption) {
+          caption = message.message.imageMessage.caption;
+        } else if (message.message?.videoMessage?.caption) {
+          caption = message.message.videoMessage.caption;
+        } else if (message.message?.documentMessage?.caption) {
+          caption = message.message.documentMessage.caption;
+        }
+        
+        if (caption && caption.trim().toLowerCase().startsWith('vouch!')) {
+          isVouchMessage = true;
+          vouchText = caption;
+        }
+      }
+      
+      // Process vouch if detected
+      if (isVouchMessage && this.vouchHandler && !this.vouchHandler.isDisabled) {
+        console.log(`[WhatsAppHandler:${this.instanceId}] Detected vouch message from ${userId}: "${vouchText}"`);
+        
+        // Get user card for the vouch
+        const userCard = this.userCardManager.getUserInfo(userId);
+        
+        // Process the vouch through the vouch handler
+        const vouchProcessed = await this.vouchHandler.handleVouch(userId, message, userCard);
+        
+        if (vouchProcessed) {
+          console.log(`[WhatsAppHandler:${this.instanceId}] Vouch processed successfully`);
+          return true; // Don't process as regular message
+        } else {
+          console.log(`[WhatsAppHandler:${this.instanceId}] Vouch processing failed, continuing with regular flow`);
+          // Continue with regular message processing if vouch failed
+        }
+      }
 
       // CRITICAL FIX: Get existing user info FIRST and log it
       const existingUserInfo = this.userCardManager.getUserInfo(userId);
@@ -258,25 +303,6 @@ class WhatsAppHandler {
     try {
       // Get the text content from the message
       const text = this.getTextFromMessage(message);
-
-      // Process vouch commands if they exist
-      if (
-        typeof text === "string" &&
-        text.trim().toLowerCase().startsWith("vouch!")
-      ) {
-        // Check if vouch handler is available
-        if (this.vouchHandler && !this.vouchHandler.isDisabled) {
-          const userCard = this.userCardManager.getUserInfo(sender);
-          const result = await this.vouchHandler.handleVouch(
-            sender,
-            { text },
-            userCard,
-            message
-          );
-          // If vouch was handled successfully, don't process as normal message
-          if (result) return true;
-        }
-      }
 
       // Check for different media types
       // First check for stickers specifically

@@ -52,6 +52,11 @@ class Command {
           this.configureOption(opt, option)
         );
         break;
+      case 'number':
+        this.data.addNumberOption(opt => 
+          this.configureOption(opt, option)
+        );
+        break;
       case 'boolean':
         this.data.addBooleanOption(opt => 
           this.configureOption(opt, option)
@@ -72,7 +77,20 @@ class Command {
           this.configureOption(opt, option)
         );
         break;
+      case 'mentionable':
+        this.data.addMentionableOption(opt => 
+          this.configureOption(opt, option)
+        );
+        break;
+      case 'attachment':
+        this.data.addAttachmentOption(opt => 
+          this.configureOption(opt, option)
+        );
+        break;
       // Add more option types as needed
+      default:
+        console.warn(`Unknown option type: ${option.type}`);
+        break;
     }
   }
   
@@ -87,9 +105,35 @@ class Command {
        .setDescription(option.description)
        .setRequired(option.required || false);
     
-    // Add choices if any
-    if (option.choices && Array.isArray(option.choices)) {
+    // Add choices if any (only for string/integer/number options)
+    if (option.choices && Array.isArray(option.choices) && 
+        ['string', 'integer', 'number'].includes(option.type)) {
       opt.addChoices(...option.choices);
+    }
+    
+    // Add channel types if any (only for channel options)
+    if (option.channelTypes && Array.isArray(option.channelTypes) && option.type === 'channel') {
+      opt.addChannelTypes(...option.channelTypes);
+    }
+    
+    // Add min/max values for number/integer options
+    if (option.type === 'integer' || option.type === 'number') {
+      if (typeof option.minValue === 'number') {
+        opt.setMinValue(option.minValue);
+      }
+      if (typeof option.maxValue === 'number') {
+        opt.setMaxValue(option.maxValue);
+      }
+    }
+    
+    // Add min/max length for string options
+    if (option.type === 'string') {
+      if (typeof option.minLength === 'number') {
+        opt.setMinLength(option.minLength);
+      }
+      if (typeof option.maxLength === 'number') {
+        opt.setMaxLength(option.maxLength);
+      }
     }
     
     return opt;

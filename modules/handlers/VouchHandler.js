@@ -1,4 +1,4 @@
-// modules/handlers/VouchHandler.js - Complete rewrite for proper vouch handling
+// modules/handlers/VouchHandler.js - Fixed media detection and proper embed formatting
 const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
@@ -7,15 +7,6 @@ const path = require('path');
  * Handles vouch commands and processing
  */
 class VouchHandler {
-  /**
-   * Create a new vouch handler
-   * @param {Object} whatsAppClient - WhatsApp client
-   * @param {Object} discordClient - Discord client
-   * @param {string} guildId - Guild ID
-   * @param {string} vouchChannelId - Vouch channel ID
-   * @param {Object} userCardManager - User card manager
-   * @param {Object} options - Additional options
-   */
   constructor(whatsAppClient, discordClient, guildId, vouchChannelId, userCardManager, options = {}) {
     this.whatsAppClient = whatsAppClient;
     this.discordClient = discordClient;
@@ -33,14 +24,8 @@ class VouchHandler {
     // Flag to disable vouches
     this.isDisabled = false;
     
-    // Custom vouch message
-    this.vouchMessage = "Hey {name}! Thanks for using our service! We'd love to hear your feedback.\n\nTo leave a vouch, simply send a message starting with *Vouch!* followed by your feedback.";
-    
-    // Custom vouch success message
-    this.vouchSuccessMessage = "✅ Thank you for your vouch! It has been posted to our community channel.";
-    
-    // Error message for empty vouch
-    this.emptyVouchMessage = "Please provide feedback with your vouch! Just add your message after 'Vouch!'";
+    // FIXED: Load custom messages from instance settings
+    this.loadInstanceSettings();
     
     // Create directories if they don't exist
     for (const dir of [this.tempDir, this.assetsDir]) {
@@ -53,8 +38,41 @@ class VouchHandler {
   }
   
   /**
+   * Load instance-specific settings
+   */
+  loadInstanceSettings() {
+    try {
+      const settingsPath = path.join(__dirname, '..', '..', 'instances', this.instanceId, 'settings.json');
+      
+      if (fs.existsSync(settingsPath)) {
+        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        
+        // Use instance-specific messages or defaults
+        this.vouchMessage = settings.vouchMessage || 
+          "Hey {name}! Thanks for using our service! We'd love to hear your feedback.\n\nTo leave a vouch, simply send a message starting with *Vouch!* followed by your feedback.";
+        
+        this.vouchSuccessMessage = settings.vouchSuccessMessage || 
+          "✅ Thank you for your vouch! It has been posted to our community channel.";
+        
+        console.log(`[VouchHandler:${this.instanceId}] Loaded instance-specific vouch messages`);
+      } else {
+        // Set defaults
+        this.vouchMessage = "Hey {name}! Thanks for using our service! We'd love to hear your feedback.\n\nTo leave a vouch, simply send a message starting with *Vouch!* followed by your feedback.";
+        this.vouchSuccessMessage = "✅ Thank you for your vouch! It has been posted to our community channel.";
+      }
+      
+      this.emptyVouchMessage = "Please provide feedback with your vouch! Just add your message after 'Vouch!'";
+    } catch (error) {
+      console.error(`[VouchHandler:${this.instanceId}] Error loading instance settings:`, error);
+      // Use defaults
+      this.vouchMessage = "Hey {name}! Thanks for using our service! We'd love to hear your feedback.\n\nTo leave a vouch, simply send a message starting with *Vouch!* followed by your feedback.";
+      this.vouchSuccessMessage = "✅ Thank you for your vouch! It has been posted to our community channel.";
+      this.emptyVouchMessage = "Please provide feedback with your vouch! Just add your message after 'Vouch!'";
+    }
+  }
+  
+  /**
    * Set channel manager reference
-   * @param {Object} channelManager - Channel manager
    */
   setChannelManager(channelManager) {
     this.channelManager = channelManager;
@@ -62,7 +80,6 @@ class VouchHandler {
   
   /**
    * Set custom vouch message
-   * @param {string} message - Message template
    */
   setCustomVouchMessage(message) {
     if (message) {
@@ -72,7 +89,6 @@ class VouchHandler {
   
   /**
    * Set custom vouch success message
-   * @param {string} message - Message template
    */
   setCustomVouchSuccessMessage(message) {
     if (message) {
@@ -81,21 +97,16 @@ class VouchHandler {
   }
   
   /**
-   * Process !vouch command from Discord
-   * @param {Object} message - Discord message
-   * @returns {Promise<boolean>} - Success status
+   * Process !vouch command from Discord - FIXED to include vouch media
    */
   async processVouchCommand(message) {
     try {
-      // Skip if disabled
       if (this.isDisabled) {
         console.log(`[VouchHandler:${this.instanceId}] Vouches are disabled, skipping !vouch command`);
-        // Don't even acknowledge the command if disabled
         return false;
       }
       
-      // Get phone number from channel
-      const phoneNumber = await this.channelManager?.getPhoneNumberByChannelId(message.channel.id);
+      const phoneNumber = this.channelManager?.getPhoneNumberByChannelId(message.channel.id);
       if (!phoneNumber) {
         console.log(`[VouchHandler:${this.instanceId}] No phone number found for channel ${message.channel.id}`);
         await message.reply({
@@ -104,19 +115,15 @@ class VouchHandler {
         return false;
       }
       
-      // Get user card
       const userCard = this.userCardManager ? 
         await this.userCardManager.getUserInfo(phoneNumber) : null;
       
-      // Look for media to attach (gif/video from assets)
-      const mediaPath = await this.findVouchMediaInAssets();
-      
-      // Send feedback
       await message.reply({
         content: "✅ Sending vouch instructions to the user..."
       });
       
-      // Send vouch instructions to WhatsApp user
+      // FIXED: Always check for and include vouch media
+      const mediaPath = await this.findVouchMediaInAssets();
       const success = await this.sendVouchInstructions(phoneNumber, userCard, mediaPath);
       
       if (!success) {
@@ -143,8 +150,7 @@ class VouchHandler {
   }
   
   /**
-   * Find vouch media (gif/video) in assets directory
-   * @returns {Promise<string|null>} - Path to media or null if not found
+   * Find vouch media - FIXED to find any vouch.* file
    */
   async findVouchMediaInAssets() {
     try {
@@ -152,24 +158,15 @@ class VouchHandler {
         return null;
       }
       
-      // Look for vouch-specific media in assets folder
       const files = fs.readdirSync(this.assetsDir);
       
-      // Check for vouch media in specific order of preference
-      const mediaNames = [
-        'vouch.gif',
-        'vouch.mp4',
-        'vouch.webm',
-        'vouch.png',
-        'vouch.jpg',
-        'vouch.jpeg',
-        'vouch.webp'
-      ];
+      // Look for any file starting with "vouch."
+      const vouchFile = files.find(file => file.startsWith('vouch.'));
       
-      for (const mediaName of mediaNames) {
-        if (files.includes(mediaName)) {
-          return path.join(this.assetsDir, mediaName);
-        }
+      if (vouchFile) {
+        const fullPath = path.join(this.assetsDir, vouchFile);
+        console.log(`[VouchHandler:${this.instanceId}] Found vouch media: ${vouchFile}`);
+        return fullPath;
       }
       
       return null;
@@ -180,21 +177,15 @@ class VouchHandler {
   }
   
   /**
-   * Send vouch instructions to a user
-   * @param {string} phoneNumber - Phone number to send to
-   * @param {Object} userCard - User card
-   * @param {string} mediaPath - Optional path to media file to attach
-   * @returns {Promise<boolean>} - Success status
+   * Send vouch instructions with media support
    */
   async sendVouchInstructions(phoneNumber, userCard, mediaPath = null) {
     try {
-      // Skip if disabled (shouldn't reach here if properly checked)
       if (this.isDisabled) {
         console.log(`[VouchHandler:${this.instanceId}] Vouches are disabled, skipping`);
         return false;
       }
       
-      // Check if WhatsApp client is available
       if (!this.whatsAppClient) {
         console.error(`[VouchHandler:${this.instanceId}] WhatsApp client not available`);
         return false;
@@ -212,7 +203,7 @@ class VouchHandler {
         }
       }
       
-      // Format message
+      // Format message using instance-specific template
       const messageText = this.vouchMessage
         .replace(/{name}/g, name)
         .replace(/{phoneNumber}/g, phoneNumber);
@@ -222,19 +213,26 @@ class VouchHandler {
       cleanPhone = cleanPhone.replace(/^\+/, '');
       const recipientJid = `${cleanPhone}@s.whatsapp.net`;
       
-      // Check if we need to send with media
+      // FIXED: Send with media if available
       if (mediaPath && fs.existsSync(mediaPath)) {
         try {
-          // Read the media file
           const mediaBuffer = fs.readFileSync(mediaPath);
           const ext = path.extname(mediaPath).toLowerCase();
           
+          console.log(`[VouchHandler:${this.instanceId}] Sending vouch instructions with media: ${ext}`);
+          
           // Determine media type and send appropriately
-          if (ext === '.gif' || ext === '.webp') {
+          if (ext === '.gif') {
             await this.sendMediaMessage(recipientJid, {
               image: mediaBuffer,
               caption: messageText,
-              mimetype: ext === '.gif' ? 'image/gif' : 'image/webp'
+              mimetype: 'image/gif'
+            });
+          } else if (ext === '.webp') {
+            await this.sendMediaMessage(recipientJid, {
+              image: mediaBuffer,
+              caption: messageText,
+              mimetype: 'image/webp'
             });
           } else if (['.mp4', '.webm'].includes(ext)) {
             await this.sendMediaMessage(recipientJid, {
@@ -254,7 +252,7 @@ class VouchHandler {
           return true;
         } catch (mediaError) {
           console.error(`[VouchHandler:${this.instanceId}] Error sending with media:`, mediaError);
-          // Continue to text-only if media fails
+          // Fall back to text-only
         }
       }
       
@@ -274,13 +272,10 @@ class VouchHandler {
   }
   
   /**
-   * Process WhatsApp message to check if it's a vouch
-   * @param {Object} message - WhatsApp message
-   * @returns {Promise<boolean>} - Whether message was processed as vouch
+   * MAIN METHOD: Check if a WhatsApp message is a vouch and process it - FIXED media handling
    */
-  async processWhatsAppVouch(message) {
+  async handleVouch(phoneNumber, message, userCard) {
     try {
-      // Skip if disabled
       if (this.isDisabled) {
         return false;
       }
@@ -288,69 +283,20 @@ class VouchHandler {
       // Extract text from message
       const messageText = this.extractMessageText(message);
       
-      // Check if it starts with "Vouch!"
+      // Check if it starts with "Vouch!" (case insensitive)
       if (!messageText || !messageText.trim().toLowerCase().startsWith('vouch!')) {
         return false;
       }
       
-      console.log(`[VouchHandler:${this.instanceId}] Vouch message detected`);
+      console.log(`[VouchHandler:${this.instanceId}] Vouch message detected from ${phoneNumber}`);
       
-      // Extract phone number from message
-      const sender = message.key?.remoteJid;
-      if (!sender) {
-        console.error(`[VouchHandler:${this.instanceId}] Could not find sender JID in message`);
-        return false;
-      }
-      
-      const phoneNumber = sender.split('@')[0];
-      
-      // Get user info
-      const userCard = this.userCardManager ? 
-        await this.userCardManager.getUserInfo(phoneNumber) : null;
-      
-      // Process the vouch
-      return await this.handleVouch(phoneNumber, { text: messageText }, userCard, message);
-    } catch (error) {
-      console.error(`[VouchHandler:${this.instanceId}] Error processing WhatsApp vouch:`, error);
-      return false;
-    }
-  }
-  
-  /**
-   * Handle a vouch from WhatsApp
-   * @param {string} phoneNumber - Sender's phone number
-   * @param {Object} messageContent - Content of the message
-   * @param {Object} userCard - User card from manager
-   * @param {Object} originalMessage - Original WhatsApp message
-   * @returns {Promise<boolean>} - Success status
-   */
-  async handleVouch(phoneNumber, messageContent, userCard, originalMessage) {
-    try {
-      // Skip if disabled
-      if (this.isDisabled) {
-        return false;
-      }
-      
-      // Check if vouch channel is set
       if (!this.vouchChannelId) {
         console.error(`[VouchHandler:${this.instanceId}] Vouch channel not set`);
         return false;
       }
       
-      console.log(`[VouchHandler:${this.instanceId}] Processing vouch from ${phoneNumber}`);
-      
       // Extract vouch text (remove "Vouch!" prefix)
-      let vouchText = '';
-      if (typeof messageContent === 'string') {
-        vouchText = messageContent.replace(/^vouch!/i, '').trim();
-      } else if (messageContent && messageContent.text) {
-        vouchText = messageContent.text.replace(/^vouch!/i, '').trim();
-      } else if (originalMessage) {
-        const extractedText = this.extractMessageText(originalMessage);
-        if (extractedText) {
-          vouchText = extractedText.replace(/^vouch!/i, '').trim();
-        }
-      }
+      let vouchText = messageText.replace(/^vouch!/i, '').trim();
       
       // Clean phone number for response
       let cleanPhone = String(phoneNumber).replace(/\D/g, '');
@@ -366,7 +312,7 @@ class VouchHandler {
         } catch (sendError) {
           console.error(`[VouchHandler:${this.instanceId}] Error sending empty vouch error:`, sendError);
         }
-        return false;
+        return true; // Return true because we handled the vouch attempt
       }
       
       // Get user name
@@ -381,35 +327,39 @@ class VouchHandler {
         }
       }
       
-      // Handle media if present
+      // FIXED: Handle media if present in the vouch message
       let mediaBuffer = null;
       let mediaType = null;
       let mediaFileName = null;
       
-      if (originalMessage && this.hasMedia(originalMessage)) {
+      if (this.hasMedia(message)) {
         try {
-          mediaBuffer = await this.downloadMedia(originalMessage);
+          console.log(`[VouchHandler:${this.instanceId}] Vouch contains media, downloading...`);
+          const mediaData = await this.downloadMedia(message);
           
-          if (originalMessage.message?.imageMessage) {
-            mediaType = 'image';
-            mediaFileName = `vouch-image-${Date.now()}.jpg`;
-          } else if (originalMessage.message?.videoMessage) {
-            mediaType = 'video';
-            mediaFileName = `vouch-video-${Date.now()}.mp4`;
-          } else if (originalMessage.message?.documentMessage) {
-            mediaType = 'document';
-            mediaFileName = originalMessage.message.documentMessage.fileName || `vouch-doc-${Date.now()}.bin`;
-          }
-          
-          if (mediaBuffer) {
-            console.log(`[VouchHandler:${this.instanceId}] Downloaded media for vouch`);
+          if (mediaData && mediaData.buffer) {
+            mediaBuffer = mediaData.buffer;
+            
+            if (message.message?.imageMessage) {
+              mediaType = 'image';
+              const isGif = message.message.imageMessage.mimetype === 'image/gif';
+              mediaFileName = `vouch-${Date.now()}.${isGif ? 'gif' : 'jpg'}`;
+            } else if (message.message?.videoMessage) {
+              mediaType = 'video';
+              mediaFileName = `vouch-${Date.now()}.mp4`;
+            } else if (message.message?.documentMessage) {
+              mediaType = 'document';
+              mediaFileName = message.message.documentMessage.fileName || `vouch-${Date.now()}.bin`;
+            }
+            
+            console.log(`[VouchHandler:${this.instanceId}] Downloaded vouch media: ${mediaFileName}`);
           }
         } catch (mediaError) {
-          console.error(`[VouchHandler:${this.instanceId}] Error processing media:`, mediaError);
+          console.error(`[VouchHandler:${this.instanceId}] Error processing vouch media:`, mediaError);
         }
       }
       
-      // Find channel and helpers
+      // Find helpers from the ticket channel
       let helpers = ["Support Team"];
       try {
         if (this.channelManager) {
@@ -425,7 +375,7 @@ class VouchHandler {
         console.error(`[VouchHandler:${this.instanceId}] Error finding helpers:`, helpersError);
       }
       
-      // Post to Discord
+      // Post to Discord with FIXED embed formatting
       const success = await this.postVouchToDiscord(name, phoneNumber, vouchText, helpers, mediaBuffer, mediaType, mediaFileName);
       
       // Send confirmation message
@@ -444,7 +394,7 @@ class VouchHandler {
         }
       }
       
-      return success;
+      return true; // Always return true for vouch attempts (handled)
     } catch (error) {
       console.error(`[VouchHandler:${this.instanceId}] Error handling vouch:`, error);
       return false;
@@ -453,8 +403,6 @@ class VouchHandler {
   
   /**
    * Find all helpers in a ticket channel
-   * @param {Object} channel - Discord channel
-   * @returns {Promise<Array>} - Array of helper usernames
    */
   async findTicketHelpers(channel) {
     try {
@@ -462,18 +410,17 @@ class VouchHandler {
       
       if (!channel) return ["Support Team"];
       
-      // Get recent messages
       const messages = await channel.messages.fetch({ limit: 100 });
       
-      // Find unique authors who aren't bots
       for (const [_, message] of messages) {
-        if (!message.author.bot && message.member) {
+        if (!message.author.bot && message.member && message.content.trim().length > 0) {
           const authorName = message.member.displayName || message.author.username;
           helpers.add(authorName);
         }
       }
       
-      return [...helpers].filter(h => h); // Filter out any empty names
+      const helpersList = [...helpers].filter(h => h && h !== 'Unknown User');
+      return helpersList.length > 0 ? helpersList : ["Support Team"];
     } catch (error) {
       console.error(`[VouchHandler:${this.instanceId}] Error finding ticket helpers:`, error);
       return ["Support Team"];
@@ -481,19 +428,10 @@ class VouchHandler {
   }
   
   /**
-   * Post vouch to Discord channel with proper formatting
-   * @param {string} name - User name
-   * @param {string} phoneNumber - Phone number
-   * @param {string} vouchText - Vouch text
-   * @param {Array} helpers - Array of helpers' names
-   * @param {Buffer} mediaBuffer - Media buffer (optional)
-   * @param {string} mediaType - Media type (optional)
-   * @param {string} mediaFileName - Media filename (optional)
-   * @returns {Promise<boolean>} - Success status
+   * FIXED: Post vouch to Discord with proper embed formatting like the screenshot
    */
   async postVouchToDiscord(name, phoneNumber, vouchText, helpers = ["Support Team"], mediaBuffer = null, mediaType = null, mediaFileName = null) {
     try {
-      // Get guild and channel
       const guild = this.discordClient.guilds.cache.get(this.guildId);
       if (!guild) {
         console.error(`[VouchHandler:${this.instanceId}] Guild not found: ${this.guildId}`);
@@ -506,21 +444,28 @@ class VouchHandler {
         return false;
       }
       
-      // Format helpers list
-      let helpersText = helpers.length > 0 ? helpers.join(', ') : 'Support Team';
+      // Get first helper or "Support Team"
+      let helperText = helpers.length > 0 ? helpers[0] : 'Support Team';
       
-      // Create embed for better formatting
+      // Format timestamp
+      const now = new Date();
+      const timestamp = now.toLocaleDateString('en-US', { 
+        month: 'numeric', 
+        day: 'numeric', 
+        year: 'numeric'
+      }) + ' ' + now.toLocaleTimeString('en-US', { 
+        hour: 'numeric', 
+        minute: '2-digit', 
+        hour12: true 
+      });
+      
+      // FIXED: Create embed matching the screenshot exactly
       const embed = new EmbedBuilder()
-        .setColor(0x00ff00) // Green color
-        .setTitle('📢 New Vouch!')
-        .setDescription(`**${vouchText}**`)
-        .addFields(
-          { name: '👤 From', value: name, inline: true },
-          { name: '🏷️ To', value: helpersText, inline: true },
-          { name: '📱 WhatsApp', value: phoneNumber, inline: true }
-        )
-        .setTimestamp()
-        .setFooter({ text: 'WhatsApp Bridge Vouch System' });
+        .setColor(0x00D4FF) // Bright blue/cyan color like in screenshot
+        .setTitle(`🗨️ Vouch from ${name} to ${helperText}`)
+        .setDescription(`**${vouchText}**`) // Make vouch text bigger with bold
+        .setFooter({ text: `Sent via WhatsApp • ${timestamp}` })
+        .setTimestamp();
       
       // Prepare files array if media is present
       let files = [];
@@ -533,13 +478,9 @@ class VouchHandler {
           // Add file
           files.push(new AttachmentBuilder(mediaPath, { name: mediaFileName }));
           
-          // Add media indicator to embed
+          // Add image to embed if it's an image
           if (mediaType === 'image') {
             embed.setImage(`attachment://${mediaFileName}`);
-          } else if (mediaType === 'video') {
-            embed.addFields({ name: '📹 Attachment', value: 'Video attached', inline: false });
-          } else if (mediaType === 'document') {
-            embed.addFields({ name: '📄 Attachment', value: 'Document attached', inline: false });
           }
           
           console.log(`[VouchHandler:${this.instanceId}] Added media to vouch: ${mediaFileName}`);
@@ -548,15 +489,15 @@ class VouchHandler {
         }
       }
       
-      // Send the vouch
+      // Send the vouch with the embed formatting
       await vouchChannel.send({
         embeds: [embed],
         files
       });
       
-      console.log(`[VouchHandler:${this.instanceId}] Posted vouch from ${name} (${phoneNumber})`);
+      console.log(`[VouchHandler:${this.instanceId}] Posted vouch from ${name} (${phoneNumber}) to ${helperText}`);
       
-      // Clean up temp files
+      // Clean up temp files after delay
       if (files.length > 0) {
         setTimeout(() => {
           try {
@@ -568,7 +509,7 @@ class VouchHandler {
           } catch (cleanupError) {
             console.error(`[VouchHandler:${this.instanceId}] Error cleaning up temp files:`, cleanupError);
           }
-        }, 5000);
+        }, 30000); // 30 seconds delay
       }
       
       return true;
@@ -585,6 +526,9 @@ class VouchHandler {
     try {
       if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.sendMessage === 'function') {
         await this.whatsAppClient.sock.sendMessage(jid, { text });
+        return true;
+      } else if (typeof this.whatsAppClient.sendTextMessage === 'function') {
+        await this.whatsAppClient.sendTextMessage(jid, text);
         return true;
       } else if (typeof this.whatsAppClient.sendMessage === 'function') {
         await this.whatsAppClient.sendMessage(jid, { text });
@@ -669,20 +613,20 @@ class VouchHandler {
       
       console.log(`[VouchHandler:${this.instanceId}] Attempting to download media`);
       
-      // Try different methods based on client type
+      // Use the WhatsApp client's download method
+      if (typeof this.whatsAppClient.downloadMedia === 'function') {
+        const mediaData = await this.whatsAppClient.downloadMedia(message);
+        if (mediaData && mediaData.buffer) {
+          return mediaData;
+        }
+      }
+      
+      // Try direct sock method
       if (this.whatsAppClient.sock && typeof this.whatsAppClient.sock.downloadMediaMessage === 'function') {
         const buffer = await this.whatsAppClient.sock.downloadMediaMessage(message);
-        if (buffer) return buffer;
-      }
-      
-      if (typeof this.whatsAppClient.downloadMediaMessage === 'function') {
-        const buffer = await this.whatsAppClient.downloadMediaMessage(message);
-        if (buffer) return buffer;
-      }
-      
-      if (typeof this.whatsAppClient.downloadMedia === 'function') {
-        const buffer = await this.whatsAppClient.downloadMedia(message);
-        if (buffer) return buffer;
+        if (buffer) {
+          return { buffer };
+        }
       }
       
       console.error(`[VouchHandler:${this.instanceId}] No suitable download method found`);
